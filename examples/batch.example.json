@@ -1,0 +1,24 @@
+{
+  "detect_silence": true,
+  "detect_freeze": false,
+  "detect_scenes": false,
+  "render_review": false,
+  "render_final": false,
+  "vertical": false,
+  "burn_subtitles": false,
+  "plan_crop": false,
+  "plan_uvr": false,
+  "skip_transcribe": false,
+  "files": [
+    "D:\\recordings\\example.mp4",
+    {
+      "path": "D:\\recordings\\quick-test.mp4",
+      "skip_transcribe": true,
+      "plan_crop": true,
+      "plan_uvr": true,
+      "render_final": true,
+      "vertical": true,
+      "burn_subtitles": true
+    }
+  ]
+}

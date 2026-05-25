@@ -1,0 +1,3 @@
+watchdog>=6.0.0
+openai-whisper>=20250625
+xxhash>=3.5.0
