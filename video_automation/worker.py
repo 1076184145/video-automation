@@ -23,7 +23,7 @@ from .cuts import generate_cuts
 from .hooks import generate_uvr_plan
 from .io_utils import write_text_atomic
 from .jobs import Job, configure_job_logger, create_job, find_resume_jobs, list_jobs
-from .media import MEDIA_EXTENSIONS, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
+from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .profiles import apply_profile_settings, profile_flags
 from .render import generate_render_preview, render_final_video, render_review_video
@@ -473,6 +473,9 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "freeze_noise_db": settings.freeze_noise_db,
             "freeze_min_duration": settings.freeze_min_duration_seconds,
             "scene_threshold": settings.scene_threshold,
+            "source_integrity_scan_enabled": settings.source_integrity_scan_enabled,
+            "source_integrity_scan_timeout_multiplier": settings.source_integrity_scan_timeout_multiplier,
+            "source_integrity_scan_max_errors": settings.source_integrity_scan_max_errors,
             "visual_detect_keyframes_only": settings.visual_detect_keyframes_only,
             "visual_detect_fps": settings.visual_detect_fps,
             "visual_detect_width": settings.visual_detect_width,
@@ -1100,6 +1103,18 @@ def process_job(
             extract_high_quality_audio(settings, job.source_path, stage_context["audio_hq_path"], force=force)
             generate_waveform(settings, stage_context["audio_path"], job.job_dir / "waveform.json", force=force)
 
+        def corruption_stage(stage_context: dict[str, Any]) -> None:
+            manifest = stage_context["manifest"]
+            if manifest.get("video_stream_count", 0) < 1:
+                return
+            detect_decode_errors(
+                settings,
+                job.source_path,
+                manifest["duration_seconds"],
+                job.job_dir / "corrupt.json",
+                force=force,
+            )
+
         def transcribe_stage(stage_context: dict[str, Any]) -> None:
             if skip_transcribe:
                 create_empty_transcripts(job.job_dir, force=force)
@@ -1228,6 +1243,7 @@ def process_job(
 
         stages = [
             PipelineStage("probe", "probing", True, probe_stage),
+            PipelineStage("detect_corruption", "detecting_corruption", settings.source_integrity_scan_enabled, corruption_stage),
             PipelineStage("extract_audio", "extracting_audio", True, extract_audio_stage),
             PipelineStage("transcribe", "transcribing", True, transcribe_stage),
             PipelineStage("detect_silence", "detecting_silence", detect_silence_enabled, silence_stage),

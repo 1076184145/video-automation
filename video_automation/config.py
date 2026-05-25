@@ -112,6 +112,9 @@ class Settings:
     freeze_noise_db: float
     freeze_min_duration_seconds: float
     scene_threshold: float
+    source_integrity_scan_enabled: bool
+    source_integrity_scan_timeout_multiplier: float
+    source_integrity_scan_max_errors: int
     visual_detect_keyframes_only: bool
     visual_detect_fps: float
     visual_detect_width: int
@@ -209,6 +212,9 @@ class Settings:
             freeze_noise_db=_float_env("FREEZE_NOISE_DB", -60),
             freeze_min_duration_seconds=_float_env("FREEZE_MIN_DURATION_SECONDS", 2),
             scene_threshold=_float_env("SCENE_THRESHOLD", 0.3),
+            source_integrity_scan_enabled=_bool_env("SOURCE_INTEGRITY_SCAN_ENABLED", True),
+            source_integrity_scan_timeout_multiplier=_float_env("SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER", 3.0),
+            source_integrity_scan_max_errors=max(1, _int_env("SOURCE_INTEGRITY_SCAN_MAX_ERRORS", 40)),
             visual_detect_keyframes_only=_bool_env("VISUAL_DETECT_KEYFRAMES_ONLY", True),
             visual_detect_fps=_float_env("VISUAL_DETECT_FPS", 2.0),
             visual_detect_width=_int_env("VISUAL_DETECT_WIDTH", 480),

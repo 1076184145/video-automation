@@ -107,8 +107,9 @@ export async function renderJobDetail(match) {
         return;
       }
 
-      const [manifest, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, publishPackage, projectExport, health] = await Promise.all([
+      const [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, publishPackage, projectExport, health] = await Promise.all([
         loadFile(name, files, "manifest.json"),
+        loadFile(name, files, "corrupt.json"),
         loadFile(name, files, "cuts.json"),
         loadFile(name, files, "transcript.json"),
         loadFile(name, files, "silence.json"),
@@ -124,7 +125,7 @@ export async function renderJobDetail(match) {
         loadHealthSafe()
       ]);
 
-      const payload = { manifest, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, publishPackage, projectExport, health };
+      const payload = { manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, publishPackage, projectExport, health };
 
       if (isFirstRender) {
         app.innerHTML = pageShell();
@@ -218,6 +219,7 @@ function pageShell() {
   return `
     <div id="section-head"></div>
     <div id="section-review"></div>
+    <div id="section-source-warning"></div>
     <section class="panel live-progress" id="section-progress"></section>
     <div id="section-actions"></div>
     <section class="panel">
@@ -277,6 +279,7 @@ function updateGranular(job, files, payload, isEditingClips, isEditingTranscript
   `);
 
   safeHtml("section-review", job.status === "needs_review" ? renderReviewActions() : "");
+  safeHtml("section-source-warning", renderSourceWarning(payload.corrupt));
   safeHtml("section-actions", renderJobActions());
   safeHtml("section-progress", renderLiveProgress(job));
   safeHtml("section-pipeline", STAGES.map((stage) => renderStage(stage, job, files)).join(""));
@@ -337,6 +340,27 @@ function setPreviewOrientation(video) {
   video.removeEventListener("loadedmetadata", apply);
   video.addEventListener("loadedmetadata", apply, { once: true });
   if (video.readyState >= 1) apply();
+}
+
+function renderSourceWarning(corrupt) {
+  if (!corrupt || ["ok", "skipped"].includes(corrupt.status)) return "";
+  const time = Number.isFinite(Number(corrupt.first_error_at_seconds))
+    ? formatTime(Number(corrupt.first_error_at_seconds))
+    : t("job.corrupt_unknown_time");
+  const errors = Array.isArray(corrupt.errors) ? corrupt.errors.slice(0, 3) : [];
+  const errorHtml = errors.length
+    ? `<ul>${errors.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+    : "";
+  const title = corrupt.status === "corrupt" ? t("job.corrupt_title") : t("job.corrupt_scan_issue");
+  return `
+    <section class="notice warning source-warning">
+      <div>
+        <strong>${title}</strong>
+        <p>${t("job.corrupt_message").replace("{time}", escapeHtml(time))}</p>
+        ${errorHtml}
+      </div>
+    </section>
+  `;
 }
 
 function renderJobActions() {
@@ -790,6 +814,7 @@ function stageComplete(stage, job, files) {
   if (job.status === "done") return true;
   const outputs = {
     probe: "manifest.json",
+    detect_corruption: "corrupt.json",
     extract_audio: "audio.wav",
     transcribe: "transcript.json",
     detect_silence: "silence.json",
@@ -1085,7 +1110,7 @@ function renderDownloads(jobName, files) {
   const coverCandidates = Array.from(files.keys()).filter((name) => /^cover_(9x16|16x9)_\d+\.jpg$/i.test(name));
   const segmentFiles = Array.from(files.keys()).filter((name) => name.startsWith("segments/"));
   const projectExportFiles = Array.from(files.keys()).filter((name) => name.startsWith("project_exports/"));
-  const advanced = ["thumbnail.jpg", ...coverCandidates, ...segmentFiles, ...projectExportFiles, "cover_manifest.json", "segments_manifest.json", "metadata.json", "highlights.json", "publish_package.json", "project_export_manifest.json", "waveform.json", "cuts.json", "cuts.md", "transcript.json", "transcript.srt", "crop_plan.json", "uvr_plan.json", "platform_export_plan.json", "bgm_mix_plan.json", "webhook_plan.json", "render_preview.json", "final_render_preview.json"];
+  const advanced = ["thumbnail.jpg", ...coverCandidates, ...segmentFiles, ...projectExportFiles, "cover_manifest.json", "segments_manifest.json", "metadata.json", "highlights.json", "publish_package.json", "project_export_manifest.json", "waveform.json", "corrupt.json", "cuts.json", "cuts.md", "transcript.json", "transcript.srt", "crop_plan.json", "uvr_plan.json", "platform_export_plan.json", "bgm_mix_plan.json", "webhook_plan.json", "render_preview.json", "final_render_preview.json"];
   const link = (name, primary = false) => `<a class="button download-link ${fileKind(name)} ${primary ? "primary" : ""}" download href="${API.jobFileUrl(jobName, name, true)}">${fileIcon(name)} ${t("common.download")} ${name}</a>`;
   const mainLinks = creator.filter((name) => files.has(name)).map((name) => link(name, name === "final.mp4")).join("");
   const advancedLinks = advanced.filter((name) => files.has(name)).map((name) => link(name)).join("");

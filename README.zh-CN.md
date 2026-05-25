@@ -35,6 +35,7 @@ Video Automation 是一个本地录播到粗剪成片的自动化工作流。它
 
 ```text
 probe
+detect_corruption
 extract_audio
 transcribe
 detect_silence
@@ -98,6 +99,7 @@ transcript.srt            SRT 字幕
 transcript.json           结构化转写片段，启用时包含词级时间戳
 subtitles.ass             带样式的 ASS 字幕
 subtitles_clipped.ass     按剪辑点重映射后的 ASS 字幕
+corrupt.json              源视频解码完整性扫描结果
 silence.json              静音检测结果
 freeze.json               静止画面检测结果
 scene.json                场景切换检测结果
@@ -313,12 +315,17 @@ FunASR 第一次运行会下载模型文件。如果本机没有 CUDA 版 PyTorc
 SILENCE_MIN_GAP_SECONDS=0.35
 CUT_MIN_CLIP_SECONDS=2.0
 CUT_MERGE_GAP_SECONDS=1.5
+SOURCE_INTEGRITY_SCAN_ENABLED=true
+SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
+SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
 VISUAL_DETECT_KEYFRAMES_ONLY=true
 VISUAL_DETECT_FPS=2
 VISUAL_DETECT_WIDTH=480
 ```
 
 `CUT_MERGE_GAP_SECONDS` 控制相邻保留片段被短间隔隔开时的合并强度。想要更平滑的粗剪可以调大；想要更紧凑的剪辑可以调小。
+
+`SOURCE_INTEGRITY_SCAN_ENABLED` 会用 ffmpeg 做源视频解码扫描并写出 `corrupt.json`。它不会让任务失败，但 Web UI 会在源视频存在坏帧/损坏码流时提示，方便你优先重新下载/重新导出源文件，或删除受损剪辑片段后再渲染。
 
 `VISUAL_DETECT_KEYFRAMES_ONLY` 会让静止画面/场景切换检测只解码关键帧，长录播会快很多。需要更密集的场景切换标记时可以关闭。`VISUAL_DETECT_FPS` 和 `VISUAL_DETECT_WIDTH` 只影响画面分析，不影响最终渲染画质；其中 FPS 限制只在关闭关键帧模式时使用。
 
@@ -480,6 +487,9 @@ FUNASR_DEVICE=cuda:0
 FUNASR_HOTWORDS=
 CUT_MIN_CLIP_SECONDS=2.0
 CUT_MERGE_GAP_SECONDS=1.5
+SOURCE_INTEGRITY_SCAN_ENABLED=true
+SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
+SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
 VISUAL_DETECT_KEYFRAMES_ONLY=true
 VISUAL_DETECT_FPS=2
 VISUAL_DETECT_WIDTH=480

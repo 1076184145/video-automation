@@ -20,7 +20,7 @@ from .hooks import generate_uvr_plan
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .jobs import Job, create_job, list_jobs, load_job, normalize_source_path
 from .llm_tools import generate_highlights, generate_metadata, save_metadata
-from .media import MEDIA_EXTENSIONS, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
+from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .publish import generate_publish_package
 from .profiles import apply_profile_flags, apply_profile_settings
@@ -37,6 +37,7 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
 TERMINAL_STATUSES = {"needs_review", "done", "failed"}
 RERUN_STATUS = {
     "probe": "probing",
+    "detect_corruption": "detecting_corruption",
     "extract_audio": "extracting_audio",
     "transcribe": "transcribing",
     "detect_silence": "detecting_silence",
@@ -981,6 +982,9 @@ def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[st
                 raise RuntimeError("source has no audio stream")
             if manifest.get("video_stream_count", 0) > 0:
                 generate_thumbnail(settings, job.source_path, job.job_dir / "thumbnail.jpg", manifest["duration_seconds"], force=True)
+        elif stage == "detect_corruption":
+            manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=False)
+            detect_decode_errors(settings, job.source_path, manifest["duration_seconds"], job.job_dir / "corrupt.json", force=True)
         elif stage == "extract_audio":
             extract_audio(settings, job.source_path, job.job_dir / "audio.wav", force=True)
             extract_high_quality_audio(settings, job.source_path, job.job_dir / "audio_hq.flac", force=True)

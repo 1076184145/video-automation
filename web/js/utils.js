@@ -1,5 +1,6 @@
 export const STAGES = [
   "probe",
+  "detect_corruption",
   "extract_audio",
   "transcribe",
   "detect_silence",
@@ -16,6 +17,7 @@ export const STAGES = [
 
 export const STATUS_TO_STAGE = Object.freeze({
   probing: "probe",
+  detecting_corruption: "detect_corruption",
   extracting_audio: "extract_audio",
   transcribing: "transcribe",
   detecting_silence: "detect_silence",

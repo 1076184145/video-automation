@@ -21,6 +21,16 @@ SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s
 FREEZE_START_RE = re.compile(r"freeze_start:\s*([\d.]+)")
 FREEZE_END_RE = re.compile(r"freeze_end:\s*([\d.]+)\s*\|\s*freeze_duration:\s*([\d.]+)")
 SHOWINFO_PTS_RE = re.compile(r"pts_time:([\d.]+)")
+FFMPEG_PROGRESS_TIME_RE = re.compile(r"out_time_(?:us|ms)=(\d+)")
+FFMPEG_PROGRESS_CLOCK_RE = re.compile(r"out_time=(\d+):(\d+):([\d.]+)")
+DECODE_ERROR_PATTERNS = (
+    "error while decoding",
+    "invalid data",
+    "left block unavailable",
+    "reference",
+    "bytestream",
+    "corrupt",
+)
 
 
 def run_command(args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -227,6 +237,94 @@ def generate_thumbnail(settings: Settings, source_path: Path, thumbnail_path: Pa
     payload = {"status": "ready", "path": str(thumbnail_path), "timestamp": round(timestamp, 3)}
     write_json_atomic(payload_path, payload)
     return payload
+
+
+def detect_decode_errors(
+    settings: Settings,
+    source_path: Path,
+    duration: float,
+    output_path: Path,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    if output_path.exists() and not force:
+        cached = read_json_file(output_path)
+        if cached is not None:
+            return cached
+    if not settings.source_integrity_scan_enabled:
+        payload = {"status": "skipped", "reason": "SOURCE_INTEGRITY_SCAN_ENABLED=false"}
+        write_json_atomic(output_path, payload)
+        return payload
+    timeout = max(120, min(7200, int(max(duration, 1.0) * settings.source_integrity_scan_timeout_multiplier)))
+    command = [
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-v",
+        "error",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = run_command(command, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        payload = {
+            "status": "timeout",
+            "scan_mode": "decode_until_first_error",
+            "duration_seconds": round(duration, 3),
+            "timeout_seconds": timeout,
+            "first_error_at_seconds": _last_progress_seconds(str(exc.stdout or "")),
+            "errors": _limit_errors(str(exc.stderr or ""), settings.source_integrity_scan_max_errors),
+        }
+        write_json_atomic(output_path, payload)
+        return payload
+    error_lines = _limit_errors(result.stderr, settings.source_integrity_scan_max_errors)
+    looks_corrupt = _looks_like_decode_error(error_lines)
+    payload = {
+        "status": "ok" if result.returncode == 0 else "corrupt" if looks_corrupt else "failed",
+        "scan_mode": "decode_until_first_error",
+        "duration_seconds": round(duration, 3),
+        "first_error_at_seconds": None if result.returncode == 0 else _last_progress_seconds(result.stdout),
+        "error_count": len([line for line in result.stderr.splitlines() if line.strip()]),
+        "errors": error_lines,
+        "truncated": len(error_lines) >= settings.source_integrity_scan_max_errors,
+    }
+    write_json_atomic(output_path, payload)
+    return payload
+
+
+def _limit_errors(stderr: str, limit: int) -> list[str]:
+    return [line.strip() for line in stderr.splitlines() if line.strip()][:limit]
+
+
+def _looks_like_decode_error(lines: list[str]) -> bool:
+    joined = "\n".join(lines).lower()
+    return any(pattern in joined for pattern in DECODE_ERROR_PATTERNS)
+
+
+def _last_progress_seconds(stdout: str) -> float | None:
+    latest: float | None = None
+    for match in FFMPEG_PROGRESS_TIME_RE.finditer(stdout):
+        latest = max(latest or 0.0, int(match.group(1)) / 1_000_000)
+    for match in FFMPEG_PROGRESS_CLOCK_RE.finditer(stdout):
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = float(match.group(3))
+        latest = max(latest or 0.0, hours * 3600 + minutes * 60 + seconds)
+    return round(latest, 3) if latest is not None else None
 
 
 def generate_waveform(settings: Settings, audio_path: Path, waveform_path: Path, *, force: bool = False) -> dict[str, Any]:

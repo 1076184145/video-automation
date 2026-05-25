@@ -37,6 +37,7 @@ Typical pipeline stages:
 
 ```text
 probe
+detect_corruption
 extract_audio
 transcribe
 detect_silence
@@ -76,6 +77,7 @@ transcript.srt            SRT subtitle file
 transcript.json           Structured transcript segments, with word timestamps when enabled
 subtitles.ass             Styled ASS subtitle file
 subtitles_clipped.ass     Subtitle file remapped to edited clips
+corrupt.json              Source video decode integrity scan
 silence.json              Silence detection output
 freeze.json               Freeze/static-frame detection output
 scene.json                Scene-change detection output
@@ -283,12 +285,17 @@ Current defaults:
 SILENCE_MIN_GAP_SECONDS=0.35
 CUT_MIN_CLIP_SECONDS=2.0
 CUT_MERGE_GAP_SECONDS=1.5
+SOURCE_INTEGRITY_SCAN_ENABLED=true
+SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
+SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
 VISUAL_DETECT_KEYFRAMES_ONLY=true
 VISUAL_DETECT_FPS=2
 VISUAL_DETECT_WIDTH=480
 ```
 
 `CUT_MERGE_GAP_SECONDS` controls how aggressively adjacent kept clips separated by a short removed gap are merged. Increase it for smoother rough cuts; decrease it for tighter, more aggressive editing.
+
+`SOURCE_INTEGRITY_SCAN_ENABLED` runs an ffmpeg decode scan and writes `corrupt.json`. It does not fail the job, but the Web UI warns when the source file has damaged H.264 frames so you can re-download/re-export the source or remove damaged clips before final rendering.
 
 `VISUAL_DETECT_KEYFRAMES_ONLY` makes freeze and scene detection decode only keyframes, which is much faster on long recordings. Disable it if you need denser scene-change markers. `VISUAL_DETECT_FPS` and `VISUAL_DETECT_WIDTH` downsample only visual analysis and do not affect rendered videos; the FPS limiter is used only when keyframe-only mode is disabled.
 
@@ -452,6 +459,9 @@ FUNASR_DEVICE=cuda:0
 FUNASR_HOTWORDS=
 CUT_MIN_CLIP_SECONDS=2.0
 CUT_MERGE_GAP_SECONDS=1.5
+SOURCE_INTEGRITY_SCAN_ENABLED=true
+SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
+SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
 VISUAL_DETECT_KEYFRAMES_ONLY=true
 VISUAL_DETECT_FPS=2
 VISUAL_DETECT_WIDTH=480
