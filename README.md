@@ -320,7 +320,7 @@ node --check .\web\js\download-section.js
 node --check .\web\js\i18n.js
 ```
 
-Current tests cover configuration loading, ffmpeg parser helpers, cut planning helpers, transcript-to-clip association, ASS subtitle formatting, subtitle timeline remapping, and subtitle wrapping. Add new tests under `tests\` when changing core pipeline logic.
+Current tests cover configuration loading, ffmpeg parser helpers, cut planning helpers, transcript-to-clip association, ASS subtitle formatting, subtitle timeline remapping, and subtitle wrapping.
 
 ## AI Video Covers
 

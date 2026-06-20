@@ -343,7 +343,7 @@ node --check .\web\js\download-section.js
 node --check .\web\js\i18n.js
 ```
 
-当前测试覆盖配置读取、ffmpeg 输出解析、剪辑规划辅助逻辑、转写文本关联到 clip、ASS 字幕格式化、剪辑后字幕时间轴重映射和字幕换行。后续改核心 pipeline 逻辑时，建议同步在 `tests\` 中补测试。
+当前测试覆盖配置读取、ffmpeg 输出解析、剪辑规划辅助逻辑、转写文本关联到 clip、ASS 字幕格式化、剪辑后字幕时间轴重映射和字幕换行。
 
 ## AI 视频封面
 
