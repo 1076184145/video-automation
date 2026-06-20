@@ -19,7 +19,7 @@ For non-technical users, most setup lives in the Health and Settings pages. The 
 
 ## Quick Start: Run Locally
 
-Prebuilt Windows packages are published on the repository's [Releases](https://github.com/1076184145/video-automation/releases) page. GitHub's **Packages** tab is not used for desktop installers.
+Prebuilt Windows packages are published on the repository's [Releases](https://github.com/1076184145/video-automation/releases) page.
 
 ### Option A: Windows desktop build
 
