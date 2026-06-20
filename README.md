@@ -415,30 +415,18 @@ This is not automatic face tracking.
 
 ## GPU Render Acceleration
 
-NVIDIA GPUs can speed up preview and final rendering through FFmpeg NVENC. The current RTX 3070 Ti Laptop setup can use:
+If your machine has an NVIDIA GPU, you can use FFmpeg NVENC for faster renders.
 
-```text
-RENDER_VIDEO_ENCODER=h264_nvenc
-RENDER_OUTPUT_FPS=30
-RENDER_NVENC_PRESET=p5
-RENDER_NVENC_CQ=21
-RENDER_NVENC_PREVIEW_PRESET=p4
-RENDER_NVENC_PREVIEW_CQ=25
-```
+Recommended workflow:
 
-`review.mp4` uses the preview preset/CQ so it appears faster. `final.mp4` uses the final preset/CQ for better quality. `RENDER_OUTPUT_FPS=30` normalizes common VFR livestream timestamps to 30fps and combines with async audio resampling to reduce A/V drift; set it to `0` to preserve source timing. If health check reports `h264_nvenc` as missing, either point `FFMPEG_PATH` to a build with NVENC support or switch back to `RENDER_VIDEO_ENCODER=libx264`.
+1. Open **Health** and confirm `h264_nvenc` is available.
+2. Open **Settings** and set the render encoder to `h264_nvenc`.
+3. Keep output FPS at `30` for livestream recordings unless you specifically need to preserve the source timing.
+4. If NVENC is missing or unstable, switch the render encoder back to `libx264`.
 
-The Web job detail page prefers `web_preview.mp4` for playback. It is generated automatically from `final.mp4` or `review.mp4` and defaults to a lighter 960px-long-edge / 24fps proxy, which keeps large or 60fps renders smooth in the browser. Platform upload and downloads still use the original `final.mp4`.
+The job detail page plays a lightweight `web_preview.mp4` when available, so large or high-FPS videos stay smooth in the browser. Downloads and platform uploads still use the full-quality `final.mp4`.
 
-The built-in Douyin, Bilibili, and YouTube Shorts one-click profiles render `final.mp4` directly and do not also render a redundant `review.mp4`. Choose the custom profile and enable preview rendering when you explicitly need both files.
-
-```text
-WEB_PREVIEW_ENABLED=true
-WEB_PREVIEW_MAX_WIDTH=960
-WEB_PREVIEW_MAX_HEIGHT=960
-WEB_PREVIEW_FPS=24
-WEB_PREVIEW_VIDEO_BITRATE=1200k
-```
+One-click platform profiles render `final.mp4` directly. Choose **Custom** and enable preview rendering only when you also need a separate `review.mp4`.
 
 ## Transcription
 

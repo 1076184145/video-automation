@@ -438,30 +438,18 @@ CROP_ANCHOR_Y=0.5
 
 ## GPU 渲染加速
 
-NVIDIA 显卡可以通过 FFmpeg NVENC 加速预览视频和最终成片渲染。当前 RTX 3070 Ti Laptop 环境可使用：
+如果机器有 NVIDIA 显卡，可以用 FFmpeg NVENC 加速渲染。
 
-```text
-RENDER_VIDEO_ENCODER=h264_nvenc
-RENDER_OUTPUT_FPS=30
-RENDER_NVENC_PRESET=p5
-RENDER_NVENC_CQ=21
-RENDER_NVENC_PREVIEW_PRESET=p4
-RENDER_NVENC_PREVIEW_CQ=25
-```
+推荐操作：
 
-`review.mp4` 使用预览 preset/CQ，优先更快出预览；`final.mp4` 使用最终 preset/CQ，优先画质。`RENDER_OUTPUT_FPS=30` 会把直播录播常见的可变帧率时间轴统一成 30fps，并配合音频异步重采样降低音画漂移风险；设为 `0` 可保留源时间轴。若健康检查显示 `h264_nvenc` 缺失，请把 `FFMPEG_PATH` 指向支持 NVENC 的 ffmpeg，或改回 `RENDER_VIDEO_ENCODER=libx264`。
+1. 打开 **健康检查**，确认 `h264_nvenc` 可用。
+2. 打开 **设置**，把渲染编码器改为 `h264_nvenc`。
+3. 直播录播建议保持输出帧率为 `30`，只有明确需要保留源时间轴时再改为 `0`。
+4. 如果健康检查显示 NVENC 不可用，或渲染不稳定，把编码器改回 `libx264`。
 
-Web 详情页会优先播放 `web_preview.mp4`。它默认从 `final.mp4` 或 `review.mp4` 自动生成，压到较轻的长边 960px / 24fps，解决大文件或 60fps 成片在浏览器里卡顿的问题。上传平台或下载成片仍使用原始 `final.mp4`。
+任务详情页会优先播放轻量的 `web_preview.mp4`，让大文件或高帧率视频在浏览器里更流畅。下载成片和上传平台仍使用完整质量的 `final.mp4`。
 
-内置的抖音、B站和 YouTube Shorts 一键预设会直接生成 `final.mp4`，不再额外重复编码 `review.mp4`。如果确实需要同时保留预览文件和最终成片，请选择“自定义”并手动勾选生成预览视频。
-
-```text
-WEB_PREVIEW_ENABLED=true
-WEB_PREVIEW_MAX_WIDTH=960
-WEB_PREVIEW_MAX_HEIGHT=960
-WEB_PREVIEW_FPS=24
-WEB_PREVIEW_VIDEO_BITRATE=1200k
-```
+内置平台预设会直接生成 `final.mp4`。只有确实需要同时保留 `review.mp4` 时，才选择 **自定义** 并手动启用预览渲染。
 
 ## 字幕尺寸
 
