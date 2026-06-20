@@ -464,63 +464,19 @@ ASS_VERTICAL_FONT_SIZE=44
 
 ## 转写
 
-默认转写配置优先提升中文直播录播识别质量：先尝试 FunASR，失败时自动回退到 faster-whisper。
+中文直播录播建议在设置页选择中文优先转写：先用 FunASR，失败时自动回退到 faster-whisper。
 
-```text
-WHISPER_BACKEND=funasr-whisper
-WHISPER_MODEL=large-v3
-WHISPER_MODEL_FALLBACKS=large-v3-turbo,medium
-WHISPER_LANGUAGE=zh
-WHISPER_WORD_TIMESTAMPS=true
-WHISPER_VAD_FILTER=true
-FASTER_WHISPER_DEVICE=cuda
-FASTER_WHISPER_COMPUTE_TYPE=int8_float16
-FASTER_WHISPER_BATCH_SIZE=8
-```
+推荐操作：
 
-常用可选配置：
+1. 中文语音优先选择 **FunASR + Whisper 回退**。
+2. 多语种或语言不确定的视频，语言保持 **自动检测**。
+3. 只有明确知道视频语言和专有词时，再添加热词或初始提示词。提示词建议写占位式信息，例如 `<主播名>、<栏目名>、<游戏名>、<专有名词>`，不要写成一整段固定句子。
+4. 主播名、游戏术语、平台黑话等反复识别错的词，用 **字幕替换** 修正。
+5. 如果 CUDA 不稳定或显存不足，改用更小模型、降低批处理大小，或切到 CPU。
 
-```text
-WHISPER_INITIAL_PROMPT=
-SUBTITLE_REPLACEMENTS=错词=>正确词,酒馆占棋=>酒馆战棋
-TRANSCRIBE_AUDIO_FILTER=highpass=f=80,lowpass=f=7600,afftdn
-```
+转写完成后会生成统一的 `transcript.txt`、`transcript.srt` 和 `transcript.json`，后续剪辑、字幕和时间线流程不需要额外操作。字幕替换会应用到转写文本和字幕文件。
 
-- 多语种或不确定语言的视频建议保留 `WHISPER_LANGUAGE=auto`。只有明确是中文、英文、韩文或日文时，再手动改成 `zh`、`en`、`ko` 或 `ja`。
-- `WHISPER_INITIAL_PROMPT` 会传给 faster-whisper，适合补充特定语言的主播名、游戏术语和口语词；如果视频不是中文，不要使用中文 prompt，否则会干扰识别。
-- `SUBTITLE_REPLACEMENTS` 会应用到 `transcript.txt`、`transcript.srt`、`transcript.json` 和 ASS 字幕。
-- faster-whisper 返回词级时间戳时，`transcript.json` 会保留 `words`，剪辑内容列会优先按 clip 边界聚合词级文本。
-- `TRANSCRIBE_AUDIO_FILTER` 只影响转写用的 `audio.wav`，不影响 `audio_hq.flac`。
-
-如果本机 CUDA 或显存不稳定，可以切回 CPU 或更小模型：
-
-```text
-WHISPER_MODEL=medium
-WHISPER_MODEL_FALLBACKS=small
-FASTER_WHISPER_DEVICE=cpu
-FASTER_WHISPER_COMPUTE_TYPE=int8
-FASTER_WHISPER_BATCH_SIZE=4
-```
-
-`FASTER_WHISPER_BATCH_SIZE` 会启用 faster-whisper 的批处理推理。8GB 显存的 NVIDIA 显卡可以先试 `8`；如果遇到显存不足，就降到 `4` 或 `1`。
-
-长视频在 Windows 上使用 `medium + cpu + int8` 会更慢，但通常更稳。
-
-FunASR 可以作为可选的中文优先转写后端，适合普通话直播录播、标点恢复和热词偏置识别。先安装可选依赖，再在 `.env` 中切换：
-
-```text
-WHISPER_BACKEND=funasr
-FUNASR_MODEL=paraformer-zh
-FUNASR_VAD_MODEL=fsmn-vad
-FUNASR_PUNC_MODEL=ct-punc
-FUNASR_DEVICE=cuda:0
-FUNASR_HOTWORDS=主播名 游戏名 专有名词
-FUNASR_BATCH_SIZE_S=300
-FUNASR_MAX_SEGMENT_MS=60000
-FUNASR_PERSISTENT_WORKER=true
-```
-
-FunASR 第一次运行会下载模型文件。默认会保留隔离的 FunASR 子进程并复用已加载模型，后续任务不再重复支付约 20-30 秒的模型启动成本。只有排查问题时才建议设置 `FUNASR_PERSISTENT_WORKER=false`；子进程崩溃会自动重启，通信失败仍会退回原有的一次性 runner。如果本机没有 CUDA 版 PyTorch，或 CUDA 不稳定，可以改为 `FUNASR_DEVICE=cpu`。FunASR 的输出会被规范化成现有的 `transcript.txt`、`transcript.srt` 和 `transcript.json`，后续剪辑、字幕和时间线流程不需要改。
+FunASR 第一次运行会下载模型文件。默认会保留隔离的 FunASR 子进程并复用已加载模型，后续任务会更快。只有希望 FunASR 失败时直接停止任务，才需要使用严格 FunASR 模式。
 
 ## 剪辑片段稳定化
 

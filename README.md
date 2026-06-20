@@ -430,31 +430,17 @@ One-click platform profiles render `final.mp4` directly. Choose **Custom** and e
 
 ## Transcription
 
-Default transcription settings prioritize Chinese livestream accuracy by trying FunASR first and falling back to faster-whisper:
+For Chinese livestream recordings, choose the Chinese-first backend in Settings. It tries FunASR first and falls back to faster-whisper when FunASR is unavailable or fails.
 
-```text
-WHISPER_BACKEND=funasr-whisper
-WHISPER_MODEL=large-v3
-WHISPER_MODEL_FALLBACKS=large-v3-turbo,medium
-WHISPER_LANGUAGE=zh
-WHISPER_WORD_TIMESTAMPS=true
-WHISPER_VAD_FILTER=true
-FASTER_WHISPER_DEVICE=cuda
-FASTER_WHISPER_COMPUTE_TYPE=int8_float16
-FASTER_WHISPER_BATCH_SIZE=8
-```
+Recommended workflow:
 
-Useful optional settings:
+1. Use **FunASR + Whisper fallback** for Chinese speech.
+2. Keep language detection on **Auto** for mixed-language or uncertain sources.
+3. Add hotwords or an initial prompt only when you know the source language and recurring terms. For example, use placeholders such as `<host name>, <show name>, <game title>, <custom term>` rather than a full sentence.
+4. Use subtitle replacements for repeated misrecognitions, such as names, game terms, or platform slang.
+5. If CUDA is unstable or runs out of memory, switch to a smaller model, lower the batch size, or use CPU mode.
 
-```text
-WHISPER_INITIAL_PROMPT=
-SUBTITLE_REPLACEMENTS=wrong term=>correct term,misheard phrase=>correct phrase
-TRANSCRIBE_AUDIO_FILTER=highpass=f=80,lowpass=f=7600,afftdn
-```
-
-Leave `WHISPER_LANGUAGE=auto` for mixed-language recordings. Set it to `zh`, `en`, `ko`, or `ja` only when the source language is known. Use `WHISPER_INITIAL_PROMPT` only for language-specific terms; a Chinese prompt can hurt Korean, English, or mixed-language transcription.
-
-`SUBTITLE_REPLACEMENTS` is applied to `transcript.txt`, `transcript.srt`, `transcript.json`, and ASS subtitle output. Word timestamps are stored in `transcript.json` when faster-whisper returns them, and cut summaries prefer word-level text when mapping transcript content to clips.
+Transcription always writes the same downstream files: `transcript.txt`, `transcript.srt`, and `transcript.json`. Subtitle replacements are applied to transcript and subtitle outputs.
 
 ASS subtitle sizing is resolution-aware. For vertical output, `subtitles_clipped.ass` is regenerated against `1080x1920`, long transcript segments are split over time, and each on-screen subtitle is capped by:
 
@@ -463,44 +449,7 @@ ASS_MAX_LINES=2
 ASS_VERTICAL_FONT_SIZE=44
 ```
 
-If CUDA or VRAM is not stable on a given machine, switch to CPU or a smaller model:
-
-```text
-WHISPER_MODEL=medium
-WHISPER_MODEL_FALLBACKS=small
-FASTER_WHISPER_DEVICE=cpu
-FASTER_WHISPER_COMPUTE_TYPE=int8
-FASTER_WHISPER_BATCH_SIZE=4
-```
-
-`FASTER_WHISPER_BATCH_SIZE` enables faster-whisper's batched inference. `8` is a good first try on many 8 GB NVIDIA GPUs; reduce it to `4` or `1` if you see out-of-memory errors.
-
-For long videos on Windows, CPU `medium + int8` is slower but usually safer.
-
-FunASR can also be required as the only Chinese-first transcription backend. The recommended `funasr-whisper` mode tries FunASR first and automatically falls back to faster-whisper if FunASR dependencies, CUDA, or model loading fail. Use strict FunASR only when you want failures to stop immediately:
-
-```text
-WHISPER_BACKEND=funasr
-FUNASR_MODEL=paraformer-zh
-FUNASR_VAD_MODEL=fsmn-vad
-FUNASR_PUNC_MODEL=ct-punc
-FUNASR_DEVICE=cuda:0
-FUNASR_HOTWORDS=streamer_name game_name custom_term
-FUNASR_BATCH_SIZE_S=300
-FUNASR_MAX_SEGMENT_MS=60000
-FUNASR_PERSISTENT_WORKER=true
-```
-
-The first FunASR run downloads model files. By default, the isolated FunASR
-child process stays alive and reuses its loaded model, avoiding the repeated
-20-30 second startup cost on later jobs. Set
-`FUNASR_PERSISTENT_WORKER=false` only for diagnosis; process crashes still
-restart automatically and communication failures fall back to the legacy
-one-shot runner. Use `FUNASR_DEVICE=cpu` if CUDA PyTorch is not installed or
-not stable. FunASR output is normalized into the same `transcript.txt`,
-`transcript.srt`, and `transcript.json` files used by the rest of the pipeline.
-When fallback is used, `transcript.json` records `fallback_from=funasr` and the
-fallback reason.
+The first FunASR run downloads model files. By default, the isolated FunASR worker stays alive and reuses the loaded model for later jobs. Use strict FunASR only when you want missing dependencies or model errors to stop the job instead of falling back.
 
 ## Cut Stabilization
 
