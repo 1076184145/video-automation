@@ -2,31 +2,54 @@
 
 ## Supported Versions
 
-The main branch is the only supported development line unless a release branch
-is explicitly documented.
+Security fixes are provided for the latest code on the default branch and the
+latest published release. Older releases may not receive backported fixes.
 
 ## Reporting a Vulnerability
 
-Please do not publish a working exploit before maintainers have had a chance to
-review and fix the issue.
+If you believe you found a security issue, please report it privately before
+opening a public issue.
 
-For now, report security issues by opening a private communication channel with
-the project maintainer, or by using GitHub's private vulnerability reporting if
-it is enabled for the repository.
+Preferred reporting options:
 
-Include as much detail as possible:
+- Use GitHub private vulnerability reporting if it is enabled for this
+  repository.
+- Otherwise, contact the repository owner through GitHub and include
+  "Video Automation security report" in the message title.
 
-- Affected version or commit.
-- Steps to reproduce.
-- Expected and actual impact.
-- Whether the issue requires exposing the local API beyond `127.0.0.1`.
-- Relevant logs with secrets redacted.
+Please include:
 
-## Local-First Security Notes
+- The affected version, release, or commit.
+- Clear steps to reproduce the issue.
+- The expected impact.
+- Whether the local API was exposed beyond `127.0.0.1`.
+- Relevant logs or screenshots with secrets removed.
 
-Video Automation is designed as a local-first tool. The default API host is
-`127.0.0.1`. If you bind the API to `0.0.0.0` or expose it on a LAN or the
-internet, add your own authentication, firewall, or reverse-proxy protection.
+Do not include API keys, cookies, platform credentials, private videos, job
+outputs, or `.env` files in a public issue.
 
-Never commit `.env`, API keys, platform credentials, model tokens, cookies,
-downloaded media, generated job outputs, or publish packages.
+## Security Expectations
+
+Video Automation is a local-first tool. By default, the Web API binds to
+`127.0.0.1`, which is intended for local use on your own machine.
+
+If you change the API host to `0.0.0.0`, expose it on a LAN, or put it behind a
+public domain, you are responsible for adding appropriate protection such as:
+
+- Firewall rules.
+- Reverse-proxy authentication.
+- Network access controls.
+- HTTPS termination when exposed outside the local machine.
+
+## Sensitive Data
+
+Keep the following files and data private:
+
+- `.env` and any local configuration files containing keys.
+- OpenAI, Google, OpenRouter, platform, or model-provider credentials.
+- Cookies, OAuth tokens, and browser session data.
+- Downloaded media, private recordings, generated job outputs, and publish
+  packages.
+
+The repository `.gitignore` excludes common local runtime directories such as
+`input/`, `processing/`, `logs/`, `dist/`, and `.env`.
