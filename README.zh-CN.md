@@ -17,6 +17,8 @@ Video Automation 是一个把长录播变成可审核粗剪、字幕、封面和
 
 ## 快速开始：本地运行
 
+预构建的 Windows 发布包和安装器会放在仓库的 [Releases](https://github.com/1076184145/video-automation/releases) 页面。GitHub 的 **Packages** 标签页不用于桌面安装包。
+
 ### 方式 A：Windows 桌面版
 
 如果你下载的是发布包或安装器：

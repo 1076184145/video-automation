@@ -1,0 +1,68 @@
+﻿name: Build desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-lite:
+    name: Windows Lite package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Release version: $version"
+
+      - name: Create virtual environment
+        shell: pwsh
+        run: |
+          python -m venv venv
+          .\venv\Scripts\python.exe -m pip install --upgrade pip
+
+      - name: Build Lite desktop bundle
+        shell: pwsh
+        run: .\tools\build_desktop.ps1 -InstallDeps -Lite -Clean
+
+      - name: Package Lite zip
+        shell: pwsh
+        run: .\tools\package_desktop.ps1 -Lite -SkipBuild -Version $env:RELEASE_VERSION
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: .\tools\build_installer.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Show release assets
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\releases,dist\installers -File | Select-Object FullName,Length | Format-Table -AutoSize
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Video Automation ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/releases/VideoAutomationLite-${{ env.RELEASE_VERSION }}.zip
+            dist/installers/VideoAutomationLite-Setup-${{ env.RELEASE_VERSION }}.exe
