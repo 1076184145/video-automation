@@ -1,5 +1,9 @@
 # Video Automation
 
+**Language:** English | [简体中文](README.zh-CN.md)
+
+中文用户请直接阅读 [README.zh-CN.md](README.zh-CN.md)。那里包含本地运行、桌面版、健康检查、一键修复、AI Key 配置和常见说明。
+
 Turn long livestream recordings into reviewable rough cuts, subtitles, covers, and publish handoff packages on your own machine.
 
 Video Automation is built first for livestream/game/education creators and small teams that batch-process recordings. It watches or accepts local media, creates one isolated job folder per source video, analyzes the media, transcribes speech, suggests cuts, and can render preview or final videos while keeping the original recording untouched.
