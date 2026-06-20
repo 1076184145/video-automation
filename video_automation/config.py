@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def _project_root() -> Path:
+    override = os.environ.get("VIDEO_AUTOMATION_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
-DEFAULT_WHISPER_INITIAL_PROMPT = (
-    "\u4ee5\u4e0b\u662f\u4e2d\u6587\u76f4\u64ad\u5f55\u64ad\uff0c"
-    "\u53ef\u80fd\u5305\u542b\u4e3b\u64ad\u540d\u3001\u6e38\u620f\u672f\u8bed\u3001"
-    "\u5f39\u5e55\u53e3\u8bed\u548c\u7f51\u7edc\u7528\u8bed\u3002"
-)
+
+PROJECT_ROOT = _project_root()
+_ENV_FILE_CACHE: dict[Path, tuple[tuple[int, int, str], dict[str, str]]] = {}
+
+DEFAULT_WHISPER_INITIAL_PROMPT = ""
 DEFAULT_PROFANITY_WORDS = (
     "\u64cd,\u8279,\u5367\u69fd,\u6211\u64cd,\u9000,\u50bb\u903c,"
     "\u725b\u903c,\u88c5\u903c,\u5988\u7684,\u4ed6\u5988\u7684,\u8349\u6ce5\u9a6c"
@@ -32,14 +40,66 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _cached_env_file(path: Path) -> dict[str, str]:
+    try:
+        stat = path.stat()
+    except OSError:
+        _ENV_FILE_CACHE.pop(path, None)
+        return {}
+    try:
+        content = path.read_bytes()
+    except OSError:
+        _ENV_FILE_CACHE.pop(path, None)
+        return {}
+    digest = hashlib.sha1(content).hexdigest()
+    cache_key = (stat.st_mtime_ns, stat.st_size, digest)
+    cached = _ENV_FILE_CACHE.get(path)
+    if cached and cached[0] == cache_key:
+        return dict(cached[1])
+    values = _parse_env_text(content.decode("utf-8"))
+    _ENV_FILE_CACHE[path] = (cache_key, values)
+    return dict(values)
+
+
+def _parse_env_text(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
 def _env(name: str, default: str = "") -> str:
     env_path = PROJECT_ROOT / ".env"
     example_path = PROJECT_ROOT / ".env.example"
-    file_values = {**_load_env_file(example_path), **_load_env_file(env_path)}
+    file_values = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
     env_value = os.environ.get(name)
     if env_value is not None:
         return env_value
     return file_values.get(name) or default
+
+
+def _portable_tool_path(root: Path, env_name: str, portable_name: str, fallback_name: str) -> Path:
+    configured = _env(env_name, "")
+    if configured:
+        return Path(configured)
+    portable = root / "tools" / "bin" / portable_name
+    if portable.exists():
+        return portable
+    return Path(fallback_name)
+
+
+def _portable_optional_tool_path(root: Path, env_name: str, portable_name: str) -> Path:
+    configured = _env(env_name, "")
+    if configured:
+        return Path(configured)
+    portable = root / "tools" / "bin" / portable_name
+    if portable.exists():
+        return portable
+    return Path("")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -71,7 +131,6 @@ def _int_env(name: str, default: int) -> int:
 class Settings:
     root: Path
     input_recordings_dir: Path
-    input_downloads_dir: Path
     jobs_dir: Path
     logs_dir: Path
     ffmpeg_path: Path
@@ -97,11 +156,17 @@ class Settings:
     funasr_hotwords: str
     funasr_batch_size_s: int
     funasr_max_segment_ms: int
+    funasr_persistent_worker: bool
     transcribe_audio_filter: str
     profanity_words: tuple[str, ...]
     subtitle_replacements: tuple[tuple[str, str], ...]
     subtitle_censor_replacement: str
     subtitle_min_duration_seconds: float
+    subtitle_music_vocal_filter_enabled: bool
+    subtitle_music_vocal_min_duration_seconds: float
+    subtitle_music_vocal_min_chars_per_second: float
+    subtitle_music_vocal_min_avg_probability: float
+    subtitle_music_vocal_patterns: tuple[str, ...]
     file_stable_seconds: float
     poll_interval_seconds: float
     silence_min_length_seconds: float
@@ -133,19 +198,29 @@ class Settings:
     api_host: str
     api_port: int
     api_parallel_jobs: int
+    api_batch_limit: int
     api_allowed_origins: tuple[str, ...]
-    download_enabled: bool
+    recording_upload_max_bytes: int
     llm_provider: str
     llm_model: str
+    llm_translation_batch_size: int
+    llm_translation_batch_chars: int
+    google_api_key: str
+    google_base_url: str
     publish_enabled: bool
     publish_providers: tuple[str, ...]
-    ytdlp_path: Path
     export_platforms: tuple[str, ...]
     render_video_encoder: str
+    render_output_fps: int
     render_nvenc_preset: str
     render_nvenc_cq: int
     render_nvenc_preview_preset: str
     render_nvenc_preview_cq: int
+    web_preview_enabled: bool
+    web_preview_max_width: int
+    web_preview_max_height: int
+    web_preview_fps: int
+    web_preview_video_bitrate: str
     bgm_path: Path | None
     bgm_volume: float
     source_audio_volume: float
@@ -160,10 +235,25 @@ class Settings:
     cover_quality: str
     cover_output_format: str
     cover_title_font: str
+    cover_base_url: str
+    cover_api_key: str
+    cover_http_referer: str
+    cover_app_title: str
+    cover_modalities: tuple[str, ...]
     openai_api_key: str
+    audio_separation_engine: str
+    demucs_path: Path
+    demucs_model: str
+    demucs_device: str
+    audio_separation_timeout_seconds: int
     uvr_path: Path | None
-    face_swap_path: Path | None
-    aifacecover_root: Path | None
+
+    def cover_api_key_for_provider(self) -> str:
+        if self.cover_api_key.strip():
+            return self.cover_api_key.strip()
+        if self.cover_provider.strip().lower() == "google":
+            return self.google_api_key.strip()
+        return self.openai_api_key.strip()
 
     @classmethod
     def load(cls) -> "Settings":
@@ -171,17 +261,16 @@ class Settings:
         return cls(
             root=root,
             input_recordings_dir=Path(_env("INPUT_RECORDINGS_DIR", str(root / "input" / "recordings"))),
-            input_downloads_dir=Path(_env("INPUT_DOWNLOADS_DIR", str(root / "input" / "downloads"))),
             jobs_dir=Path(_env("JOBS_DIR", str(root / "processing" / "jobs"))),
             logs_dir=Path(_env("LOGS_DIR", str(root / "logs"))),
-            ffmpeg_path=Path(_env("FFMPEG_PATH", "ffmpeg")),
-            ffprobe_path=Path(_env("FFPROBE_PATH", "ffprobe")),
-            audiowaveform_path=Path(_env("AUDIOWAVEFORM_PATH", "audiowaveform")),
+            ffmpeg_path=_portable_tool_path(root, "FFMPEG_PATH", "ffmpeg.exe", "ffmpeg"),
+            ffprobe_path=_portable_tool_path(root, "FFPROBE_PATH", "ffprobe.exe", "ffprobe"),
+            audiowaveform_path=_portable_tool_path(root, "AUDIOWAVEFORM_PATH", "audiowaveform.exe", "audiowaveform"),
             whisper_bin=Path(_env("WHISPER_BIN", "whisper")),
             whisper_backend=_env("WHISPER_BACKEND", "faster-whisper"),
             whisper_model=_env("WHISPER_MODEL", "large-v3"),
             whisper_model_fallbacks=_words_env("WHISPER_MODEL_FALLBACKS", "large-v3-turbo,medium"),
-            whisper_language=_env("WHISPER_LANGUAGE", "zh"),
+            whisper_language=_env("WHISPER_LANGUAGE", "auto"),
             whisper_initial_prompt=_env("WHISPER_INITIAL_PROMPT", DEFAULT_WHISPER_INITIAL_PROMPT),
             whisper_timeout_min_seconds=_int_env("WHISPER_TIMEOUT_MIN_SECONDS", 300),
             whisper_timeout_multiplier=_float_env("WHISPER_TIMEOUT_MULTIPLIER", 10),
@@ -197,11 +286,17 @@ class Settings:
             funasr_hotwords=_env("FUNASR_HOTWORDS", ""),
             funasr_batch_size_s=_int_env("FUNASR_BATCH_SIZE_S", 300),
             funasr_max_segment_ms=_int_env("FUNASR_MAX_SEGMENT_MS", 60000),
+            funasr_persistent_worker=_bool_env("FUNASR_PERSISTENT_WORKER", True),
             transcribe_audio_filter=_env("TRANSCRIBE_AUDIO_FILTER", ""),
             profanity_words=_words_env("PROFANITY_WORDS", DEFAULT_PROFANITY_WORDS),
             subtitle_replacements=_replacements_env("SUBTITLE_REPLACEMENTS"),
             subtitle_censor_replacement=_env("SUBTITLE_CENSOR_REPLACEMENT", DEFAULT_SUBTITLE_CENSOR_REPLACEMENT),
             subtitle_min_duration_seconds=_float_env("SUBTITLE_MIN_DURATION_SECONDS", 0.3),
+            subtitle_music_vocal_filter_enabled=_bool_env("SUBTITLE_MUSIC_VOCAL_FILTER_ENABLED", True),
+            subtitle_music_vocal_min_duration_seconds=_float_env("SUBTITLE_MUSIC_VOCAL_MIN_DURATION_SECONDS", 1.5),
+            subtitle_music_vocal_min_chars_per_second=_float_env("SUBTITLE_MUSIC_VOCAL_MIN_CHARS_PER_SECOND", 1.8),
+            subtitle_music_vocal_min_avg_probability=_float_env("SUBTITLE_MUSIC_VOCAL_MIN_AVG_PROBABILITY", 0.0),
+            subtitle_music_vocal_patterns=_words_env("SUBTITLE_MUSIC_VOCAL_PATTERNS", ""),
             file_stable_seconds=_float_env("FILE_STABLE_SECONDS", 8),
             poll_interval_seconds=_float_env("POLL_INTERVAL_SECONDS", 5),
             silence_min_length_seconds=_float_env("SILENCE_MIN_LENGTH_SECONDS", 0.8),
@@ -233,19 +328,29 @@ class Settings:
             api_host=_env("API_HOST", "127.0.0.1"),
             api_port=_int_env("API_PORT", 8765),
             api_parallel_jobs=max(1, _int_env("API_PARALLEL_JOBS", 2)),
+            api_batch_limit=max(1, _int_env("API_BATCH_LIMIT", 30)),
             api_allowed_origins=_words_env("API_ALLOWED_ORIGINS", ""),
-            download_enabled=_bool_env("DOWNLOAD_ENABLED", False),
+            recording_upload_max_bytes=max(0, _int_env("RECORDING_UPLOAD_MAX_BYTES", 20 * 1024 * 1024 * 1024)),
             llm_provider=_env("LLM_PROVIDER", "openai"),
             llm_model=_env("LLM_MODEL", ""),
+            llm_translation_batch_size=max(1, _int_env("LLM_TRANSLATION_BATCH_SIZE", 24)),
+            llm_translation_batch_chars=max(500, _int_env("LLM_TRANSLATION_BATCH_CHARS", 6000)),
+            google_api_key=_env("GOOGLE_API_KEY", ""),
+            google_base_url=_env("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             publish_enabled=_bool_env("PUBLISH_ENABLED", False),
             publish_providers=_words_env("PUBLISH_PROVIDERS", ""),
-            ytdlp_path=Path(_env("YTDLP_PATH", "yt-dlp")),
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
+            render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),
             render_nvenc_preset=_env("RENDER_NVENC_PRESET", "p5"),
             render_nvenc_cq=max(1, _int_env("RENDER_NVENC_CQ", 21)),
             render_nvenc_preview_preset=_env("RENDER_NVENC_PREVIEW_PRESET", "p4"),
             render_nvenc_preview_cq=max(1, _int_env("RENDER_NVENC_PREVIEW_CQ", 25)),
+            web_preview_enabled=_bool_env("WEB_PREVIEW_ENABLED", True),
+            web_preview_max_width=max(320, _int_env("WEB_PREVIEW_MAX_WIDTH", 960)),
+            web_preview_max_height=max(320, _int_env("WEB_PREVIEW_MAX_HEIGHT", 960)),
+            web_preview_fps=max(1, _int_env("WEB_PREVIEW_FPS", 24)),
+            web_preview_video_bitrate=_env("WEB_PREVIEW_VIDEO_BITRATE", "1200k"),
             bgm_path=_optional_path("BGM_PATH"),
             bgm_volume=_float_env("BGM_VOLUME", 0.16),
             source_audio_volume=_float_env("SOURCE_AUDIO_VOLUME", 1.0),
@@ -260,10 +365,18 @@ class Settings:
             cover_quality=_env("COVER_QUALITY", "medium"),
             cover_output_format=_env("COVER_OUTPUT_FORMAT", "jpeg"),
             cover_title_font=_env("COVER_TITLE_FONT", "Microsoft YaHei"),
+            cover_base_url=_env("COVER_BASE_URL", "https://api.openai.com/v1"),
+            cover_api_key=_env("COVER_API_KEY", ""),
+            cover_http_referer=_env("COVER_HTTP_REFERER", ""),
+            cover_app_title=_env("COVER_APP_TITLE", "Video Automation"),
+            cover_modalities=_words_env("COVER_MODALITIES", "image,text"),
             openai_api_key=_env("OPENAI_API_KEY", ""),
+            audio_separation_engine=_env("AUDIO_SEPARATION_ENGINE", "plan"),
+            demucs_path=_portable_tool_path(root, "DEMUCS_PATH", "demucs.exe", "demucs"),
+            demucs_model=_env("DEMUCS_MODEL", "htdemucs"),
+            demucs_device=_env("DEMUCS_DEVICE", "auto"),
+            audio_separation_timeout_seconds=max(60, _int_env("AUDIO_SEPARATION_TIMEOUT_SECONDS", 7200)),
             uvr_path=_optional_path("UVR_PATH"),
-            face_swap_path=_optional_path("FACE_SWAP_PATH"),
-            aifacecover_root=_optional_path("AIFACECOVER_ROOT"),
         )
 
 

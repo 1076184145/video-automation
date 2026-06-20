@@ -4,32 +4,39 @@ import json
 import mimetypes
 import re
 import shutil
+import subprocess
 import threading
+import uuid
+from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+mimetypes.add_type("font/woff2", ".woff2")
 from .config import Settings
 from .covers import cover_manifest, generate_cover_candidates, mark_cover_generation_started, normalize_cover_options, select_cover
 from .crop import generate_vertical_crop_plan
 from .cuts import generate_cuts, update_cuts_from_editor
-from .downloads import get_download, list_downloads, start_download
+from .events import current_event_id, publish_event, wait_for_events
 from .hooks import generate_uvr_plan
+from .highlight_cut import generate_highlight_cut
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .jobs import Job, create_job, list_jobs, load_job, normalize_source_path
 from .llm_tools import generate_highlights, generate_metadata, save_metadata
-from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
+from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio_outputs, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .publish import generate_publish_package
 from .profiles import apply_profile_flags, apply_profile_settings
 from .project_exports import generate_project_exports
-from .render import generate_render_preview, render_final_video, render_review_video
+from .render import generate_render_preview, render_final_video, render_highlight_video, render_review_video
+from .resources import job_gpu_status_callbacks
 from .segments import generate_platform_segments
+from .subtitle_translation import translate_subtitles, translated_clipped_ass_name, translated_final_video_name
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
 from .transcribe import transcribe_audio
-from .worker import health_payload, process_job
+from .worker import clear_health_cache, health_payload, process_job
 
 CHUNK_SIZE = 1024 * 1024
 MAX_JSON_BODY_SIZE = 2 * 1024 * 1024
@@ -55,10 +62,80 @@ COVER_GENERATIONS: set[str] = set()
 COVER_GENERATIONS_LOCK = threading.Lock()
 ENHANCEMENT_RUNS: set[str] = set()
 ENHANCEMENT_RUNS_LOCK = threading.Lock()
+TOOLS_INSTALL_LOCK = threading.Lock()
+TOOLS_INSTALL_STATE: dict[str, Any] = {"status": "idle", "message": "", "log_tail": []}
+EDITABLE_ENV_KEYS = {
+    "WHISPER_BACKEND",
+    "WHISPER_MODEL",
+    "WHISPER_LANGUAGE",
+    "WHISPER_INITIAL_PROMPT",
+    "FASTER_WHISPER_DEVICE",
+    "FASTER_WHISPER_COMPUTE_TYPE",
+    "FASTER_WHISPER_BATCH_SIZE",
+    "WHISPER_WORD_TIMESTAMPS",
+    "WHISPER_VAD_FILTER",
+    "TRANSCRIBE_AUDIO_FILTER",
+    "SILENCE_THRESHOLD_DB",
+    "SILENCE_MIN_LENGTH_SECONDS",
+    "SILENCE_MIN_GAP_SECONDS",
+    "CUT_MIN_CLIP_SECONDS",
+    "CUT_MERGE_GAP_SECONDS",
+    "SCENE_THRESHOLD",
+    "SOURCE_INTEGRITY_SCAN_ENABLED",
+    "ASS_PRESET",
+    "ASS_FONT_NAME",
+    "ASS_FONT_SIZE",
+    "ASS_VERTICAL_FONT_SIZE",
+    "ASS_MAX_LINES",
+    "ASS_MARGIN_V",
+    "ASS_OUTLINE",
+    "ASS_SHADOW",
+    "SUBTITLE_CENSOR_REPLACEMENT",
+    "SUBTITLE_MIN_DURATION_SECONDS",
+    "RENDER_VIDEO_ENCODER",
+    "RENDER_OUTPUT_FPS",
+    "RENDER_NVENC_PRESET",
+    "RENDER_NVENC_CQ",
+    "RENDER_NVENC_PREVIEW_PRESET",
+    "RENDER_NVENC_PREVIEW_CQ",
+    "WEB_PREVIEW_ENABLED",
+    "WEB_PREVIEW_MAX_WIDTH",
+    "WEB_PREVIEW_MAX_HEIGHT",
+    "WEB_PREVIEW_FPS",
+    "WEB_PREVIEW_VIDEO_BITRATE",
+    "BGM_VOLUME",
+    "SOURCE_AUDIO_VOLUME",
+    "COVER_PROVIDER",
+    "COVER_BASE_URL",
+    "COVER_MODEL",
+    "COVER_API_KEY",
+    "COVER_HTTP_REFERER",
+    "COVER_APP_TITLE",
+    "COVER_COUNT",
+    "COVER_QUALITY",
+    "COVER_OUTPUT_FORMAT",
+    "COVER_MODALITIES",
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_BASE_URL",
+    "API_BATCH_LIMIT",
+    "RECORDING_UPLOAD_MAX_BYTES",
+    "AUDIO_SEPARATION_ENGINE",
+    "DEMUCS_PATH",
+    "DEMUCS_MODEL",
+    "DEMUCS_DEVICE",
+    "AUDIO_SEPARATION_TIMEOUT_SECONDS",
+}
+
+
+def create_server(settings: Settings) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((settings.api_host, settings.api_port), _handler_class(settings))
 
 
 def serve(settings: Settings) -> None:
-    server = ThreadingHTTPServer((settings.api_host, settings.api_port), _handler_class(settings))
+    server = create_server(settings)
     print(f"Video Automation API listening on http://{settings.api_host}:{settings.api_port}", flush=True)
     server.serve_forever()
 
@@ -88,13 +165,16 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self._send_static_file(unquote(parsed.path.removeprefix("/static/")))
                 return
             if parsed.path == "/health":
-                self._json(health_payload(settings))
+                self._json(_health_response(Settings.load()))
                 return
             if parsed.path == "/recordings":
                 self._json(_recording_files(settings))
                 return
-            if parsed.path == "/downloads":
-                self._json(list_downloads(settings))
+            if parsed.path == "/publish/packages":
+                self._json(_publish_package_queue(settings))
+                return
+            if parsed.path == "/events":
+                self._send_events(parsed.query)
                 return
             if parsed.path == "/jobs":
                 self._json([self._job_payload(job) for job in list_jobs(settings)])
@@ -116,20 +196,19 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             self._json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:  # noqa: N802
+            nonlocal settings, allowed_origins
             if not self._require_allowed_origin():
                 return
             parsed = urlparse(self.path)
+            if parsed.path == "/health/install-tools":
+                self._install_health_tools()
+                return
+            if parsed.path == "/settings":
+                self._update_settings()
+                return
             if parsed.path == "/recordings/upload":
                 self._upload_recording(parsed.query)
                 return
-            if parsed.path == "/downloads":
-                self._start_download()
-                return
-            if parsed.path.startswith("/downloads/"):
-                parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
-                if len(parts) == 3 and parts[0] == "downloads" and parts[2] == "import":
-                    self._import_download(parts[1], process_semaphore)
-                    return
             if parsed.path.startswith("/jobs/"):
                 parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approve":
@@ -140,6 +219,9 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     return
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "transcript":
                     self._update_job_transcript(parts[1])
+                    return
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "clip-feedback":
+                    self._save_clip_feedback(parts[1])
                     return
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "rerun":
                     self._rerun_job_stage(parts[1])
@@ -162,11 +244,23 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "generate":
                     self._generate_job_highlights(parts[1])
                     return
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "cut":
+                    self._generate_job_highlight_cut(parts[1])
+                    return
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "render":
+                    self._render_job_highlight_cut(parts[1])
+                    return
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "publish" and parts[3] == "package":
                     self._generate_job_publish_package(parts[1])
                     return
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "project-export" and parts[3] == "generate":
                     self._generate_job_project_export(parts[1])
+                    return
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "subtitles" and parts[3] == "translate":
+                    self._translate_job_subtitles(parts[1])
+                    return
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "subtitles" and parts[3] == "render-translated":
+                    self._render_translated_subtitles(parts[1])
                     return
             if parsed.path == "/process/batch":
                 self._process_batch(process_semaphore)
@@ -175,6 +269,79 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self._json({"error": "not found"}, status=404)
                 return
             self._process_one(process_semaphore)
+
+        def _update_settings(self) -> None:
+            nonlocal settings, allowed_origins
+            payload = self._read_json()
+            if payload is None:
+                return
+            raw_updates = payload.get("env")
+            if not isinstance(raw_updates, dict):
+                self._json({"error": "env must be an object"}, status=400)
+                return
+            try:
+                updates = _normalize_env_updates(raw_updates)
+                changed = _update_env_file(settings.root, updates)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            settings = Settings.load()
+            allowed_origins = _allowed_api_origins(settings)
+            clear_health_cache()
+            publish_event("settings", {"changed": sorted(changed)})
+            response = health_payload(settings)
+            response["changed"] = sorted(changed)
+            self._json(response)
+
+        def _install_health_tools(self) -> None:
+            payload = self._read_json()
+            if payload is None:
+                return
+            state = _tools_install_snapshot()
+            if state.get("status") == "running":
+                self._json({"error": "tool installation is already running", "tools_install": state}, status=409)
+                return
+            script = settings.root / "tools" / "install_desktop_tools.ps1"
+            if not script.is_file():
+                self._json({"error": "install_desktop_tools.ps1 was not found"}, status=400)
+                return
+            install_ffmpeg = bool(payload.get("install_ffmpeg", True))
+            if not install_ffmpeg:
+                self._json({"error": "nothing selected to install"}, status=400)
+                return
+            command = [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+            ]
+            if bool(payload.get("force", False)):
+                command.append("-Force")
+            if not install_ffmpeg:
+                command.append("-SkipFfmpeg")
+            _set_tools_install_state(
+                status="running",
+                started_at=datetime.now().isoformat(timespec="seconds"),
+                completed_at="",
+                failed_at="",
+                message="Starting tool installation",
+                returncode=None,
+                log_tail=[],
+            )
+            try:
+                thread = threading.Thread(target=_run_tools_install, args=(settings, command), daemon=True)
+                thread.start()
+            except Exception as exc:
+                _set_tools_install_state(
+                    status="failed",
+                    failed_at=datetime.now().isoformat(timespec="seconds"),
+                    message=str(exc),
+                )
+                self._json({"error": str(exc), "tools_install": _tools_install_snapshot()}, status=500)
+                return
+            self._json({"tools_install": _tools_install_snapshot()}, status=202)
 
         def _process_one(self, process_semaphore: threading.Semaphore) -> None:
             payload = self._read_json()
@@ -198,11 +365,13 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not isinstance(raw_items, list) or not raw_items:
                 self._json({"error": "items must be a non-empty list"}, status=400)
                 return
-            if len(raw_items) > 50:
-                self._json({"error": "batch is limited to 50 items"}, status=400)
+            if len(raw_items) > settings.api_batch_limit:
+                self._json({"error": f"batch is limited to {settings.api_batch_limit} items"}, status=400)
                 return
+            batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            batch_size = len(raw_items)
             jobs = []
-            for raw_item in raw_items:
+            for batch_index, raw_item in enumerate(raw_items, start=1):
                 if isinstance(raw_item, str):
                     item_payload = dict(payload)
                     item_payload["path"] = raw_item
@@ -213,13 +382,21 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     return
                 item_payload.pop("items", None)
                 item_payload.pop("paths", None)
+                item_payload["batch_id"] = batch_id
+                item_payload["batch_index"] = batch_index
+                item_payload["batch_size"] = batch_size
                 try:
                     job, status = self._submit_process_payload(item_payload, process_semaphore)
                 except ValueError as exc:
                     self._json({"error": str(exc)}, status=400)
                     return
                 jobs.append({**job.to_dict(), "http_status": status})
-            self._json({"jobs": jobs, "count": len(jobs), "parallel_jobs": settings.api_parallel_jobs}, status=202)
+            self._json({
+                "batch_id": batch_id,
+                "jobs": jobs,
+                "count": len(jobs),
+                "parallel_jobs": settings.api_parallel_jobs,
+            }, status=202)
 
         def _submit_process_payload(self, payload: dict[str, Any], process_semaphore: threading.Semaphore) -> tuple[Job, int]:
             source = payload.get("path") or payload.get("source_path")
@@ -227,7 +404,14 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not source:
                 raise ValueError("missing path")
             try:
-                job = create_job(settings, normalize_source_path(str(source)), force=bool(payload.get("force", False)))
+                job = create_job(
+                    settings,
+                    normalize_source_path(str(source)),
+                    force=bool(payload.get("force", False)),
+                    batch_id=_bounded_text(payload.get("batch_id"), 80) or None,
+                    batch_index=_safe_int(payload.get("batch_index")),
+                    batch_size=_safe_int(payload.get("batch_size")),
+                )
             except OSError as exc:
                 raise ValueError(str(exc)) from exc
             if job.status in {"needs_review", "done", "failed"} and not bool(payload.get("force", False)):
@@ -235,6 +419,11 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if job.status != "pending" and not bool(payload.get("force", False)):
                 return job, 202
             job_settings = apply_profile_settings(settings, profile)
+            if "source_integrity_scan" in payload:
+                job_settings = replace(
+                    job_settings,
+                    source_integrity_scan_enabled=bool(payload.get("source_integrity_scan", False)),
+                )
             options = apply_profile_flags({
                 "force": bool(payload.get("force", False)),
                 "detect_silence_enabled": bool(payload.get("detect_silence", False)),
@@ -337,6 +526,20 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return
             self._json({"job": self._job_payload(job), "transcript": transcript})
 
+        def _save_clip_feedback(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                feedback = _save_clip_feedback(job.job_dir, payload)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            self._json({"job": self._job_payload(job), "feedback": feedback})
+
         def _rerun_job_stage(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
             if job is None:
@@ -366,8 +569,8 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not _job_is_terminal(job):
                 self._json({"error": f"job is already {job.status}; wait for it to finish before generating covers"}, status=409)
                 return
-            if settings.cover_provider.strip().lower() == "openai" and not settings.openai_api_key.strip():
-                self._json({"error": "OPENAI_API_KEY is not configured"}, status=400)
+            if settings.cover_provider.strip().lower() in {"openai", "openai-compatible", "openrouter", "google"} and not settings.cover_api_key_for_provider():
+                self._json({"error": "COVER_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY is not configured"}, status=400)
                 return
             payload = self._read_json()
             if payload is None:
@@ -384,6 +587,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     return
                 COVER_GENERATIONS.add(key)
             manifest = mark_cover_generation_started(settings, job.job_dir, options)
+            _publish_job_dir_event(job.job_dir)
             thread = threading.Thread(
                 target=_run_cover_generation,
                 args=(settings, job.job_dir, key, options),
@@ -411,6 +615,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             except Exception as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
+            _publish_job_dir_event(job.job_dir)
             self._json({"job": self._job_payload(job), "cover": manifest})
 
         def _generate_job_segments(self, job_name: str) -> None:
@@ -503,6 +708,68 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             finally:
                 _end_enhancement(run_key)
 
+        def _generate_job_highlight_cut(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            run_key = self._begin_enhancement(job)
+            if run_key is None:
+                return
+            try:
+                payload = self._read_json()
+                if payload is None:
+                    return
+                try:
+                    highlight_cut = generate_highlight_cut(
+                        job.job_dir,
+                        target_seconds=float(payload.get("target_seconds") or 60),
+                        force=bool(payload.get("force", False)),
+                    )
+                except Exception as exc:
+                    self._json({"error": str(exc)}, status=400)
+                    return
+                self._json({"job": self._job_payload(job), "highlight_cut": highlight_cut})
+            finally:
+                _end_enhancement(run_key)
+
+        def _render_job_highlight_cut(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            run_key = self._begin_enhancement(job)
+            if run_key is None:
+                return
+            try:
+                payload = self._read_json()
+                if payload is None:
+                    return
+                target_seconds = float(payload.get("target_seconds") or 60)
+                try:
+                    highlight_cut = generate_highlight_cut(
+                        job.job_dir,
+                        target_seconds=target_seconds,
+                        force=bool(payload.get("force_cut", False)),
+                    )
+                except Exception as exc:
+                    self._json({"error": str(exc)}, status=400)
+                    return
+                thread = threading.Thread(
+                    target=_run_highlight_render,
+                    args=(settings, job, run_key, highlight_cut),
+                    daemon=True,
+                )
+                thread.start()
+                run_key = ""
+                self._json({
+                    "job": self._job_payload(job),
+                    "status": "rendering",
+                    "highlight_cut": highlight_cut,
+                    "output": "highlight.mp4",
+                }, status=202)
+            finally:
+                if run_key:
+                    _end_enhancement(run_key)
+
         def _generate_job_publish_package(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
             if job is None:
@@ -554,36 +821,70 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             finally:
                 _end_enhancement(run_key)
 
-        def _start_download(self) -> None:
-            payload = self._read_json()
-            if payload is None:
+        def _translate_job_subtitles(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            run_key = self._begin_enhancement(job)
+            if run_key is None:
                 return
             try:
-                record = start_download(settings, str(payload.get("url") or ""))
-            except Exception as exc:
-                self._json({"error": str(exc)}, status=400)
-                return
-            self._json({"download": record}, status=202)
+                payload = self._read_json()
+                if payload is None:
+                    return
+                target_language = str(payload.get("target_language") or "zh").strip() or "zh"
+                try:
+                    translation = translate_subtitles(
+                        settings,
+                        job.job_dir,
+                        target_language=target_language,
+                        force=bool(payload.get("force", False)),
+                    )
+                except Exception as exc:
+                    self._json({"error": str(exc)}, status=400)
+                    return
+                self._json({"job": self._job_payload(job), "translation": translation})
+            finally:
+                _end_enhancement(run_key)
 
-        def _import_download(self, download_id: str, process_semaphore: threading.Semaphore) -> None:
-            record = get_download(settings, download_id)
-            if record is None:
-                self._json({"error": "download not found"}, status=404)
+        def _render_translated_subtitles(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
                 return
-            if record.get("status") != "done" or not record.get("output_path"):
-                self._json({"error": f"download is not ready: {record.get('status')}"}, status=409)
+            run_key = self._begin_enhancement(job)
+            if run_key is None:
                 return
-            payload = self._read_json()
-            if payload is None:
-                return
-            payload = dict(payload)
-            payload["path"] = record["output_path"]
             try:
-                job, status = self._submit_process_payload(payload, process_semaphore)
-            except ValueError as exc:
-                self._json({"error": str(exc)}, status=400)
-                return
-            self._json({"download": record, "job": job.to_dict()}, status=status)
+                payload = self._read_json()
+                if payload is None:
+                    return
+                target_language = str(payload.get("target_language") or "zh").strip() or "zh"
+                try:
+                    subtitle_name = translated_clipped_ass_name(target_language)
+                    output_filename = translated_final_video_name(target_language)
+                except Exception as exc:
+                    self._json({"error": str(exc)}, status=400)
+                    return
+                subtitle_file = job.job_dir / subtitle_name
+                if not subtitle_file.exists() or subtitle_file.stat().st_size < 1:
+                    self._json({"error": f"translated subtitles are not ready for {target_language}"}, status=400)
+                    return
+                thread = threading.Thread(
+                    target=_run_translated_final_render,
+                    args=(settings, job, run_key, target_language, output_filename),
+                    daemon=True,
+                )
+                thread.start()
+                run_key = ""
+                self._json({
+                    "job": self._job_payload(job),
+                    "status": "rendering",
+                    "target_language": target_language,
+                    "output": output_filename,
+                }, status=202)
+            finally:
+                if run_key:
+                    _end_enhancement(run_key)
 
         def _delete_job(self, job_name: str) -> None:
             job_dir = (settings.jobs_dir / job_name).resolve()
@@ -619,6 +920,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             length = int(self.headers.get("Content-Length", "0") or "0")
             if length <= 0:
                 self._json({"error": "empty upload"}, status=400)
+                return
+            if settings.recording_upload_max_bytes > 0 and length > settings.recording_upload_max_bytes:
+                self._json({
+                    "error": f"upload exceeds RECORDING_UPLOAD_MAX_BYTES ({settings.recording_upload_max_bytes})",
+                    "max_bytes": settings.recording_upload_max_bytes,
+                }, status=413)
                 return
             settings.input_recordings_dir.mkdir(parents=True, exist_ok=True)
             temp_path = target.with_name(f".{target.name}.uploading")
@@ -664,6 +971,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
         def _job_payload(self, job: Job) -> dict[str, Any]:
             payload = job.to_dict()
             payload["files"] = _job_files(job.job_dir)
+            payload["feedback"] = _job_feedback(job.job_dir)
             return payload
 
         def _begin_enhancement(self, job: Job) -> str | None:
@@ -677,6 +985,39 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     return None
                 ENHANCEMENT_RUNS.add(key)
             return key
+
+        def _send_events(self, query: str = "") -> None:
+            requested_last_id = _event_last_id(self.headers.get("Last-Event-ID"), query)
+            last_id = requested_last_id
+            snapshot_id = current_event_id()
+            try:
+                self.send_response(200)
+                self._cors_headers()
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                self.wfile.write(_format_sse("hello", {
+                    "jobs": [self._job_payload(job) for job in list_jobs(settings)],
+                    "tools_install": _tools_install_snapshot(),
+                    "server_time": datetime.now().isoformat(timespec="seconds"),
+                }, event_id=snapshot_id).encode("utf-8"))
+                self.wfile.flush()
+                if requested_last_id <= 0:
+                    last_id = snapshot_id
+                while True:
+                    events = wait_for_events(last_id, timeout_seconds=15.0)
+                    if not events:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                        continue
+                    for event in events:
+                        last_id = event.id
+                        self.wfile.write(_format_sse(event.type, event.payload, event_id=event.id).encode("utf-8"))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
 
         def _send_job_file(self, job_name: str, filename: str, query: str = "") -> None:
             job_dir = (settings.jobs_dir / job_name).resolve()
@@ -709,9 +1050,9 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self._json({"error": "not found"}, status=404)
                 return
             content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-            self._send_file(path, content_type, attachment=False)
+            self._send_file(path, content_type, attachment=False, cache_control="no-store, max-age=0")
 
-        def _send_file(self, path: Path, content_type: str, *, attachment: bool) -> None:
+        def _send_file(self, path: Path, content_type: str, *, attachment: bool, cache_control: str | None = None) -> None:
             size = path.stat().st_size
             range_header = self.headers.get("Range")
             byte_range = _parse_range(range_header, size) if range_header else None
@@ -729,6 +1070,8 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
             if byte_range:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             if attachment:
@@ -819,6 +1162,182 @@ def _parse_range(range_header: str | None, size: int) -> tuple[int, int] | None:
     return start, min(end, size - 1)
 
 
+def _event_last_id(header_value: str | None, query: str) -> int:
+    candidates = [header_value]
+    candidates.extend(parse_qs(query).get("last_id", []))
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return max(0, int(str(value).strip()))
+        except ValueError:
+            continue
+    return 0
+
+
+def _normalize_env_updates(raw_updates: dict[str, Any]) -> dict[str, str]:
+    updates: dict[str, str] = {}
+    for raw_key, raw_value in raw_updates.items():
+        key = str(raw_key).strip().upper()
+        if key not in EDITABLE_ENV_KEYS:
+            raise ValueError(f"setting is not editable: {key}")
+        if raw_value is None:
+            value = ""
+        elif isinstance(raw_value, bool):
+            value = "true" if raw_value else "false"
+        else:
+            value = str(raw_value)
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"setting cannot contain newlines: {key}")
+        if any(ord(char) < 32 and char != "\t" for char in value):
+            raise ValueError(f"setting contains invalid control characters: {key}")
+        updates[key] = value.strip()
+    if not updates:
+        raise ValueError("no editable settings provided")
+    return updates
+
+
+def _health_response(settings: Settings) -> dict[str, Any]:
+    payload = health_payload(settings)
+    payload["tools_install"] = _tools_install_snapshot()
+    return payload
+
+
+def _publish_package_queue(settings: Settings) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for job in list_jobs(settings):
+        package_path = job.job_dir / "publish_package.json"
+        if not package_path.exists():
+            continue
+        package = read_json_file(package_path)
+        if not isinstance(package, dict):
+            continue
+        extension_manifest = read_json_file(job.job_dir / "publish_extension_manifest.json") or {}
+        items.append({
+            "job": job.to_dict(),
+            "status": package.get("status", "ready"),
+            "generated_at": package.get("generated_at", ""),
+            "source_video": package.get("source_video", {}),
+            "covers": package.get("covers", []),
+            "platforms": package.get("platforms", []),
+            "publish_extension": package.get("publish_extension", {}),
+            "extension_manifest": extension_manifest if isinstance(extension_manifest, dict) else {},
+        })
+    return {
+        "status": "ready",
+        "count": len(items),
+        "items": items,
+        "notes": [
+            "This endpoint lists local publish handoff packages for trusted browser extensions.",
+            "It does not contain platform credentials and does not upload automatically.",
+        ],
+    }
+
+
+def _tools_install_snapshot() -> dict[str, Any]:
+    with TOOLS_INSTALL_LOCK:
+        snapshot = dict(TOOLS_INSTALL_STATE)
+        snapshot["log_tail"] = list(TOOLS_INSTALL_STATE.get("log_tail") or [])
+        return snapshot
+
+
+def _set_tools_install_state(**updates: Any) -> dict[str, Any]:
+    with TOOLS_INSTALL_LOCK:
+        if "log_append" in updates:
+            line = str(updates.pop("log_append") or "").strip()
+            if line:
+                tail = list(TOOLS_INSTALL_STATE.get("log_tail") or [])
+                tail.append(line)
+                TOOLS_INSTALL_STATE["log_tail"] = tail[-80:]
+                TOOLS_INSTALL_STATE["message"] = line
+        for key, value in updates.items():
+            if key == "log_tail":
+                TOOLS_INSTALL_STATE[key] = list(value or [])[-80:]
+            else:
+                TOOLS_INSTALL_STATE[key] = value
+        snapshot = dict(TOOLS_INSTALL_STATE)
+        snapshot["log_tail"] = list(TOOLS_INSTALL_STATE.get("log_tail") or [])
+    publish_event("tools_install", snapshot)
+    return snapshot
+
+
+def _run_tools_install(settings: Settings, command: list[str]) -> None:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(settings.root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        _set_tools_install_state(
+            status="failed",
+            failed_at=datetime.now().isoformat(timespec="seconds"),
+            message=str(exc),
+        )
+        return
+
+    if process.stdout is not None:
+        for line in process.stdout:
+            _set_tools_install_state(log_append=line)
+    returncode = process.wait()
+    if returncode == 0:
+        clear_health_cache()
+        _set_tools_install_state(
+            status="done",
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+            returncode=returncode,
+            message="Tool installation finished",
+        )
+        publish_event("health", _health_response(Settings.load()))
+        return
+    _set_tools_install_state(
+        status="failed",
+        failed_at=datetime.now().isoformat(timespec="seconds"),
+        returncode=returncode,
+        message=f"Tool installation failed with exit code {returncode}",
+    )
+
+
+def _update_env_file(root: Path, updates: dict[str, str]) -> set[str]:
+    env_path = root / ".env"
+    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+    pending = dict(updates)
+    changed: set[str] = set()
+    output_lines: list[str] = []
+    for line in existing_lines:
+        match = key_re.match(line)
+        if not match:
+            output_lines.append(line)
+            continue
+        key = match.group(1).upper()
+        if key not in pending:
+            output_lines.append(line)
+            continue
+        output_lines.append(f"{key}={pending.pop(key)}")
+        changed.add(key)
+    if pending:
+        if output_lines and output_lines[-1].strip():
+            output_lines.append("")
+        output_lines.append("# Updated from Web Settings")
+        for key in sorted(pending):
+            output_lines.append(f"{key}={pending[key]}")
+            changed.add(key)
+    write_text_atomic(env_path, "\n".join(output_lines).rstrip() + "\n")
+    return changed
+
+
+def _format_sse(event_type: str, payload: dict[str, Any], *, event_id: int) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    lines = [f"id: {event_id}", f"event: {event_type}"]
+    lines.extend(f"data: {line}" for line in data.splitlines() or ["{}"])
+    return "\n".join(lines) + "\n\n"
+
+
 def _normalize_origin(origin: str | None) -> str | None:
     if origin is None:
         return None
@@ -858,6 +1377,58 @@ def _default_api_origins(settings: Settings) -> set[str]:
 
 def _job_is_terminal(job: Job) -> bool:
     return job.status in TERMINAL_STATUSES
+
+
+def _job_feedback(job_dir: Path) -> dict[str, Any]:
+    return read_json_file(job_dir / "feedback.json") or {"items": []}
+
+
+def _save_clip_feedback(job_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    action = _bounded_text(payload.get("action"), 20)
+    if action not in {"accepted", "rejected", "clear"}:
+        raise ValueError("action must be accepted, rejected, or clear")
+    clip_key = _bounded_text(payload.get("clip_key"), 120)
+    if not clip_key:
+        raise ValueError("clip_key is required")
+    current = _job_feedback(job_dir)
+    items = current.get("items") if isinstance(current.get("items"), list) else []
+    items = [item for item in items if isinstance(item, dict) and item.get("clip_key") != clip_key]
+    if action != "clear":
+        items.append({
+            "clip_key": clip_key,
+            "action": action,
+            "index": _safe_int(payload.get("index")),
+            "start": _safe_float(payload.get("start")),
+            "end": _safe_float(payload.get("end")),
+            "reason": _bounded_text(payload.get("reason"), 200),
+            "text": _bounded_text(payload.get("text"), 500),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
+    result = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "items": items[-1000:],
+    }
+    write_json_atomic(job_dir / "feedback.json", result)
+    return result
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _end_enhancement(key: str) -> None:
@@ -966,11 +1537,18 @@ def _run_cover_generation(settings: Settings, job_dir: Path, key: str, options: 
     finally:
         with COVER_GENERATIONS_LOCK:
             COVER_GENERATIONS.discard(key)
+        _publish_job_dir_event(job_dir)
 
 
 def _run_process_job(process_semaphore: threading.Semaphore, settings: Settings, job: Job, options: dict[str, Any]) -> None:
     with process_semaphore:
         process_job(settings, job, **options)
+
+
+def _publish_job_dir_event(job_dir: Path) -> None:
+    job = load_job(job_dir / "job.json")
+    if job is not None:
+        publish_event("job", job.to_dict())
 
 
 def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[str, Any]) -> None:
@@ -986,11 +1564,24 @@ def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[st
             manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=False)
             detect_decode_errors(settings, job.source_path, manifest["duration_seconds"], job.job_dir / "corrupt.json", force=True)
         elif stage == "extract_audio":
-            extract_audio(settings, job.source_path, job.job_dir / "audio.wav", force=True)
-            extract_high_quality_audio(settings, job.source_path, job.job_dir / "audio_hq.flac", force=True)
+            extract_audio_outputs(
+                settings,
+                job.source_path,
+                job.job_dir / "audio.wav",
+                job.job_dir / "audio_hq.flac",
+                force=True,
+            )
             generate_waveform(settings, job.job_dir / "audio.wav", job.job_dir / "waveform.json", force=True)
         elif stage == "transcribe":
-            transcribe_audio(settings, job.job_dir / "audio.wav", job.job_dir, force=True)
+            on_wait, on_acquired = job_gpu_status_callbacks(job, "transcription")
+            transcribe_audio(
+                settings,
+                job.job_dir / "audio.wav",
+                job.job_dir,
+                force=True,
+                resource_wait_callback=on_wait,
+                resource_acquired_callback=on_acquired,
+            )
             if (job.job_dir / "cuts.json").exists():
                 generate_cuts(
                     job.job_dir,
@@ -1030,10 +1621,20 @@ def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[st
             generate_bgm_mix_plan(settings, job.job_dir, force=True)
             generate_webhook_plan(settings, job.job_dir, force=True)
         elif stage == "render_review":
-            render_review_video(settings, job.job_dir, job.source_path, force=True, progress_callback=_progress_callback(job, stage))
+            on_wait, on_acquired = job_gpu_status_callbacks(job, "review render")
+            render_review_video(
+                settings,
+                job.job_dir,
+                job.source_path,
+                force=True,
+                progress_callback=_progress_callback(job, stage),
+                resource_wait_callback=on_wait,
+                resource_acquired_callback=on_acquired,
+            )
         elif stage == "render_final":
             preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
             vertical, burn_subtitles = _infer_final_render_options(job.job_dir, preview, options)
+            on_wait, on_acquired = job_gpu_status_callbacks(job, "final render")
             render_final_video(
                 settings,
                 job.job_dir,
@@ -1042,11 +1643,100 @@ def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[st
                 vertical=vertical,
                 burn_subtitles=burn_subtitles,
                 progress_callback=_progress_callback(job, stage),
+                resource_wait_callback=on_wait,
+                resource_acquired_callback=on_acquired,
             )
         job.complete_stage()
         job.set_status("needs_review")
     except Exception as exc:
         job.fail(str(exc))
+
+
+def _run_translated_final_render(settings: Settings, job: Job, run_key: str, target_language: str, output_filename: str) -> None:
+    status_path = job.job_dir / f"subtitle_translation_render_{target_language}.json"
+    status_base = {
+        "target_language": target_language,
+        "output": output_filename,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    def write_status(status: str, message: str) -> None:
+        write_json_atomic(status_path, {**status_base, "status": status, "message": message})
+
+    try:
+        preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
+        write_status("rendering", "Rendering translated subtitles.")
+        render_final_video(
+            settings,
+            job.job_dir,
+            job.source_path,
+            force=True,
+            vertical=bool(preview.get("vertical", False)),
+            burn_subtitles=True,
+            subtitle_filename=translated_clipped_ass_name(target_language),
+            output_filename=output_filename,
+            resource_wait_callback=lambda: write_status("waiting_for_gpu", "Waiting for GPU to render translated subtitles."),
+            resource_acquired_callback=lambda: write_status("rendering", "GPU available. Rendering translated subtitles."),
+        )
+        write_json_atomic(status_path, {
+            "status": "done",
+            "target_language": target_language,
+            "output": output_filename,
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        })
+    except Exception as exc:
+        write_json_atomic(status_path, {
+            "status": "failed",
+            "target_language": target_language,
+            "output": output_filename,
+            "error": str(exc),
+            "failed_at": datetime.now().isoformat(timespec="seconds"),
+        })
+    finally:
+        _end_enhancement(run_key)
+
+
+def _run_highlight_render(settings: Settings, job: Job, run_key: str, highlight_cut: dict[str, Any]) -> None:
+    status_path = job.job_dir / "highlight_render_status.json"
+    output_filename = "highlight.mp4"
+    status_base = {
+        "output": output_filename,
+        "duration_seconds": highlight_cut.get("duration_seconds", 0),
+        "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    def write_status(status: str, message: str) -> None:
+        write_json_atomic(status_path, {**status_base, "status": status, "message": message})
+
+    try:
+        write_status("rendering", "Rendering highlight video.")
+        render_highlight_video(
+            settings,
+            job.job_dir,
+            job.source_path,
+            force=True,
+            resource_wait_callback=lambda: write_status("waiting_for_gpu", "Waiting for GPU to render highlight video."),
+            resource_acquired_callback=lambda: write_status("rendering", "GPU available. Rendering highlight video."),
+        )
+        write_json_atomic(status_path, {
+            "status": "done",
+            "output": output_filename,
+            "duration_seconds": highlight_cut.get("duration_seconds", 0),
+            "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        _publish_job_dir_event(job.job_dir)
+    except Exception as exc:
+        write_json_atomic(status_path, {
+            "status": "failed",
+            "output": output_filename,
+            "error": str(exc),
+            "failed_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        _publish_job_dir_event(job.job_dir)
+    finally:
+        _end_enhancement(run_key)
 
 
 def _progress_callback(job: Job, stage: str):

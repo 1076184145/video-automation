@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +35,44 @@ def generate_clipped_ass_subtitles(settings: Settings, job_dir: Path, *, force: 
     return output_path
 
 
+def segments_from_transcript(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return normalized subtitle segments from a transcript payload."""
+    return _segments_from_transcript(transcript)
+
+
+def kept_clips(cuts: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return sorted kept clip ranges from a cuts payload."""
+    return _kept_clips(cuts)
+
+
+def prepare_subtitle_segments(settings: Settings, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply subtitle duration, replacement, and censoring rules."""
+    return _prepare_subtitle_segments(settings, segments)
+
+
+def remap_segments_to_clips(segments: list[dict[str, Any]], clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Move original subtitle segments onto the edited clip timeline."""
+    return _remap_segments_to_clips(segments, clips)
+
+
+def ass_document(settings: Settings, segments: list[dict[str, Any]], play_res: tuple[int, int]) -> str:
+    """Render prepared subtitle segments as an ASS document."""
+    return _ass_document(settings, segments, play_res)
+
+
+def play_resolution(job_dir: Path) -> tuple[int, int]:
+    """Infer subtitle play resolution from crop plan or source manifest."""
+    return _play_resolution(job_dir)
+
+
 def _segments_from_transcript(transcript: dict[str, Any]) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     for raw in transcript.get("segments", []):
         if not isinstance(raw, dict):
+            continue
+        word_segments = _segments_from_words(raw)
+        if word_segments:
+            segments.extend(word_segments)
             continue
         try:
             start = float(raw["start"])
@@ -49,6 +84,103 @@ def _segments_from_transcript(transcript: dict[str, Any]) -> list[dict[str, Any]
             continue
         segments.append({"start": start, "end": end, "text": text})
     return segments
+
+
+def _segments_from_words(raw_segment: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_words = raw_segment.get("words")
+    if not isinstance(raw_words, list):
+        return []
+
+    words: list[dict[str, Any]] = []
+    max_word_duration = 1.8
+    for raw_word in raw_words:
+        if not isinstance(raw_word, dict):
+            continue
+        text = str(raw_word.get("word") or raw_word.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            start = float(raw_word["start"])
+            end = float(raw_word["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        if end - start > max_word_duration:
+            end = start + max_word_duration
+        word_payload: dict[str, Any] = {"start": start, "end": end, "text": text}
+        probability = raw_word.get("probability")
+        if isinstance(probability, (int, float)):
+            word_payload["probability"] = float(probability)
+        words.append(word_payload)
+    if not words:
+        return []
+
+    segments: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    current_start = 0.0
+    current_end = 0.0
+    max_gap = 0.55
+    max_duration = 5.5
+    max_width = 34
+
+    def flush() -> None:
+        if not current:
+            return
+        text = _join_word_texts([str(item["text"]) for item in current]).strip()
+        if text:
+            segment: dict[str, Any] = {
+                "start": round(current_start, 3),
+                "end": round(current_end, 3),
+                "text": text,
+                "word_count": len(current),
+            }
+            probabilities = [float(item["probability"]) for item in current if isinstance(item.get("probability"), (int, float))]
+            if probabilities:
+                segment["avg_probability"] = round(sum(probabilities) / len(probabilities), 4)
+            segments.append(segment)
+
+    for word in words:
+        start = float(word["start"])
+        end = float(word["end"])
+        text = str(word["text"])
+        if current:
+            gap = start - current_end
+            next_text = _join_word_texts([str(item["text"]) for item in current] + [text])
+            should_split = (
+                gap >= max_gap
+                or end - current_start > max_duration
+                or _visual_width(next_text) > max_width
+                or (_ends_sentence(str(current[-1]["text"])) and _visual_width(next_text) >= 16)
+            )
+            if should_split:
+                flush()
+                current = []
+        if not current:
+            current_start = start
+        current.append(word)
+        current_end = end
+    flush()
+    return segments
+
+
+def _join_word_texts(words: list[str]) -> str:
+    result = ""
+    for word in words:
+        if not word:
+            continue
+        if result and _needs_word_space(result[-1], word[0]):
+            result += " "
+        result += word
+    return result
+
+
+def _needs_word_space(left: str, right: str) -> bool:
+    return left.isascii() and right.isascii() and (left.isalnum() or left in {"'", '"'}) and (right.isalnum() or right in {"'", '"'})
+
+
+def _ends_sentence(text: str) -> bool:
+    return text.rstrip().endswith(("。", "！", "？", ".", "!", "?"))
 
 
 def _kept_clips(cuts: dict[str, Any]) -> list[dict[str, Any]]:
@@ -80,9 +212,37 @@ def _prepare_subtitle_segments(settings: Settings, segments: list[dict[str, Any]
             continue
         text = apply_replacements(str(segment["text"]), settings.subtitle_replacements)
         text = censor_text(text, settings.profanity_words, replacement=settings.subtitle_censor_replacement)
-        if text.strip():
-            prepared.append({"start": start, "end": end, "text": text})
+        if text.strip() and not _looks_like_background_vocal(settings, start, end, text, segment):
+            prepared_segment: dict[str, Any] = {"start": start, "end": end, "text": text}
+            for key in ("avg_probability", "word_count"):
+                if key in segment:
+                    prepared_segment[key] = segment[key]
+            prepared.append(prepared_segment)
     return prepared
+
+
+def _looks_like_background_vocal(settings: Settings, start: float, end: float, text: str, segment: dict[str, Any]) -> bool:
+    if not settings.subtitle_music_vocal_filter_enabled:
+        return False
+    duration = max(0.0, end - start)
+    min_duration = max(0.0, settings.subtitle_music_vocal_min_duration_seconds)
+    min_rate = max(0.0, settings.subtitle_music_vocal_min_chars_per_second)
+    min_probability = max(0.0, settings.subtitle_music_vocal_min_avg_probability)
+    if duration < min_duration:
+        return False
+    normalized = "".join(char for char in text.strip() if not char.isspace())
+    if not normalized:
+        return True
+    compact_patterns = ["".join(pattern.split()) for pattern in settings.subtitle_music_vocal_patterns if pattern.strip()]
+    if compact_patterns and any(pattern and pattern in normalized for pattern in compact_patterns):
+        return True
+    text_rate = len(normalized) / max(0.001, duration)
+    if min_rate > 0 and text_rate < min_rate:
+        return True
+    probability = segment.get("avg_probability")
+    if min_probability > 0 and isinstance(probability, (int, float)) and float(probability) < min_probability:
+        return True
+    return False
 
 
 def _remap_segments_to_clips(segments: list[dict[str, Any]], clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -112,6 +272,7 @@ def _remap_segments_to_clips(segments: list[dict[str, Any]], clips: list[dict[st
                 "start": round(output_offset + (overlap_start - clip_start), 3),
                 "end": round(output_offset + (overlap_end - clip_start), 3),
                 "text": segment["text"],
+                **{key: segment[key] for key in ("avg_probability", "word_count") if key in segment},
             })
         output_offset += clip["duration"]
     return remapped
@@ -162,22 +323,22 @@ def _subtitle_events_for_segment(
     text = " ".join(str(segment["text"]).split())
     if not text:
         return []
-    max_chars = _max_chars_per_line(style, play_res_x)
-    chunks = _split_text_chunks(text, max_chars * max_lines)
+    max_units = _max_chars_per_line(style, play_res_x)
+    chunks = _split_text_chunks(text, max_units * max_lines)
     if not chunks:
         return []
 
     start = float(segment["start"])
     end = float(segment["end"])
     duration = max(0.01, end - start)
-    total_weight = sum(max(1, len(chunk)) for chunk in chunks)
+    total_weight = sum(max(1, _visual_width(chunk)) for chunk in chunks)
     offset = start
     events = []
     for index, chunk in enumerate(chunks):
         if index == len(chunks) - 1:
             chunk_end = end
         else:
-            chunk_end = min(end, offset + duration * (max(1, len(chunk)) / total_weight))
+            chunk_end = min(end, offset + duration * (max(1, _visual_width(chunk)) / total_weight))
         wrapped = _wrap_subtitle_text(chunk, style, play_res_x, max_lines)
         if wrapped and chunk_end > offset:
             events.append({"start": round(offset, 3), "end": round(chunk_end, 3), "text": wrapped})
@@ -187,19 +348,16 @@ def _subtitle_events_for_segment(
 
 def _split_text_chunks(text: str, max_chars: int) -> list[str]:
     max_chars = max(8, max_chars)
-    if len(text) <= max_chars:
+    if _visual_width(text) <= max_chars:
         return [text]
     chunks = []
     remaining = text
-    punctuation = "，。！？；、,.!?;: "
-    while len(remaining) > max_chars:
-        split_at = max(remaining.rfind(mark, 0, max_chars + 1) for mark in punctuation)
-        if split_at < max_chars * 0.45:
-            split_at = max_chars - 1
-        chunk = remaining[: split_at + 1].strip()
+    while _visual_width(remaining) > max_chars:
+        split_at = _best_split_index(remaining, max_chars)
+        chunk = remaining[:split_at].strip()
         if chunk:
             chunks.append(chunk)
-        remaining = remaining[split_at + 1 :].strip()
+        remaining = remaining[split_at:].strip()
     if remaining:
         chunks.append(remaining)
     return chunks
@@ -275,36 +433,10 @@ def _positive_int(value: Any) -> int:
     return number if number > 0 else 0
 
 
-def _wrap_subtitle_text(text: str, style: dict[str, Any], play_res_x: int) -> str:
-    value = " ".join(text.split())
-    if not value:
-        return ""
-    font_size = max(1, int(style.get("font_size") or 52))
-    horizontal_margin = 160
-    max_chars = max(8, min(24, int((play_res_x - horizontal_margin) / (font_size * 0.9))))
-    if len(value) <= max_chars:
-        return value
-
-    lines = []
-    remaining = value
-    punctuation = "，。！？；：,.!?;: "
-    while len(remaining) > max_chars:
-        split_at = max(remaining.rfind(mark, 0, max_chars + 1) for mark in punctuation)
-        if split_at < max_chars * 0.45:
-            split_at = max_chars
-        chunk = remaining[: split_at + 1].strip()
-        if chunk:
-            lines.append(chunk)
-        remaining = remaining[split_at + 1 :].strip()
-    if remaining:
-        lines.append(remaining)
-    return "\n".join(lines)
-
-
 def _max_chars_per_line(style: dict[str, Any], play_res_x: int) -> int:
     font_size = max(1, int(style.get("font_size") or 52))
     horizontal_margin = 160
-    return max(8, min(24, int((play_res_x - horizontal_margin) / (font_size * 0.9))))
+    return max(16, min(52, int((play_res_x - horizontal_margin) / (font_size * 0.45))))
 
 
 def _wrap_subtitle_text(text: str, style: dict[str, Any], play_res_x: int, max_lines: int) -> str:
@@ -312,23 +444,51 @@ def _wrap_subtitle_text(text: str, style: dict[str, Any], play_res_x: int, max_l
     if not value:
         return ""
     max_chars = _max_chars_per_line(style, play_res_x)
-    if len(value) <= max_chars:
+    if _visual_width(value) <= max_chars:
         return value
 
     lines = []
     remaining = value
-    punctuation = "，。！？；、,.!?;: "
-    while len(remaining) > max_chars:
-        split_at = max(remaining.rfind(mark, 0, max_chars + 1) for mark in punctuation)
-        if split_at < max_chars * 0.45:
-            split_at = max_chars - 1
-        chunk = remaining[: split_at + 1].strip()
+    while _visual_width(remaining) > max_chars:
+        split_at = _best_split_index(remaining, max_chars)
+        chunk = remaining[:split_at].strip()
         if chunk:
             lines.append(chunk)
-        remaining = remaining[split_at + 1 :].strip()
+        remaining = remaining[split_at:].strip()
     if remaining:
         lines.append(remaining)
     return "\n".join(lines[:max_lines])
+
+
+def _best_split_index(text: str, max_units: int) -> int:
+    hard_limit = max(1, _index_for_visual_width(text, max_units))
+    if hard_limit >= len(text):
+        return len(text)
+    min_index = max(1, _index_for_visual_width(text, max(1, int(max_units * 0.45))))
+    punctuation = "，。！？；、,.!?;: "
+    split_at = max(text.rfind(mark, 0, hard_limit + 1) for mark in punctuation)
+    if split_at >= min_index:
+        return split_at + 1
+    return hard_limit
+
+
+def _index_for_visual_width(text: str, max_units: int) -> int:
+    total = 0
+    for index, char in enumerate(text):
+        total += _char_width(char)
+        if total > max_units:
+            return index
+    return len(text)
+
+
+def _visual_width(text: str) -> int:
+    return sum(_char_width(char) for char in text)
+
+
+def _char_width(char: str) -> int:
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1
 
 
 def _ass_time(seconds: float) -> str:

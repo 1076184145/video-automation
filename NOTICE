@@ -1,0 +1,25 @@
+Video Automation
+Copyright (c) 2026 Video Automation contributors
+
+This project is distributed under the MIT License. See LICENSE for details.
+
+Third-party tools and services
+------------------------------
+
+Video Automation can call optional third-party command-line tools and services
+when configured by the user. These tools are not owned by this project and may
+be governed by their own licenses, terms of service, and usage policies.
+
+Common optional tools and services include:
+
+- FFmpeg / FFprobe for media probing, decoding, and rendering.
+- yt-dlp if users choose to install or use it outside the current default UI.
+- faster-whisper, FunASR, Demucs, Pillow, and other optional Python packages.
+- OpenAI-compatible APIs, OpenRouter, and Google Gemini APIs for optional AI
+  cover, metadata, highlight, or subtitle translation features.
+- Inter and JetBrains Mono web fonts, whose license files are kept under
+  web/fonts/.
+
+Users are responsible for ensuring they have the rights to process, record,
+transcribe, translate, publish, or redistribute any media they provide to the
+software.

@@ -23,10 +23,11 @@ from .cuts import generate_cuts
 from .hooks import generate_uvr_plan
 from .io_utils import write_text_atomic
 from .jobs import Job, configure_job_logger, create_job, find_resume_jobs, list_jobs
-from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio, extract_high_quality_audio, generate_thumbnail, generate_waveform, probe_media
+from .media import MEDIA_EXTENSIONS, detect_silence, detect_visual_events, extract_audio_outputs, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .profiles import apply_profile_settings, profile_flags
 from .render import generate_render_preview, render_final_video, render_review_video
+from .resources import job_gpu_status_callbacks
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
 from .transcribe import transcribe_audio
 
@@ -205,7 +206,29 @@ def health_check(settings: Settings, *, as_json: bool = False) -> int:
     return 0 if ok else 1
 
 
+_health_cache: dict[str, Any] | None = None
+_health_cache_time: float = 0.0
+_HEALTH_CACHE_TTL = 30.0  # seconds
+
+
 def health_payload(settings: Settings) -> dict[str, Any]:
+    global _health_cache, _health_cache_time  # noqa: PLW0603
+    now = time.monotonic()
+    if _health_cache is not None and (now - _health_cache_time) < _HEALTH_CACHE_TTL:
+        return _health_cache
+    result = _build_health_payload(settings)
+    _health_cache = result
+    _health_cache_time = now
+    return result
+
+
+def clear_health_cache() -> None:
+    global _health_cache, _health_cache_time  # noqa: PLW0603
+    _health_cache = None
+    _health_cache_time = 0.0
+
+
+def _build_health_payload(settings: Settings) -> dict[str, Any]:
     whisper_kind = "exe" if settings.whisper_backend == "cli" else "optional_exe"
     checks = [
         ("root", settings.root, "dir"),
@@ -269,19 +292,28 @@ def _render_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
 
 
 def _transcription_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
+    if settings.whisper_backend in {"funasr-whisper", "funasr-faster-whisper"}:
+        return [
+            *_funasr_runtime_checks(settings, optional=True),
+            *_faster_whisper_runtime_checks(settings, optional=False),
+        ]
     if settings.whisper_backend == "funasr":
         return _funasr_runtime_checks(settings)
     if settings.whisper_backend != "faster-whisper":
         return []
+    return _faster_whisper_runtime_checks(settings, optional=False)
+
+
+def _faster_whisper_runtime_checks(settings: Settings, *, optional: bool = False) -> list[dict[str, Any]]:
     checks = []
     faster_exists = importlib.util.find_spec("faster_whisper") is not None
     checks.append({
         "name": "faster_whisper",
         "path": "python:faster_whisper",
         "exists": faster_exists,
-        "required": True,
-        "optional": False,
-        "status": "ok" if faster_exists else "missing",
+        "required": not optional,
+        "optional": optional,
+        "status": "ok" if faster_exists else "optional_missing" if optional else "missing",
         "version": "",
     })
     if settings.faster_whisper_device.strip().lower() != "cuda":
@@ -303,24 +335,24 @@ def _transcription_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         "name": "ctranslate2_cuda",
         "path": "python:ctranslate2",
         "exists": cuda_exists,
-        "required": True,
-        "optional": False,
-        "status": "ok" if cuda_exists else "missing",
+        "required": not optional,
+        "optional": optional,
+        "status": "ok" if cuda_exists else "optional_missing" if optional else "missing",
         "version": version,
     })
     return checks
 
 
-def _funasr_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
+def _funasr_runtime_checks(settings: Settings, *, optional: bool = False) -> list[dict[str, Any]]:
     checks = []
     funasr_exists = importlib.util.find_spec("funasr") is not None
     checks.append({
         "name": "funasr",
         "path": "python:funasr",
         "exists": funasr_exists,
-        "required": True,
-        "optional": False,
-        "status": "ok" if funasr_exists else "missing",
+        "required": not optional,
+        "optional": optional,
+        "status": "ok" if funasr_exists else "optional_missing" if optional else "missing",
         "version": _package_version("funasr") if funasr_exists else "",
     })
     torch_exists = importlib.util.find_spec("torch") is not None
@@ -328,9 +360,9 @@ def _funasr_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         "name": "torch",
         "path": "python:torch",
         "exists": torch_exists,
-        "required": True,
-        "optional": False,
-        "status": "ok" if torch_exists else "missing",
+        "required": not optional,
+        "optional": optional,
+        "status": "ok" if torch_exists else "optional_missing" if optional else "missing",
         "version": _package_version("torch") if torch_exists else "",
     })
     if not settings.funasr_device.strip().lower().startswith("cuda"):
@@ -349,19 +381,21 @@ def _funasr_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         "name": "torch_cuda",
         "path": "python:torch.cuda",
         "exists": cuda_exists,
-        "required": True,
-        "optional": False,
-        "status": "ok" if cuda_exists else "missing",
+        "required": not optional,
+        "optional": optional,
+        "status": "ok" if cuda_exists else "optional_missing" if optional else "missing",
         "version": version,
     })
     return checks
 
 
 def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
-    if settings.cover_provider.strip().lower() != "openai":
+    provider = settings.cover_provider.strip().lower()
+    if provider not in {"openai", "openai-compatible", "openrouter", "google"}:
         return []
     pillow_exists = importlib.util.find_spec("PIL") is not None
-    openai_key_exists = bool(settings.openai_api_key.strip())
+    cover_key_exists = bool(settings.cover_api_key_for_provider())
+    key_path = "env:COVER_API_KEY or env:GOOGLE_API_KEY" if provider == "google" else "env:COVER_API_KEY or env:OPENAI_API_KEY"
     return [
         {
             "name": "pillow",
@@ -373,33 +407,28 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
             "version": _package_version("Pillow") if pillow_exists else "",
         },
         {
-            "name": "openai_api_key",
-            "path": "env:OPENAI_API_KEY",
-            "exists": openai_key_exists,
+            "name": "cover_api_key",
+            "path": key_path,
+            "exists": cover_key_exists,
             "required": False,
             "optional": True,
-            "status": "ok" if openai_key_exists else "optional_missing",
+            "status": "ok" if cover_key_exists else "optional_missing",
             "version": "",
         },
     ]
 
 
 def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
-    ytdlp_exists = _path_exists(settings.ytdlp_path, "exe")
-    ytdlp_required = settings.download_enabled
     llm_model_configured = bool(settings.llm_model.strip())
-    llm_key_exists = bool(settings.openai_api_key.strip())
-    llm_required = llm_model_configured and settings.llm_provider.strip().lower() == "openai"
+    llm_provider = settings.llm_provider.strip().lower()
+    llm_key_exists = bool(settings.google_api_key.strip()) if llm_provider == "google" else bool(settings.openai_api_key.strip())
+    llm_required = llm_model_configured and llm_provider in {"openai", "google"}
+    llm_key_name = "llm_google_api_key" if llm_provider == "google" else "llm_openai_api_key"
+    llm_key_path = "env:GOOGLE_API_KEY" if llm_provider == "google" else "env:OPENAI_API_KEY"
+    separation_engine = settings.audio_separation_engine.strip().lower()
+    demucs_required = separation_engine == "demucs"
+    demucs_exists = _path_exists(settings.demucs_path, "optional_exe")
     return [
-        {
-            "name": "yt_dlp",
-            "path": str(settings.ytdlp_path),
-            "exists": ytdlp_exists,
-            "required": ytdlp_required,
-            "optional": not ytdlp_required,
-            "status": "ok" if ytdlp_exists else "missing" if ytdlp_required else "optional_missing",
-            "version": "",
-        },
         {
             "name": "llm_model",
             "path": "env:LLM_MODEL",
@@ -410,13 +439,22 @@ def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
             "version": settings.llm_model,
         },
         {
-            "name": "llm_openai_api_key",
-            "path": "env:OPENAI_API_KEY",
+            "name": llm_key_name,
+            "path": llm_key_path,
             "exists": llm_key_exists,
             "required": llm_required,
             "optional": not llm_required,
             "status": "ok" if llm_key_exists else "missing" if llm_required else "optional_missing",
             "version": "",
+        },
+        {
+            "name": "demucs",
+            "path": str(settings.demucs_path),
+            "exists": demucs_exists,
+            "required": demucs_required,
+            "optional": not demucs_required,
+            "status": "ok" if demucs_exists else "missing" if demucs_required else "optional_missing",
+            "version": _demucs_version(settings.demucs_path) if demucs_exists else "",
         },
     ]
 
@@ -433,7 +471,6 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
         "directories": {
             "project_root": str(settings.root),
             "input_recordings": str(settings.input_recordings_dir),
-            "input_downloads": str(settings.input_downloads_dir),
             "job_outputs": str(settings.jobs_dir),
             "logs": str(settings.logs_dir),
         },
@@ -442,7 +479,7 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "ffprobe": str(settings.ffprobe_path),
             "whisper": str(settings.whisper_bin),
             "audiowaveform": str(settings.audiowaveform_path),
-            "yt_dlp": str(settings.ytdlp_path),
+            "demucs": str(settings.demucs_path),
         },
         "whisper": {
             "backend": settings.whisper_backend,
@@ -501,24 +538,39 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "host": settings.api_host,
             "port": settings.api_port,
             "parallel_jobs": settings.api_parallel_jobs,
+            "batch_limit": settings.api_batch_limit,
+            "recording_upload_max_bytes": settings.recording_upload_max_bytes,
             "allowed_origins": ", ".join(settings.api_allowed_origins),
         },
         "exports": {
             "platforms": ", ".join(settings.export_platforms),
             "render_video_encoder": settings.render_video_encoder,
+            "render_output_fps": settings.render_output_fps,
             "render_nvenc_preset": settings.render_nvenc_preset,
             "render_nvenc_cq": settings.render_nvenc_cq,
             "render_nvenc_preview_preset": settings.render_nvenc_preview_preset,
             "render_nvenc_preview_cq": settings.render_nvenc_preview_cq,
+            "web_preview_enabled": settings.web_preview_enabled,
+            "web_preview_max_width": settings.web_preview_max_width,
+            "web_preview_max_height": settings.web_preview_max_height,
+            "web_preview_fps": settings.web_preview_fps,
+            "web_preview_video_bitrate": settings.web_preview_video_bitrate,
             "bgm_path": str(settings.bgm_path) if settings.bgm_path else "",
             "bgm_volume": settings.bgm_volume,
             "source_audio_volume": settings.source_audio_volume,
             "webhook_url": settings.webhook_url,
         },
         "optional_modules": {
-            "download_enabled": settings.download_enabled,
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
+            "google_base_url": settings.google_base_url,
+            "google_api_key_configured": bool(settings.google_api_key),
+            "llm_translation_batch_size": settings.llm_translation_batch_size,
+            "llm_translation_batch_chars": settings.llm_translation_batch_chars,
+            "audio_separation_engine": settings.audio_separation_engine,
+            "demucs_model": settings.demucs_model,
+            "demucs_device": settings.demucs_device,
+            "audio_separation_timeout_seconds": settings.audio_separation_timeout_seconds,
             "publish_enabled": settings.publish_enabled,
             "publish_providers": ", ".join(settings.publish_providers),
         },
@@ -529,13 +581,18 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
         },
         "covers": {
             "provider": settings.cover_provider,
+            "base_url": settings.cover_base_url,
             "model": settings.cover_model,
             "count": settings.cover_count,
             "aspects": ", ".join(settings.cover_aspects),
             "quality": settings.cover_quality,
             "output_format": settings.cover_output_format,
             "title_font": settings.cover_title_font,
+            "cover_api_key_configured": bool(settings.cover_api_key),
             "openai_api_key_configured": bool(settings.openai_api_key),
+            "http_referer": settings.cover_http_referer,
+            "app_title": settings.cover_app_title,
+            "modalities": ", ".join(settings.cover_modalities),
         },
     }
 
@@ -552,6 +609,15 @@ def _first_version_line(path: Path) -> str:
     try:
         executable = shutil.which(str(path)) or str(path)
         result = subprocess.run([executable, "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (result.stdout or result.stderr).splitlines()[0] if (result.stdout or result.stderr) else ""
+
+
+def _demucs_version(path: Path) -> str:
+    try:
+        executable = shutil.which(str(path)) or str(path)
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return ""
     return (result.stdout or result.stderr).splitlines()[0] if (result.stdout or result.stderr) else ""
@@ -1099,21 +1165,30 @@ def process_job(
                 generate_thumbnail(settings, job.source_path, job.job_dir / "thumbnail.jpg", manifest["duration_seconds"], force=force)
 
         def extract_audio_stage(stage_context: dict[str, Any]) -> None:
-            extract_audio(settings, job.source_path, stage_context["audio_path"], force=force)
-            extract_high_quality_audio(settings, job.source_path, stage_context["audio_hq_path"], force=force)
+            if not stage_context.get("media_outputs_prepared"):
+                extract_audio_outputs(
+                    settings,
+                    job.source_path,
+                    stage_context["audio_path"],
+                    stage_context["audio_hq_path"],
+                    force=force,
+                )
             generate_waveform(settings, stage_context["audio_path"], job.job_dir / "waveform.json", force=force)
 
         def corruption_stage(stage_context: dict[str, Any]) -> None:
             manifest = stage_context["manifest"]
             if manifest.get("video_stream_count", 0) < 1:
                 return
-            detect_decode_errors(
+            extract_audio_outputs(
                 settings,
                 job.source_path,
-                manifest["duration_seconds"],
-                job.job_dir / "corrupt.json",
+                stage_context["audio_path"],
+                stage_context["audio_hq_path"],
+                integrity_output_path=job.job_dir / "corrupt.json",
+                duration=manifest["duration_seconds"],
                 force=force,
             )
+            stage_context["media_outputs_prepared"] = True
 
         def transcribe_stage(stage_context: dict[str, Any]) -> None:
             if skip_transcribe:
@@ -1123,10 +1198,22 @@ def process_job(
                 duration = float(manifest.get("duration_seconds") or 0)
                 estimated_seconds = max(settings.whisper_timeout_min_seconds, duration * settings.whisper_timeout_multiplier)
                 stop_heartbeat = threading.Event()
+                resource_waiting = threading.Event()
                 job.stage_estimate_seconds = round(estimated_seconds, 2)
+                waiting_callback, acquired_callback = job_gpu_status_callbacks(job, "transcription")
+
+                def on_resource_wait() -> None:
+                    resource_waiting.set()
+                    waiting_callback()
+
+                def on_resource_acquired() -> None:
+                    resource_waiting.clear()
+                    acquired_callback()
 
                 def heartbeat() -> None:
                     while not stop_heartbeat.wait(5):
+                        if resource_waiting.is_set():
+                            continue
                         elapsed = time.monotonic() - started_at
                         percent = min(95.0, elapsed / estimated_seconds * 100) if estimated_seconds > 0 else None
                         job.update_stage_progress(
@@ -1139,7 +1226,14 @@ def process_job(
                 heartbeat_thread.start()
                 try:
                     transcribe_settings = replace(settings, whisper_language=whisper_language) if whisper_language else settings
-                    transcribe_audio(transcribe_settings, stage_context["audio_path"], job.job_dir, force=force)
+                    transcribe_audio(
+                        transcribe_settings,
+                        stage_context["audio_path"],
+                        job.job_dir,
+                        force=force,
+                        resource_wait_callback=on_resource_wait,
+                        resource_acquired_callback=on_resource_acquired,
+                    )
                 finally:
                     stop_heartbeat.set()
                     heartbeat_thread.join(timeout=1)
@@ -1152,12 +1246,29 @@ def process_job(
         def freeze_stage(stage_context: dict[str, Any]) -> None:
             logger.info("Detecting freeze")
             manifest = stage_context["manifest"]
-            detect_freeze(settings, job.source_path, manifest["duration_seconds"], job.job_dir / "freeze.json", force=force)
+            detect_visual_events(
+                settings,
+                job.source_path,
+                manifest["duration_seconds"],
+                job.job_dir / "freeze.json",
+                job.job_dir / "scene.json" if detect_scenes_enabled else None,
+                force=force,
+            )
+            stage_context["visual_events_prepared"] = True
 
         def scenes_stage(stage_context: dict[str, Any]) -> None:
             logger.info("Detecting scene changes")
+            if stage_context.get("visual_events_prepared"):
+                return
             manifest = stage_context["manifest"]
-            detect_scenes(settings, job.source_path, manifest["duration_seconds"], job.job_dir / "scene.json", force=force)
+            detect_visual_events(
+                settings,
+                job.source_path,
+                manifest["duration_seconds"],
+                None,
+                job.job_dir / "scene.json",
+                force=force,
+            )
 
         def cuts_stage(stage_context: dict[str, Any]) -> None:
             manifest = stage_context["manifest"]
@@ -1185,11 +1296,24 @@ def process_job(
             generate_bgm_mix_plan(settings, job.job_dir, force=force)
             generate_webhook_plan(settings, job.job_dir, force=force)
 
-        def run_render_stage(stage_name: str, render: Callable[[Callable[[float], None]], None]) -> None:
+        def run_render_stage(
+            stage_name: str,
+            render: Callable[[Callable[[float], None], Callable[[], None], Callable[[], None]], None],
+        ) -> None:
             stop_heartbeat = threading.Event()
+            resource_waiting = threading.Event()
             started_at = time.monotonic()
             state = {"percent": 0.0}
             label = stage_name.replace("_", " ")
+            waiting_callback, acquired_callback = job_gpu_status_callbacks(job, label)
+
+            def on_resource_wait() -> None:
+                resource_waiting.set()
+                waiting_callback()
+
+            def on_resource_acquired() -> None:
+                resource_waiting.clear()
+                acquired_callback()
 
             def callback(percent: float) -> None:
                 state["percent"] = round(max(0.0, min(100.0, percent)), 2)
@@ -1201,6 +1325,8 @@ def process_job(
 
             def heartbeat() -> None:
                 while not stop_heartbeat.wait(5):
+                    if resource_waiting.is_set():
+                        continue
                     elapsed = int(time.monotonic() - started_at)
                     job.update_stage_progress(
                         state["percent"],
@@ -1210,7 +1336,7 @@ def process_job(
             heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
             heartbeat_thread.start()
             try:
-                render(callback)
+                render(callback, on_resource_wait, on_resource_acquired)
             finally:
                 stop_heartbeat.set()
                 heartbeat_thread.join(timeout=1)
@@ -1218,19 +1344,21 @@ def process_job(
         def render_review_stage(stage_context: dict[str, Any]) -> None:
             run_render_stage(
                 "render_review",
-                lambda callback: render_review_video(
+                lambda callback, on_wait, on_acquired: render_review_video(
                     settings,
                     job.job_dir,
                     job.source_path,
                     force=force,
                     progress_callback=callback,
+                    resource_wait_callback=on_wait,
+                    resource_acquired_callback=on_acquired,
                 ),
             )
 
         def render_final_stage(stage_context: dict[str, Any]) -> None:
             run_render_stage(
                 "render_final",
-                lambda callback: render_final_video(
+                lambda callback, on_wait, on_acquired: render_final_video(
                     settings,
                     job.job_dir,
                     job.source_path,
@@ -1238,6 +1366,8 @@ def process_job(
                     vertical=vertical_enabled,
                     burn_subtitles=burn_subtitles_enabled,
                     progress_callback=callback,
+                    resource_wait_callback=on_wait,
+                    resource_acquired_callback=on_acquired,
                 ),
             )
 

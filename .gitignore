@@ -1,21 +1,34 @@
 .env
 .env.*
 !.env.example
+*.local
 
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 venv/
 .venv/
 
+build/
+dist/
+.playwright-cli/
+
 logs/
+logs-runtime/
 processing/
 input/recordings/
 input/downloads/
+output/
 subtitles/
+config/
 
 .workbuddy/
+docs/superpowers/
 *.tmp
 *.log
+temp.txt
 
+tools/bin/*
+!tools/bin/README.md

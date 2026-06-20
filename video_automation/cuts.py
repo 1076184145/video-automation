@@ -39,6 +39,8 @@ def generate_cuts(
     scenes = _summarize_scenes(scene_payload, duration)
     clips = _attach_scenes_to_clips(clips, scenes)
     clips = _score_content_value(clips)
+    semantic_highlights = _semantic_highlights(job_dir)
+    clips = _attach_semantic_highlights(clips, semantic_highlights)
     payload = {
         "status": "needs_review",
         "duration_seconds": duration,
@@ -47,10 +49,12 @@ def generate_cuts(
         "highlight_signals": {
             "scenes": scenes,
             "scene_count": len(scenes),
+            "semantic_highlight_count": len(semantic_highlights),
         },
+        "semantic_highlights": semantic_highlights,
         "content_scoring": {
-            "method": "speech_density+scene_density+duration_balance",
-            "note": "Scores rank kept clips for review; they do not auto-delete media.",
+            "method": "0.4*structure_score+0.6*semantic_score" if semantic_highlights else "speech_density+scene_density+duration_balance",
+            "note": "Final scores rank clips for review; they do not auto-delete or reorder media.",
         },
         "clip_stabilization": {
             "min_clip_seconds": min_clip_seconds,
@@ -84,11 +88,18 @@ def update_cuts_from_editor(job_dir: Path, clips: list[dict[str, Any]]) -> dict[
     edited_clips = _attach_transcript_to_clips(edited_clips, transcript_segments)
     edited_clips = _attach_scenes_to_clips(edited_clips, scenes if isinstance(scenes, list) else [])
     edited_clips = _score_content_value(edited_clips)
+    semantic_highlights = _semantic_highlights(job_dir, current)
+    edited_clips = _attach_semantic_highlights(edited_clips, semantic_highlights)
 
     payload = dict(current)
     payload["status"] = "needs_review"
     payload["source"] = "manual_edit"
     payload["clips"] = edited_clips
+    payload["semantic_highlights"] = semantic_highlights
+    payload["content_scoring"] = {
+        "method": "0.4*structure_score+0.6*semantic_score" if semantic_highlights else "speech_density+scene_density+duration_balance",
+        "note": "Final scores rank clips for review; they do not auto-delete or reorder media.",
+    }
     notes = [note for note in payload.get("notes", []) if isinstance(note, str)]
     if "Clips were edited in the Web UI." not in notes:
         notes.append("Clips were edited in the Web UI.")
@@ -432,6 +443,74 @@ def _score_content_value(clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return scored
 
 
+def _semantic_highlights(job_dir: Path, current: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    payload = read_json_file(job_dir / "highlights.json")
+    if not isinstance(payload, dict) and isinstance(current, dict):
+        existing = current.get("semantic_highlights")
+        return [dict(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    items = payload.get("highlights") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    highlights: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = round(max(0.0, float(item.get("start"))), 3)
+            end = round(max(start, float(item.get("end"))), 3)
+            score = round(max(0.0, min(100.0, float(item.get("score") or 0.0))), 1)
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        highlights.append({
+            "start": start,
+            "end": end,
+            "score": score,
+            "reason": str(item.get("reason") or "").strip(),
+            "recommended_use": str(item.get("recommended_use") or "").strip(),
+        })
+    return sorted(highlights, key=lambda item: item["start"])
+
+
+def _attach_semantic_highlights(clips: list[dict[str, Any]], highlights: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched = []
+    for clip in clips:
+        value = dict(clip)
+        matches = _semantic_matches_for_clip(value, highlights)
+        semantic_score = max((float(item.get("score") or 0.0) for item in matches), default=0.0)
+        structure_score = float(value.get("content_score") or 0.0)
+        value["semantic_score"] = round(semantic_score, 1)
+        value["semantic_reasons"] = [str(item.get("reason") or "").strip() for item in matches if str(item.get("reason") or "").strip()][:3]
+        value["semantic_recommended_use"] = [str(item.get("recommended_use") or "").strip() for item in matches if str(item.get("recommended_use") or "").strip()][:3]
+        value["final_score"] = round(structure_score * 0.4 + semantic_score * 0.6, 1) if highlights else round(structure_score, 1)
+        value["recommendation"] = "strong_keep" if value["final_score"] >= 70 else "review" if value["final_score"] >= 42 else "trim_candidate"
+        enriched.append(value)
+    ranked = sorted(enriched, key=lambda item: float(item.get("final_score") or 0), reverse=True)
+    ranks = {id(item): index for index, item in enumerate(ranked, start=1)}
+    for item in enriched:
+        item["final_rank"] = ranks[id(item)]
+    return enriched
+
+
+def _semantic_matches_for_clip(clip: dict[str, Any], highlights: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        start = float(clip.get("start") or 0.0)
+        end = float(clip.get("end") or 0.0)
+    except (TypeError, ValueError):
+        return []
+    matches = []
+    for item in highlights:
+        try:
+            item_start = float(item.get("start") or 0.0)
+            item_end = float(item.get("end") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if item_start < end and item_end > start:
+            matches.append(item)
+    return sorted(matches, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+
 def _scenes_for_clip(clip: dict[str, Any], scenes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     try:
         clip_start = float(clip["start"])
@@ -497,13 +576,14 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Suggested Clips",
         "",
-        "| # | Start | End | Duration | Score | Rank | Scenes | Recommendation | Reason | Content |",
-        "|---|---:|---:|---:|---:|---:|---:|---|---|---|",
+        "| # | Start | End | Duration | Final | Structure | Semantic | Rank | Scenes | Recommendation | Reason | Content |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
     ])
     for index, clip in enumerate(payload["clips"], start=1):
         lines.append(
             f"| {index} | {clip['start']:.3f} | {clip['end']:.3f} | {clip['duration']:.3f} | "
-            f"{clip.get('content_score', 0):.1f} | {clip.get('content_rank', '')} | {clip.get('scene_count', 0)} | "
+            f"{clip.get('final_score', clip.get('content_score', 0)):.1f} | {clip.get('content_score', 0):.1f} | "
+            f"{clip.get('semantic_score', 0):.1f} | {clip.get('final_rank', clip.get('content_rank', ''))} | {clip.get('scene_count', 0)} | "
             f"{clip.get('recommendation', '')} | {clip['reason']} | {_markdown_cell(clip.get('transcript_text', ''))} |"
         )
     lines.extend(["", "## Notes", ""])

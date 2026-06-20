@@ -81,8 +81,14 @@ def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = Fals
     return payload
 
 
+def call_structured_llm(settings: Settings, *, system: str, user: str, schema: dict[str, Any], schema_name: str) -> dict[str, Any]:
+    return _call_structured_llm(settings, system=system, user=user, schema=schema, schema_name=schema_name)
+
+
 def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: dict[str, Any], schema_name: str) -> dict[str, Any]:
     provider = settings.llm_provider.strip().lower()
+    if provider == "google":
+        return _call_google_structured_llm(settings, system=system, user=user, schema=schema)
     if provider != "openai":
         raise RuntimeError(f"unsupported LLM_PROVIDER: {settings.llm_provider}")
     if not settings.openai_api_key.strip():
@@ -129,6 +135,77 @@ def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: 
     if not isinstance(parsed, dict):
         raise RuntimeError("LLM returned a non-object JSON payload")
     return parsed
+
+
+def _call_google_structured_llm(
+    settings: Settings,
+    *,
+    system: str,
+    user: str,
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    if not settings.google_api_key.strip():
+        raise RuntimeError("GOOGLE_API_KEY is not configured")
+    if not settings.llm_model.strip():
+        raise RuntimeError("LLM_MODEL is not configured")
+    request_payload = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": schema,
+        },
+    }
+    request = urllib.request.Request(
+        _google_model_url(settings.google_base_url, settings.llm_model),
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={
+            "x-goog-api-key": settings.google_api_key.strip(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Google Gemini request failed: {exc.code} {detail}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Google Gemini request failed: {exc}") from exc
+    text = _extract_google_text(raw)
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise RuntimeError("Google Gemini returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Google Gemini returned a non-object JSON payload")
+    return parsed
+
+
+def _extract_google_text(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for candidate in payload.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts", []):
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+    text = "\n".join(parts).strip()
+    if not text:
+        raise RuntimeError("Google Gemini response did not include text")
+    return text
+
+
+def _google_model_url(base_url: str, model: str) -> str:
+    base = (base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    model_name = model.strip()
+    if model_name.startswith("models/"):
+        model_name = model_name.removeprefix("models/")
+    return f"{base}/models/{model_name}:generateContent"
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:
@@ -250,20 +327,40 @@ def _attach_highlights_to_cuts(job_dir: Path, highlights: dict[str, Any]) -> Non
     clips = []
     for clip in cuts.get("clips", []):
         value = dict(clip)
-        value["semantic_score"] = _semantic_score_for_clip(value, semantic)
+        matches = _semantic_matches_for_clip(value, semantic)
+        semantic_score = max((float(item.get("score") or 0.0) for item in matches), default=0.0)
+        structure_score = float(value.get("content_score") or 0.0)
+        value["semantic_score"] = round(semantic_score, 1)
+        value["semantic_reasons"] = [str(item.get("reason") or "").strip() for item in matches if str(item.get("reason") or "").strip()][:3]
+        value["semantic_recommended_use"] = [str(item.get("recommended_use") or "").strip() for item in matches if str(item.get("recommended_use") or "").strip()][:3]
+        value["final_score"] = round(structure_score * 0.4 + semantic_score * 0.6, 1)
+        value["recommendation"] = "strong_keep" if value["final_score"] >= 70 else "review" if value["final_score"] >= 42 else "trim_candidate"
         clips.append(value)
+    ranked = sorted(clips, key=lambda item: float(item.get("final_score") or 0), reverse=True)
+    ranks = {id(item): index for index, item in enumerate(ranked, start=1)}
+    for item in clips:
+        item["final_rank"] = ranks[id(item)]
     cuts["clips"] = clips
     cuts["semantic_highlights"] = semantic
+    cuts["content_scoring"] = {
+        "method": "0.4*structure_score+0.6*semantic_score",
+        "note": "Final scores rank clips for review; they do not auto-delete or reorder media.",
+    }
     write_json_atomic(cuts_path, cuts)
 
 
 def _semantic_score_for_clip(clip: dict[str, Any], highlights: list[Any]) -> float:
+    matches = _semantic_matches_for_clip(clip, highlights)
+    return round(max((float(item.get("score") or 0.0) for item in matches), default=0.0), 1)
+
+
+def _semantic_matches_for_clip(clip: dict[str, Any], highlights: list[Any]) -> list[dict[str, Any]]:
     try:
         start = float(clip.get("start") or 0)
         end = float(clip.get("end") or 0)
     except (TypeError, ValueError):
-        return 0.0
-    best = 0.0
+        return []
+    matches = []
     for item in highlights:
         if not isinstance(item, dict):
             continue
@@ -274,5 +371,7 @@ def _semantic_score_for_clip(clip: dict[str, Any], highlights: list[Any]) -> flo
         except (TypeError, ValueError):
             continue
         if item_start < end and item_end > start:
-            best = max(best, score)
-    return round(best, 1)
+            value = dict(item)
+            value["score"] = max(0.0, min(100.0, score))
+            matches.append(value)
+    return sorted(matches, key=lambda item: float(item.get("score") or 0.0), reverse=True)

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import shutil
+import socket
 import textwrap
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urljoin, urlparse
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -27,6 +30,9 @@ STYLE_PROMPTS = {
     "cinematic": "cinematic poster-like cover, dramatic lighting, film still mood, premium composition",
     "gaming": "energetic gaming livestream cover, esports style, dynamic lighting, high-impact composition",
 }
+SUPPORTED_COVER_PROVIDERS = {"openai", "openai-compatible", "openrouter", "google"}
+MAX_REMOTE_COVER_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_REMOTE_COVER_REDIRECTS = 3
 
 
 def normalize_cover_options(settings: Settings, payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -82,10 +88,10 @@ def generate_cover_candidates(
     count: int | None = None,
     aspects: list[str] | None = None,
 ) -> dict[str, Any]:
-    if settings.cover_provider.strip().lower() != "openai":
+    if settings.cover_provider.strip().lower() not in SUPPORTED_COVER_PROVIDERS:
         raise RuntimeError(f"unsupported COVER_PROVIDER: {settings.cover_provider}")
-    if not settings.openai_api_key.strip():
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+    if not settings.cover_api_key_for_provider():
+        raise RuntimeError("COVER_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY is not configured")
 
     normalized_count = _cover_count(count if count is not None else settings.cover_count)
     normalized_aspects = _cover_aspects(aspects or list(settings.cover_aspects))
@@ -107,7 +113,7 @@ def generate_cover_candidates(
         for aspect in normalized_aspects:
             spec = ASPECT_SPECS[aspect]
             prompt = _build_prompt(context, aspect, normalized_style)
-            payload = _openai_generate_images(settings, prompt, normalized_count, spec["size"])
+            payload = _generate_images(settings, prompt, normalized_count, spec["size"])
             candidates = []
             for index, item in enumerate(payload.get("data") or [], start=1):
                 raw = item.get("b64_json")
@@ -116,7 +122,7 @@ def generate_cover_candidates(
                 filename = f"cover_{spec['slug']}_{index:02}.jpg"
                 output_path = job_dir / filename
                 _postprocess_cover(
-                    base64.b64decode(raw),
+                    _decode_image_data(raw),
                     output_path,
                     size=spec["final"],
                     title=prompt_title,
@@ -205,7 +211,15 @@ def _initial_manifest(
     }
 
 
+def _generate_images(settings: Settings, prompt: str, count: int, size: str) -> dict[str, Any]:
+    if settings.cover_provider.strip().lower() == "google":
+        return _google_generate_images(settings, prompt, count, _aspect_from_size(size))
+    return _openai_generate_images(settings, prompt, count, size)
+
+
 def _openai_generate_images(settings: Settings, prompt: str, count: int, size: str) -> dict[str, Any]:
+    if _uses_openrouter_images(settings):
+        return _openrouter_generate_images(settings, prompt, count, _aspect_from_size(size))
     output_format = settings.cover_output_format if settings.cover_output_format in {"jpeg", "png", "webp"} else "jpeg"
     body = {
         "model": settings.cover_model,
@@ -217,12 +231,9 @@ def _openai_generate_images(settings: Settings, prompt: str, count: int, size: s
         "background": "opaque",
     }
     request = urllib.request.Request(
-        "https://api.openai.com/v1/images/generations",
+        _join_url(settings.cover_base_url, "images/generations"),
         data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {settings.openai_api_key.strip()}",
-            "Content-Type": "application/json",
-        },
+        headers=_cover_headers(settings),
         method="POST",
     )
     try:
@@ -234,7 +245,211 @@ def _openai_generate_images(settings: Settings, prompt: str, count: int, size: s
             message = payload.get("error", {}).get("message") or payload.get("error") or str(exc)
         except Exception:
             message = str(exc)
-        raise RuntimeError(f"OpenAI image generation failed: {message}") from exc
+        raise RuntimeError(f"Cover image generation failed: {message}") from exc
+
+
+def _openrouter_generate_images(settings: Settings, prompt: str, count: int, aspect: str) -> dict[str, Any]:
+    data: list[dict[str, Any]] = []
+    for _ in range(count):
+        body = {
+            "model": settings.cover_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": list(settings.cover_modalities or ("image", "text")),
+            "image_config": {"aspect_ratio": aspect},
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            _join_url(settings.cover_base_url, "chat/completions"),
+            data=json.dumps(body).encode("utf-8"),
+            headers=_cover_headers(settings),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8"))
+                message = detail.get("error", {}).get("message") or detail.get("error") or str(exc)
+            except Exception:
+                message = str(exc)
+            raise RuntimeError(f"OpenRouter image generation failed: {message}") from exc
+        images, content = _openrouter_images(payload)
+        for raw in images:
+            data.append({"b64_json": raw, "revised_prompt": content})
+    return {"data": data}
+
+
+def _google_generate_images(settings: Settings, prompt: str, count: int, aspect: str) -> dict[str, Any]:
+    api_key = settings.cover_api_key_for_provider()
+    if not api_key:
+        raise RuntimeError("COVER_API_KEY or GOOGLE_API_KEY is not configured")
+    data: list[dict[str, Any]] = []
+    for _ in range(count):
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+                "imageConfig": {"aspectRatio": aspect},
+            },
+        }
+        request = urllib.request.Request(
+            _google_model_url(settings.google_base_url, settings.cover_model),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Google Gemini image generation failed: {exc.code} {detail}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Google Gemini image generation failed: {exc}") from exc
+        images, content = _google_images(payload)
+        data.extend({"b64_json": raw, "revised_prompt": content} for raw in images)
+    return {"data": data}
+
+
+def _google_images(payload: dict[str, Any]) -> tuple[list[str], str]:
+    images: list[str] = []
+    text_parts: list[str] = []
+    for candidate in payload.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts", []):
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+            inline = part.get("inlineData") or part.get("inline_data")
+            if isinstance(inline, dict) and isinstance(inline.get("data"), str):
+                images.append(inline["data"])
+    if not images:
+        raise RuntimeError("Google Gemini response did not include generated image data. Check that COVER_MODEL supports image output.")
+    return images, "\n".join(text_parts).strip()
+
+
+def _google_model_url(base_url: str, model: str) -> str:
+    base = (base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    model_name = model.strip()
+    if model_name.startswith("models/"):
+        model_name = model_name.removeprefix("models/")
+    return f"{base}/models/{model_name}:generateContent"
+
+
+def _cover_headers(settings: Settings) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {settings.cover_api_key_for_provider()}",
+        "Content-Type": "application/json",
+    }
+    if settings.cover_http_referer.strip():
+        headers["HTTP-Referer"] = settings.cover_http_referer.strip()
+    if settings.cover_app_title.strip():
+        headers["X-Title"] = settings.cover_app_title.strip()
+    return headers
+
+
+def _openrouter_images(payload: dict[str, Any]) -> tuple[list[str], str]:
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    images: list[str] = []
+    content = ""
+    for choice in choices:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(message, dict):
+            continue
+        if isinstance(message.get("content"), str):
+            content = message["content"]
+        raw_images = message.get("images") if isinstance(message.get("images"), list) else []
+        for item in raw_images:
+            if not isinstance(item, dict):
+                continue
+            image_url = item.get("image_url") or item.get("imageUrl")
+            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                images.append(image_url["url"])
+    if not images:
+        raise RuntimeError("OpenRouter response did not include generated images. Check that COVER_MODEL supports image output and COVER_MODALITIES matches the model.")
+    return images, content
+
+
+def _uses_openrouter_images(settings: Settings) -> bool:
+    provider = settings.cover_provider.strip().lower()
+    return provider == "openrouter" or "openrouter.ai" in settings.cover_base_url.strip().lower()
+
+
+def _aspect_from_size(size: str) -> str:
+    if size.startswith("1024x1536"):
+        return "9:16"
+    if size.startswith("1536x1024"):
+        return "16:9"
+    return "1:1"
+
+
+def _decode_image_data(raw: str) -> bytes:
+    value = raw.strip()
+    if value.startswith("data:") and "," in value:
+        value = value.split(",", 1)[1]
+        return base64.b64decode(value)
+    if value.startswith(("http://", "https://")):
+        return _fetch_remote_image(value)
+    return base64.b64decode(value)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def _fetch_remote_image(url: str) -> bytes:
+    current = url
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    for _ in range(MAX_REMOTE_COVER_REDIRECTS + 1):
+        _validate_remote_image_url(current)
+        request = urllib.request.Request(current, headers={"User-Agent": "VideoAutomation/1.0"})
+        try:
+            with opener.open(request, timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                if length and int(length) > MAX_REMOTE_COVER_IMAGE_BYTES:
+                    raise RuntimeError("remote cover image is too large")
+                data = response.read(MAX_REMOTE_COVER_IMAGE_BYTES + 1)
+                if len(data) > MAX_REMOTE_COVER_IMAGE_BYTES:
+                    raise RuntimeError("remote cover image is too large")
+                return data
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise
+            location = exc.headers.get("Location")
+            if not location:
+                raise RuntimeError("remote cover image redirect had no Location") from exc
+            current = urljoin(current, location)
+    raise RuntimeError("remote cover image had too many redirects")
+
+
+def _validate_remote_image_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("remote cover image URL must be http or https")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise RuntimeError("remote cover image host could not be resolved") from exc
+    for *_, sockaddr in addresses:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise RuntimeError("remote cover image URL resolves to a private or local address")
+
+
+def _join_url(base_url: str, path: str) -> str:
+    base = (base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    suffix = path.strip("/")
+    return f"{base}/{suffix}"
 
 
 def _postprocess_cover(raw: bytes, output_path: Path, *, size: tuple[int, int], title: str, font_name: str, output_format: str) -> None:
@@ -267,7 +482,14 @@ def _postprocess_cover(raw: bytes, output_path: Path, *, size: tuple[int, int], 
             y += line_height
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
-    image.save(tmp_path, format="JPEG", quality=92)
+    normalized_format = output_format.strip().lower()
+    if normalized_format not in {"jpeg", "png", "webp"}:
+        normalized_format = "jpeg"
+    save_format = "JPEG" if normalized_format == "jpeg" else normalized_format.upper()
+    save_kwargs: dict[str, Any] = {}
+    if normalized_format in {"jpeg", "webp"}:
+        save_kwargs["quality"] = 92
+    image.save(tmp_path, format=save_format, **save_kwargs)
     os.replace(tmp_path, output_path)
 
 

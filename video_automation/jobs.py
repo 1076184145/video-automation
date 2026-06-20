@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .error_advisor import advise_error
+from .events import publish_event
 from .io_utils import write_json_atomic
 
 
@@ -39,8 +41,12 @@ def safe_stem(path: Path) -> str:
 class Job:
     source_path: Path
     job_dir: Path
+    batch_id: str | None = None
+    batch_index: int | None = None
+    batch_size: int | None = None
     status: str = "pending"
     error: str | None = None
+    error_advice: dict[str, Any] | None = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     current_stage: str | None = None
@@ -62,8 +68,12 @@ class Job:
         return {
             "source_path": str(self.source_path),
             "job_dir": str(self.job_dir),
+            "batch_id": self.batch_id,
+            "batch_index": self.batch_index,
+            "batch_size": self.batch_size,
             "status": self.status,
             "error": self.error,
+            "error_advice": self.error_advice,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "current_stage": self.current_stage,
@@ -77,16 +87,23 @@ class Job:
         with self._save_lock:
             self.updated_at = datetime.now().isoformat(timespec="seconds")
             self.job_dir.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(self.state_path, self.to_dict())
+            payload = self.to_dict()
+            write_json_atomic(self.state_path, payload)
+        try:
+            publish_event("job", payload)
+        except Exception:
+            logging.getLogger(__name__).debug("failed to publish job event", exc_info=True)
 
     def set_status(self, status: str) -> None:
         self.status = status
         self.error = None
+        self.error_advice = None
         self.save()
 
     def start_stage(self, status: str, stage: str, *, message: str | None = None) -> None:
         self.status = status
         self.error = None
+        self.error_advice = None
         self.current_stage = stage
         self.stage_progress = 0.0
         self.stage_message = message
@@ -106,6 +123,7 @@ class Job:
     def fail(self, error: str) -> None:
         self.status = "failed"
         self.error = error
+        self.error_advice = advise_error(error)
         self.save()
 
 
@@ -136,9 +154,16 @@ def find_existing_job(settings: Settings, source_path: Path) -> Job | None:
         if data.get("source_path") == source_text:
             return Job(
                 source_path=Path(data["source_path"]),
-                job_dir=Path(data["job_dir"]),
+                # Trust the state file location, not the serialized job_dir.
+                # A tampered job.json should not redirect API file
+                # enumeration or future saves outside the jobs directory.
+                job_dir=state_path.parent,
+                batch_id=data.get("batch_id"),
+                batch_index=data.get("batch_index"),
+                batch_size=data.get("batch_size"),
                 status=data.get("status", "pending"),
                 error=data.get("error"),
+                error_advice=data.get("error_advice") if isinstance(data.get("error_advice"), dict) else None,
                 created_at=data.get("created_at") or datetime.now().isoformat(timespec="seconds"),
                 updated_at=data.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
                 current_stage=data.get("current_stage"),
@@ -158,9 +183,15 @@ def load_job(state_path: Path) -> Job | None:
     try:
         return Job(
             source_path=Path(data["source_path"]),
-            job_dir=Path(data.get("job_dir") or state_path.parent),
+            # The caller selected this state file; keep the job rooted beside
+            # it even if a stale or tampered payload contains another job_dir.
+            job_dir=state_path.parent,
+            batch_id=data.get("batch_id"),
+            batch_index=data.get("batch_index"),
+            batch_size=data.get("batch_size"),
             status=data.get("status", "pending"),
             error=data.get("error"),
+            error_advice=data.get("error_advice") if isinstance(data.get("error_advice"), dict) else None,
             created_at=data.get("created_at") or datetime.now().isoformat(timespec="seconds"),
             updated_at=data.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
             current_stage=data.get("current_stage"),
@@ -184,14 +215,28 @@ def find_resume_jobs(settings: Settings) -> list[Job]:
     return [job for job in list_jobs(settings) if job.status not in READY_STATUSES]
 
 
-def create_job(settings: Settings, source_path: Path | str, *, force: bool = False) -> Job:
+def create_job(
+    settings: Settings,
+    source_path: Path | str,
+    *,
+    force: bool = False,
+    batch_id: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+) -> Job:
     resolved = normalize_source_path(source_path).resolve()
     if not force:
         existing = find_existing_job(settings, resolved)
         if existing:
             return existing
     job_dir = settings.jobs_dir / f"{utc_stamp()}-{safe_stem(resolved)}"
-    job = Job(source_path=resolved, job_dir=job_dir)
+    job = Job(
+        source_path=resolved,
+        job_dir=job_dir,
+        batch_id=batch_id,
+        batch_index=batch_index,
+        batch_size=batch_size,
+    )
     job.save()
     return job
 

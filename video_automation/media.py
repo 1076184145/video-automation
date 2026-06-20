@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import wave
 from array import array
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -154,55 +155,143 @@ def _frame_rate(stream: dict[str, Any]) -> float | None:
     return None
 
 
-def extract_audio(settings: Settings, source_path: Path, audio_path: Path, *, force: bool = False) -> None:
-    if audio_path.exists() and audio_path.stat().st_size > 0 and not force:
-        return
-    temp_path = _temp_media_path(audio_path)
+def extract_audio_outputs(
+    settings: Settings,
+    source_path: Path,
+    audio_path: Path | None,
+    high_quality_audio_path: Path | None,
+    *,
+    integrity_output_path: Path | None = None,
+    duration: float = 0.0,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    needs_audio = audio_path is not None and (force or not _valid_media_output(audio_path))
+    needs_high_quality = high_quality_audio_path is not None and (
+        force or not _valid_media_output(high_quality_audio_path)
+    )
+    needs_integrity = (
+        integrity_output_path is not None
+        and settings.source_integrity_scan_enabled
+        and (force or read_json_file(integrity_output_path) is None)
+    )
+    if integrity_output_path is not None and not settings.source_integrity_scan_enabled:
+        integrity_payload = {"status": "skipped", "reason": "SOURCE_INTEGRITY_SCAN_ENABLED=false"}
+        write_json_atomic(integrity_output_path, integrity_payload)
+        if not needs_audio and not needs_high_quality:
+            return integrity_payload
+    if not needs_audio and not needs_high_quality and not needs_integrity:
+        return read_json_file(integrity_output_path) if integrity_output_path is not None else None
+
+    pending: list[tuple[Path, Path]] = []
     command = [
         str(settings.ffmpeg_path),
         "-hide_banner",
         "-y",
+    ]
+    if needs_integrity:
+        command.extend([
+            "-v",
+            "error",
+            "-nostats",
+            "-progress",
+            "pipe:1",
+        ])
+    command.extend([
         "-i",
         str(source_path),
-        "-vn",
-    ]
-    if settings.transcribe_audio_filter:
-        command.extend(["-af", settings.transcribe_audio_filter])
-    command.extend([
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-acodec",
-        "pcm_s16le",
-        str(temp_path),
     ])
-    result = run_command(command, timeout=3600)
+    if needs_audio and audio_path is not None:
+        temp_audio = _temp_media_path(audio_path)
+        pending.append((temp_audio, audio_path))
+        command.extend(["-map", "0:a:0", "-vn"])
+        if settings.transcribe_audio_filter:
+            command.extend(["-af", settings.transcribe_audio_filter])
+        command.extend([
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(temp_audio),
+        ])
+    if needs_high_quality and high_quality_audio_path is not None:
+        temp_high_quality = _temp_media_path(high_quality_audio_path)
+        pending.append((temp_high_quality, high_quality_audio_path))
+        command.extend([
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-c:a",
+            "flac",
+            str(temp_high_quality),
+        ])
+    if needs_integrity:
+        command.extend([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-f",
+            "null",
+            os.devnull,
+        ])
+
+    _remove_paths(temp for temp, _target in pending)
+    timeout = 3600
+    if needs_integrity:
+        timeout = max(timeout, _integrity_scan_timeout(settings, duration))
+    try:
+        result = run_command(command, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _remove_paths(temp for temp, _target in pending)
+        integrity_payload = None
+        if needs_integrity and integrity_output_path is not None:
+            integrity_payload = _combined_integrity_payload(
+                settings,
+                duration,
+                returncode=None,
+                stdout=str(exc.stdout or ""),
+                stderr=str(exc.stderr or ""),
+                timeout_seconds=timeout,
+            )
+            write_json_atomic(integrity_output_path, integrity_payload)
+        if pending:
+            raise RuntimeError(f"ffmpeg media preparation timed out after {timeout}s") from exc
+        return integrity_payload
+
+    integrity_payload = None
+    if needs_integrity and integrity_output_path is not None:
+        integrity_payload = _combined_integrity_payload(
+            settings,
+            duration,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timeout_seconds=timeout,
+        )
+        write_json_atomic(integrity_output_path, integrity_payload)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
-    os.replace(temp_path, audio_path)
+        _remove_paths(temp for temp, _target in pending)
+        if pending:
+            raise RuntimeError(f"ffmpeg media preparation failed: {result.stderr.strip()}")
+        return integrity_payload
+    missing = [temp for temp, _target in pending if not _valid_media_output(temp)]
+    if missing:
+        _remove_paths(temp for temp, _target in pending)
+        raise RuntimeError("ffmpeg audio extraction finished without creating all requested outputs")
+    for temp, target in pending:
+        os.replace(temp, target)
+    return integrity_payload
+
+
+def extract_audio(settings: Settings, source_path: Path, audio_path: Path, *, force: bool = False) -> None:
+    extract_audio_outputs(settings, source_path, audio_path, None, force=force)
 
 
 def extract_high_quality_audio(settings: Settings, source_path: Path, audio_path: Path, *, force: bool = False) -> None:
-    if audio_path.exists() and audio_path.stat().st_size > 0 and not force:
-        return
-    temp_path = _temp_media_path(audio_path)
-    result = run_command([
-        str(settings.ffmpeg_path),
-        "-hide_banner",
-        "-y",
-        "-i",
-        str(source_path),
-        "-vn",
-        "-map",
-        "0:a:0",
-        "-c:a",
-        "flac",
-        str(temp_path),
-    ], timeout=3600)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg high-quality audio extraction failed: {result.stderr.strip()}")
-    os.replace(temp_path, audio_path)
+    extract_audio_outputs(settings, source_path, None, audio_path, force=force)
 
 
 def generate_thumbnail(settings: Settings, source_path: Path, thumbnail_path: Path, duration: float, *, force: bool = False) -> dict[str, Any]:
@@ -255,7 +344,7 @@ def detect_decode_errors(
         payload = {"status": "skipped", "reason": "SOURCE_INTEGRITY_SCAN_ENABLED=false"}
         write_json_atomic(output_path, payload)
         return payload
-    timeout = max(120, min(7200, int(max(duration, 1.0) * settings.source_integrity_scan_timeout_multiplier)))
+    timeout = _integrity_scan_timeout(settings, duration)
     command = [
         str(settings.ffmpeg_path),
         "-hide_banner",
@@ -304,6 +393,36 @@ def detect_decode_errors(
     }
     write_json_atomic(output_path, payload)
     return payload
+
+
+def _integrity_scan_timeout(settings: Settings, duration: float) -> int:
+    return max(120, min(7200, int(max(duration, 1.0) * settings.source_integrity_scan_timeout_multiplier)))
+
+
+def _combined_integrity_payload(
+    settings: Settings,
+    duration: float,
+    *,
+    returncode: int | None,
+    stdout: str,
+    stderr: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    error_lines = _limit_errors(stderr, settings.source_integrity_scan_max_errors)
+    looks_corrupt = _looks_like_decode_error(error_lines)
+    timed_out = returncode is None
+    status = "timeout" if timed_out else "corrupt" if looks_corrupt else "ok" if returncode == 0 else "failed"
+    return {
+        "status": status,
+        "scan_mode": "combined_full_decode",
+        "duration_seconds": round(duration, 3),
+        "timeout_seconds": timeout_seconds,
+        "first_error_at_seconds": None,
+        "scan_completed_at_seconds": _last_progress_seconds(stdout),
+        "error_count": len([line for line in stderr.splitlines() if line.strip()]),
+        "errors": error_lines,
+        "truncated": len(error_lines) >= settings.source_integrity_scan_max_errors,
+    }
 
 
 def _limit_errors(stderr: str, limit: int) -> list[str]:
@@ -436,6 +555,23 @@ def _temp_media_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}.tmp{path.suffix}")
 
 
+def _valid_media_output(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _remove_paths(paths: Iterable[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 def _tool_exists(path: Path) -> bool:
     return path.exists() if path.is_absolute() else shutil.which(str(path)) is not None
 
@@ -469,82 +605,134 @@ def detect_silence(settings: Settings, audio_path: Path, duration: float, silenc
     return payload
 
 
-def detect_freeze(settings: Settings, source_path: Path, duration: float, freeze_path: Path, *, force: bool = False) -> dict[str, Any]:
-    if freeze_path.exists() and not force:
-        cached = read_json_file(freeze_path)
-        if cached is not None:
-            return cached
-    video_filter = _visual_filter_chain(settings, f"freezedetect=n={settings.freeze_noise_db}dB:d={settings.freeze_min_duration_seconds}")
+def detect_visual_events(
+    settings: Settings,
+    source_path: Path,
+    duration: float,
+    freeze_path: Path | None,
+    scene_path: Path | None,
+    *,
+    force: bool = False,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    freeze_payload = None if freeze_path is None or force else read_json_file(freeze_path)
+    scene_payload = None if scene_path is None or force else read_json_file(scene_path)
+    needs_freeze = freeze_path is not None and freeze_payload is None
+    needs_scene = scene_path is not None and scene_payload is None
+    if not needs_freeze and not needs_scene:
+        return freeze_payload, scene_payload
+
     command = [
         str(settings.ffmpeg_path),
         "-hide_banner",
+        "-nostats",
     ]
     if settings.visual_detect_keyframes_only:
         command.extend(["-skip_frame", "nokey"])
     command.extend([
         "-i",
         str(source_path),
-        "-vf",
-        video_filter,
-        "-an",
-        "-f",
-        "null",
-        "-",
     ])
+    freeze_filter = f"freezedetect=n={settings.freeze_noise_db}dB:d={settings.freeze_min_duration_seconds}"
+    scene_filter = f"select='gt(scene,{settings.scene_threshold})',showinfo"
+    if needs_freeze and needs_scene:
+        prefilters = _visual_prefilters(settings)
+        prefix = f"{','.join(prefilters)}," if prefilters else ""
+        command.extend([
+            "-filter_complex",
+            (
+                f"[0:v:0]{prefix}split=2[freeze_src][scene_src];"
+                f"[freeze_src]{freeze_filter}[freeze_out];"
+                f"[scene_src]{scene_filter},nullsink"
+            ),
+            "-map",
+            "[freeze_out]",
+            "-an",
+            "-f",
+            "null",
+            os.devnull,
+        ])
+    else:
+        terminal_filter = freeze_filter if needs_freeze else scene_filter
+        command.extend([
+            "-vf",
+            _visual_filter_chain(settings, terminal_filter),
+            "-an",
+            "-f",
+            "null",
+            os.devnull,
+        ])
     result = run_command(command, timeout=3600)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg visual detection failed: {result.stderr.strip()}")
     text = "\n".join([result.stdout, result.stderr])
-    freezes = parse_freeze_output(text)
-    payload = {
+    if needs_freeze and freeze_path is not None:
+        freeze_payload = _freeze_detection_payload(settings, duration, freeze_filter, text)
+        write_json_atomic(freeze_path, freeze_payload)
+    if needs_scene and scene_path is not None:
+        scene_payload = _scene_detection_payload(settings, duration, scene_filter, text)
+        write_json_atomic(scene_path, scene_payload)
+    return freeze_payload, scene_payload
+
+
+def detect_freeze(settings: Settings, source_path: Path, duration: float, freeze_path: Path, *, force: bool = False) -> dict[str, Any]:
+    payload, _scene_payload = detect_visual_events(
+        settings,
+        source_path,
+        duration,
+        freeze_path,
+        None,
+        force=force,
+    )
+    return payload or {}
+
+
+def detect_scenes(settings: Settings, source_path: Path, duration: float, scene_path: Path, *, force: bool = False) -> dict[str, Any]:
+    _freeze_payload, payload = detect_visual_events(
+        settings,
+        source_path,
+        duration,
+        None,
+        scene_path,
+        force=force,
+    )
+    return payload or {}
+
+
+def _freeze_detection_payload(
+    settings: Settings,
+    duration: float,
+    terminal_filter: str,
+    text: str,
+) -> dict[str, Any]:
+    return {
         "noise_db": settings.freeze_noise_db,
         "min_freeze_duration_seconds": settings.freeze_min_duration_seconds,
         "keyframes_only": settings.visual_detect_keyframes_only,
         "analysis_fps": settings.visual_detect_fps,
         "analysis_width": settings.visual_detect_width,
-        "video_filter": video_filter,
+        "video_filter": _visual_filter_chain(settings, terminal_filter),
         "duration_seconds": duration,
-        "freezes": freezes,
+        "freezes": parse_freeze_output(text),
     }
-    write_json_atomic(freeze_path, payload)
-    return payload
 
 
-def detect_scenes(settings: Settings, source_path: Path, duration: float, scene_path: Path, *, force: bool = False) -> dict[str, Any]:
-    if scene_path.exists() and not force:
-        cached = read_json_file(scene_path)
-        if cached is not None:
-            return cached
-    video_filter = _visual_filter_chain(settings, f"select='gt(scene,{settings.scene_threshold})',showinfo")
-    command = [
-        str(settings.ffmpeg_path),
-        "-hide_banner",
-    ]
-    if settings.visual_detect_keyframes_only:
-        command.extend(["-skip_frame", "nokey"])
-    command.extend([
-        "-i",
-        str(source_path),
-        "-vf",
-        video_filter,
-        "-an",
-        "-f",
-        "null",
-        "-",
-    ])
-    result = run_command(command, timeout=3600)
-    text = "\n".join([result.stdout, result.stderr])
+def _scene_detection_payload(
+    settings: Settings,
+    duration: float,
+    terminal_filter: str,
+    text: str,
+) -> dict[str, Any]:
     scenes = parse_scene_output(text)
-    payload = {
+    return {
         "threshold": settings.scene_threshold,
         "keyframes_only": settings.visual_detect_keyframes_only,
         "analysis_fps": settings.visual_detect_fps,
         "analysis_width": settings.visual_detect_width,
-        "video_filter": video_filter,
+        "video_filter": _visual_filter_chain(settings, terminal_filter),
         "duration_seconds": duration,
         "scene_count": len(scenes),
         "scenes": scenes,
     }
-    write_json_atomic(scene_path, payload)
-    return payload
 
 
 def parse_silence_output(text: str) -> list[dict[str, float]]:
@@ -597,10 +785,15 @@ def parse_scene_output(text: str) -> list[dict[str, float]]:
 
 
 def _visual_filter_chain(settings: Settings, terminal_filter: str) -> str:
+    filters = _visual_prefilters(settings)
+    filters.append(terminal_filter)
+    return ",".join(filters)
+
+
+def _visual_prefilters(settings: Settings) -> list[str]:
     filters = []
     if settings.visual_detect_fps > 0 and not settings.visual_detect_keyframes_only:
         filters.append(f"fps={settings.visual_detect_fps:g}")
     if settings.visual_detect_width > 0:
         filters.append(f"scale={settings.visual_detect_width}:-2")
-    filters.append(terminal_filter)
-    return ",".join(filters)
+    return filters

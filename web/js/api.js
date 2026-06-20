@@ -31,9 +31,7 @@ export const API = {
     });
   },
   async approveJob(name) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/approve`, {
-      method: "POST"
-    });
+    return requestJson(`/jobs/${encodeURIComponent(name)}/approve`, { method: "POST" });
   },
   async updateCuts(name, clips) {
     return requestJson(`/jobs/${encodeURIComponent(name)}/cuts`, {
@@ -49,6 +47,9 @@ export const API = {
       body: JSON.stringify({ segments })
     });
   },
+  async saveClipFeedback(name, payload) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/clip-feedback`, payload);
+  },
   async rerunStage(name, stage) {
     return requestJson(`/jobs/${encodeURIComponent(name)}/rerun`, {
       method: "POST",
@@ -57,93 +58,55 @@ export const API = {
     });
   },
   async generateCovers(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/covers/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 30000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/covers/generate`, payload, 30000);
   },
   async selectCover(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/covers/select`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/covers/select`, payload);
   },
   async generateSegments(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/segments/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 120000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/segments/generate`, payload, 120000);
   },
   async generateMetadata(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/metadata/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 120000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/metadata/generate`, payload, 120000);
   },
   async saveMetadata(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/metadata`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/metadata`, payload);
   },
   async generateHighlights(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/highlights/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 120000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/highlights/generate`, payload, 120000);
+  },
+  async generateHighlightCut(name, payload) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/highlights/cut`, payload, 30000);
+  },
+  async renderHighlightCut(name, payload) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/highlights/render`, payload, 30000);
   },
   async generatePublishPackage(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/publish/package`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 60000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/publish/package`, payload, 60000);
   },
   async generateProjectExport(name, payload) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}/project-export/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 120000
-    });
+    return postJson(`/jobs/${encodeURIComponent(name)}/project-export/generate`, payload, 120000);
   },
-  async getDownloads() {
-    return requestJson("/downloads");
+  async translateSubtitles(name, payload) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/subtitles/translate`, payload, 300000);
   },
-  async startDownload(payload) {
-    return requestJson("/downloads", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 30000
-    });
-  },
-  async importDownload(id, payload) {
-    return requestJson(`/downloads/${encodeURIComponent(id)}/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeout: 30000
-    });
+  async renderTranslatedSubtitles(name, payload) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/subtitles/render-translated`, payload, 30000);
   },
   async deleteJob(name) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}`, {
-      method: "DELETE"
-    });
+    return requestJson(`/jobs/${encodeURIComponent(name)}`, { method: "DELETE" });
   },
   async getHealth(options) {
     return requestJson("/health", options);
+  },
+  async installHealthTools(payload = {}) {
+    return postJson("/health/install-tools", payload, 30000);
+  },
+  async updateSettings(payload) {
+    return postJson("/settings", payload, 30000);
+  },
+  openEvents() {
+    return new EventSource("/events");
   },
   jobFileUrl(name, filename, download = false, cacheKey = "") {
     const params = new URLSearchParams();
@@ -153,6 +116,15 @@ export const API = {
     return `/jobs/${encodeURIComponent(name)}/files/${encodeURIComponent(filename)}${query ? `?${query}` : ""}`;
   }
 };
+
+function postJson(url, payload, timeout) {
+  return requestJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    timeout
+  });
+}
 
 function uploadWithProgress(url, file, onProgress) {
   return new Promise((resolve, reject) => {
@@ -191,8 +163,8 @@ async function requestJson(url, options = {}) {
   const { timeout: timeoutOption, retries: retryOption, signal: externalSignal, ...fetchOptions } = options;
   const timeoutMs = timeoutOption === undefined ? 15000 : Number(timeoutOption);
   let retries = retryOption ?? 1;
-  const isPost = fetchOptions.method && fetchOptions.method !== "GET";
-  if (isPost) retries = 0; // 不重试非幂等请求
+  const isNonIdempotent = fetchOptions.method && fetchOptions.method !== "GET";
+  if (isNonIdempotent) retries = 0;
 
   while (retries >= 0) {
     const controller = new AbortController();
@@ -208,8 +180,7 @@ async function requestJson(url, options = {}) {
     }
     try {
       const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
-      if (timeout) clearTimeout(timeout);
-      if (externalSignal && abortListener) externalSignal.removeEventListener("abort", abortListener);
+      cleanup(timeout, externalSignal, abortListener);
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
@@ -220,21 +191,24 @@ async function requestJson(url, options = {}) {
       }
       return await response.json();
     } catch (error) {
-      if (timeout) clearTimeout(timeout);
-      if (externalSignal && abortListener) externalSignal.removeEventListener("abort", abortListener);
+      cleanup(timeout, externalSignal, abortListener);
       if (retries-- <= 0) {
-        throw new Error(error.name === 'AbortError' ? 'Request Timeout' : error.message);
+        throw new Error(error.name === "AbortError" ? "Request Timeout" : error.message);
       }
-      // 等待 1s 后重试
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
 }
 
-// 监听网络状态
-window.addEventListener('offline', () => {
-  document.body.classList.add('offline');
+function cleanup(timeout, externalSignal, abortListener) {
+  if (timeout) clearTimeout(timeout);
+  if (externalSignal && abortListener) externalSignal.removeEventListener("abort", abortListener);
+}
+
+window.addEventListener("offline", () => {
+  document.body.classList.add("offline");
 });
-window.addEventListener('online', () => {
-  document.body.classList.remove('offline');
+
+window.addEventListener("online", () => {
+  document.body.classList.remove("offline");
 });

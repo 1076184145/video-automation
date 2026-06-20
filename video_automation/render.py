@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
 from .crop import generate_vertical_crop_plan
+from .highlight_cut import generate_highlight_cut
 from .progress import ProgressCallback, run_ffmpeg_with_progress
+from .resources import GPU_EXECUTION_GATE, rendering_uses_gpu
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .subtitles import generate_clipped_ass_subtitles
 
@@ -52,19 +56,26 @@ def render_review_video(
     *,
     force: bool = False,
     progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
 ) -> Path:
     preview = generate_render_preview(settings, job_dir, source_path, force=force)
     output_path = Path(preview["output_path"])
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
-    result = run_ffmpeg_with_progress(
+    result = _run_ffmpeg_with_resource_gate(
+        settings,
         [str(part) for part in preview["command"]],
         duration_seconds=_clips_duration(preview.get("clips", [])),
         progress_callback=progress_callback,
         timeout=3600,
+        resource_wait_callback=resource_wait_callback,
+        resource_acquired_callback=resource_acquired_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg review render failed: {result.stderr.strip()}")
+    _refresh_web_preview(settings, job_dir, source_path=output_path, force=force)
     return output_path
 
 
@@ -76,10 +87,19 @@ def render_final_video(
     force: bool = False,
     vertical: bool = False,
     burn_subtitles: bool = False,
+    subtitle_filename: str | None = None,
+    output_filename: str = "final.mp4",
     progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
 ) -> Path:
-    output_path = job_dir / "final.mp4"
+    output_path = (job_dir / output_filename).resolve()
+    try:
+        output_path.relative_to(job_dir.resolve())
+    except ValueError as exc:
+        raise RuntimeError("final render output must stay inside the job directory") from exc
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
 
     cuts = _read_json(job_dir / "cuts.json")
@@ -93,7 +113,12 @@ def render_final_video(
         source_path,
         clips,
         output_path,
-        post_filters=_final_post_filters(job_dir, vertical=vertical, burn_subtitles=burn_subtitles),
+        post_filters=_final_post_filters(
+            job_dir,
+            vertical=vertical,
+            burn_subtitles=burn_subtitles,
+            subtitle_filename=subtitle_filename,
+        ),
     )
 
     preview = {
@@ -105,6 +130,7 @@ def render_final_video(
         "encoding_passes": 1,
         "vertical": vertical,
         "burn_subtitles": burn_subtitles,
+        "subtitle_filename": subtitle_filename or "",
         "platform": _primary_platform(settings),
         "bgm_path": str(settings.bgm_path) if settings.bgm_path else "",
         "mix": {
@@ -115,15 +141,183 @@ def render_final_video(
     }
     write_json_atomic(job_dir / "final_render_preview.json", preview)
 
-    result = run_ffmpeg_with_progress(
+    result = _run_ffmpeg_with_resource_gate(
+        settings,
         command,
         duration_seconds=_clips_duration(clips) or _duration_from_manifest(job_dir),
         progress_callback=progress_callback,
         timeout=3600,
+        resource_wait_callback=resource_wait_callback,
+        resource_acquired_callback=resource_acquired_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg final render failed: {result.stderr.strip()}")
+    _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
+
+
+def generate_highlight_render_preview(
+    settings: Settings,
+    job_dir: Path,
+    source_path: Path,
+    *,
+    force: bool = False,
+    output_filename: str = "highlight.mp4",
+) -> dict[str, Any]:
+    preview_path = job_dir / "highlight_render_preview.json"
+    output_path = (job_dir / output_filename).resolve()
+    try:
+        output_path.relative_to(job_dir.resolve())
+    except ValueError as exc:
+        raise RuntimeError("highlight render output must stay inside the job directory") from exc
+    if preview_path.exists() and not force:
+        cached = read_json_file(preview_path)
+        if cached is not None:
+            return cached
+    highlight_cut = read_json_file(job_dir / "highlight_cut.json")
+    if not isinstance(highlight_cut, dict):
+        highlight_cut = generate_highlight_cut(job_dir, force=False)
+    clips = _kept_clips({"clips": highlight_cut.get("clips", [])})
+    if not clips:
+        raise RuntimeError("highlight_cut.json has no clips to render")
+    command = build_final_render_command(settings, source_path, clips, output_path, post_filters=[])
+    preview = {
+        "status": "ready",
+        "source_path": str(source_path),
+        "output_path": str(output_path),
+        "clip_count": len(clips),
+        "duration_seconds": _clips_duration(clips),
+        "clips": clips,
+        "command": command,
+    }
+    write_json_atomic(preview_path, preview)
+    return preview
+
+
+def render_highlight_video(
+    settings: Settings,
+    job_dir: Path,
+    source_path: Path,
+    *,
+    force: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+) -> Path:
+    preview = generate_highlight_render_preview(settings, job_dir, source_path, force=force)
+    output_path = Path(preview["output_path"])
+    if output_path.exists() and output_path.stat().st_size > 0 and not force:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
+        return output_path
+    result = _run_ffmpeg_with_resource_gate(
+        settings,
+        [str(part) for part in preview["command"]],
+        duration_seconds=_clips_duration(preview.get("clips", [])),
+        progress_callback=progress_callback,
+        timeout=3600,
+        resource_wait_callback=resource_wait_callback,
+        resource_acquired_callback=resource_acquired_callback,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg highlight render failed: {result.stderr.strip()}")
+    preview["status"] = "done"
+    write_json_atomic(job_dir / "highlight_render_preview.json", preview)
+    _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
+    return output_path
+
+
+def render_web_preview(
+    settings: Settings,
+    job_dir: Path,
+    *,
+    source_path: Path | None = None,
+    force: bool = False,
+) -> Path | None:
+    if not settings.web_preview_enabled:
+        return None
+    source_path = _valid_web_preview_source(source_path) or _web_preview_source(job_dir)
+    if source_path is None:
+        return None
+    output_path = job_dir / "web_preview.mp4"
+    if (
+        output_path.exists()
+        and output_path.stat().st_size > 0
+        and output_path.stat().st_mtime >= source_path.stat().st_mtime
+        and not force
+    ):
+        return output_path
+
+    command = build_web_preview_command(settings, source_path, output_path)
+    payload = {
+        "status": "ready",
+        "source_path": str(source_path),
+        "output_path": str(output_path),
+        "max_width": settings.web_preview_max_width,
+        "max_height": settings.web_preview_max_height,
+        "fps": settings.web_preview_fps,
+        "video_bitrate": settings.web_preview_video_bitrate,
+        "command": command,
+    }
+    write_json_atomic(job_dir / "web_preview.json", payload)
+    result = _run_ffmpeg_with_resource_gate(
+        settings,
+        command,
+        duration_seconds=_duration_from_manifest(job_dir),
+        progress_callback=None,
+        timeout=3600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg web preview render failed: {result.stderr.strip()}")
+    payload["status"] = "done"
+    write_json_atomic(job_dir / "web_preview.json", payload)
+    return output_path
+
+
+def _run_ffmpeg_with_resource_gate(
+    settings: Settings,
+    command: list[str],
+    *,
+    duration_seconds: float,
+    progress_callback: ProgressCallback | None,
+    timeout: int,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+):
+    with GPU_EXECUTION_GATE.slot(
+        enabled=rendering_uses_gpu(settings),
+        on_wait=resource_wait_callback,
+        on_acquired=resource_acquired_callback,
+    ):
+        return run_ffmpeg_with_progress(
+            command,
+            duration_seconds=duration_seconds,
+            progress_callback=progress_callback,
+            timeout=timeout,
+        )
+
+
+def build_web_preview_command(settings: Settings, source_path: Path, output_path: Path) -> list[str]:
+    return [
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-sn",
+        "-vf",
+        (
+            f"scale={settings.web_preview_max_width}:{settings.web_preview_max_height}:"
+            f"force_original_aspect_ratio=decrease,fps={settings.web_preview_fps}"
+        ),
+        *_web_preview_encoding_args(settings),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
 
 
 def build_render_command(settings: Settings, source_path: Path, clips: list[dict[str, float]], output_path: Path) -> list[str]:
@@ -136,7 +330,7 @@ def build_render_command(settings: Settings, source_path: Path, clips: list[dict
         "-i",
         str(source_path),
         "-filter_complex",
-        _filter_complex(clips),
+        _filter_complex(clips, output_fps=settings.render_output_fps),
         "-map",
         "[outv]",
         "-map",
@@ -178,6 +372,7 @@ def build_final_render_command(
             duration=duration,
             source_audio_volume=settings.source_audio_volume,
             bgm_volume=settings.bgm_volume,
+            output_fps=settings.render_output_fps,
         ),
         "-map",
         "[outv]",
@@ -189,6 +384,109 @@ def build_final_render_command(
         str(output_path),
     ])
     return command
+
+
+def _refresh_web_preview(settings: Settings, job_dir: Path, *, source_path: Path | None = None, force: bool) -> None:
+    if not settings.web_preview_enabled:
+        return
+    try:
+        render_web_preview(settings, job_dir, source_path=source_path, force=force)
+    except Exception as exc:
+        write_json_atomic(
+            job_dir / "web_preview.json",
+            {
+                "status": "failed",
+                "error": str(exc),
+                "notes": [
+                    "web_preview.mp4 is only used for smoother browser playback.",
+                    "review.mp4 and final.mp4 were left untouched.",
+                ],
+            },
+        )
+
+
+def _web_preview_source(job_dir: Path) -> Path | None:
+    for filename in ("final.mp4", "review.mp4"):
+        path = job_dir / filename
+        if _valid_web_preview_source(path):
+            return path
+    return None
+
+
+def _valid_web_preview_source(path: Path | None) -> Path | None:
+    if path and path.exists() and path.stat().st_size > 0:
+        return path
+    return None
+
+
+def _web_preview_encoding_args(settings: Settings) -> list[str]:
+    bitrate = settings.web_preview_video_bitrate
+    gop = str(max(24, settings.web_preview_fps * 2))
+    bufsize = _double_bitrate(bitrate)
+    encoder = settings.render_video_encoder.strip().lower()
+    if encoder in {"h264_nvenc", "nvenc"}:
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            settings.render_nvenc_preview_preset,
+            "-tune",
+            "hq",
+            "-rc",
+            "vbr",
+            "-cq",
+            "30",
+            "-b:v",
+            bitrate,
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            bufsize,
+            "-g",
+            gop,
+            "-bf",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+        ]
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-maxrate",
+        bitrate,
+        "-bufsize",
+        bufsize,
+        "-g",
+        gop,
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+    ]
+
+
+def _double_bitrate(value: str) -> str:
+    raw = value.strip().lower()
+    suffix = ""
+    if raw.endswith(("k", "m")):
+        suffix = raw[-1]
+        raw = raw[:-1]
+    try:
+        return f"{float(raw) * 2:g}{suffix}"
+    except ValueError:
+        return value
 
 
 def _kept_clips(cuts: dict[str, Any]) -> list[dict[str, float]]:
@@ -215,14 +513,21 @@ def _filter_complex(
     duration: float = 0.0,
     source_audio_volume: float = 1.0,
     bgm_volume: float = 0.16,
+    output_fps: int = 0,
 ) -> str:
     parts = []
     concat_inputs = []
     for index, clip in enumerate(clips):
         start = clip["start"]
         end = clip["end"]
-        parts.append(f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{index}]")
-        parts.append(f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{index}]")
+        video_filters = [f"trim=start={start}:end={end}", "setpts=PTS-STARTPTS"]
+        if output_fps > 0:
+            video_filters.append(f"fps={output_fps}")
+        parts.append(f"[0:v]{','.join(video_filters)}[v{index}]")
+        parts.append(
+            f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,"
+            f"aresample=async=1:first_pts=0[a{index}]"
+        )
         concat_inputs.append(f"[v{index}][a{index}]")
     post_filters = post_filters or []
     audio_output = "basea" if mix_bgm else "outa"
@@ -257,19 +562,50 @@ def _ffmpeg_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
-def _final_post_filters(job_dir: Path, *, vertical: bool, burn_subtitles: bool) -> list[str]:
+SAFE_CROP_FILTER_RE = re.compile(
+    r"^(?:crop=\d+:\d+:\d+:\d+,)?"
+    r"(?:"
+    r"crop=\d+:\d+:\d+:\d+,scale=\d+:\d+"
+    r"|scale=\d+:\d+:force_original_aspect_ratio=decrease,pad=\d+:\d+:\(ow-iw\)/2:\(oh-ih\)/2:black"
+    r"|split=2\[fg\]\[bg\];\[bg\]scale=\d+:\d+:force_original_aspect_ratio=increase,crop=\d+:\d+,gblur=sigma=\d+(?:\.\d+)?,eq=brightness=-?\d+(?:\.\d+)?:saturation=\d+(?:\.\d+)?\[bgv\];\[fg\]scale=\d+:\d+:force_original_aspect_ratio=decrease\[fgv\];\[bgv\]\[fgv\]overlay=\(W-w\)/2:\(H-h\)/2,setsar=1"
+    r")$"
+)
+
+
+def _safe_crop_filter(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text if SAFE_CROP_FILTER_RE.fullmatch(text) else None
+
+
+def _final_post_filters(
+    job_dir: Path,
+    *,
+    vertical: bool,
+    burn_subtitles: bool,
+    subtitle_filename: str | None = None,
+) -> list[str]:
     filters = []
     if vertical:
         crop_plan = read_json_file(job_dir / "crop_plan.json")
-        if crop_plan and crop_plan.get("status") == "ready" and crop_plan.get("ffmpeg_filter"):
-            filters.append(str(crop_plan["ffmpeg_filter"]))
+        crop_filter = _safe_crop_filter(crop_plan.get("ffmpeg_filter") if isinstance(crop_plan, dict) else None)
+        if crop_plan and crop_plan.get("status") == "ready" and crop_filter:
+            filters.append(crop_filter)
         else:
             filters.append("scale=1080:1920:force_original_aspect_ratio=increase")
             filters.append("crop=1080:1920")
     if burn_subtitles:
-        subtitles_path = job_dir / "subtitles_clipped.ass"
-        if not subtitles_path.exists():
-            subtitles_path = job_dir / "subtitles.ass"
+        if subtitle_filename:
+            subtitles_path = (job_dir / subtitle_filename).resolve()
+            try:
+                subtitles_path.relative_to(job_dir.resolve())
+            except ValueError as exc:
+                raise RuntimeError("subtitle file must stay inside the job directory") from exc
+        else:
+            subtitles_path = job_dir / "subtitles_clipped.ass"
+            if not subtitles_path.exists():
+                subtitles_path = job_dir / "subtitles.ass"
         if not subtitles_path.exists():
             raise RuntimeError("subtitles.ass is missing; run subtitle styling before final render")
         filters.append(f"subtitles='{_ffmpeg_filter_path(subtitles_path)}'")
