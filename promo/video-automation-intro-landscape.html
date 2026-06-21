@@ -142,10 +142,10 @@
 
     h1 {
       margin: 0;
-      font-size: 72px;
-      line-height: 1.1;
+      font-size: 78px;
+      line-height: 0.98;
       font-weight: 880;
-      letter-spacing: -0.04em;
+      letter-spacing: -0.045em;
       animation: heroPulse 60s linear infinite;
     }
 
@@ -387,9 +387,9 @@
     .narration {
       position: absolute;
       left: 72px;
-      right: 780px;
-      bottom: 58px;
-      min-height: 126px;
+      right: 72px;
+      bottom: 108px;
+      height: 96px;
       z-index: 3;
     }
 
@@ -397,7 +397,9 @@
       position: absolute;
       left: 0;
       right: 0;
-      display: block;
+      display: flex;
+      align-items: center;
+      gap: 22px;
       opacity: 0;
       transform: translateY(28px);
       animation: sceneText 60s linear infinite;
@@ -406,18 +408,19 @@
 
     .line h2 {
       margin: 0;
-      font-size: 40px;
-      line-height: 1.08;
+      min-width: 430px;
+      font-size: 44px;
+      line-height: 1.05;
       font-weight: 860;
       letter-spacing: -0.025em;
     }
 
     .line p {
-      margin: 12px 0 0;
-      max-width: 740px;
+      margin: 0;
+      max-width: 820px;
       color: var(--muted);
-      font-size: 21px;
-      line-height: 1.36;
+      font-size: 24px;
+      line-height: 1.4;
       font-weight: 600;
     }
 
