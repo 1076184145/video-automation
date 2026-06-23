@@ -1,12 +1,30 @@
 # Video Automation
 
-**Language:** English | [简体中文](README.zh-CN.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![GitHub stars](https://img.shields.io/github/stars/1076184145/video-automation?style=social)](https://github.com/1076184145/video-automation/stargazers)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-required-orange.svg)](https://ffmpeg.org/)
 
-中文用户请直接阅读 [README.zh-CN.md](README.zh-CN.md)。那里包含本地运行、桌面版、健康检查、一键修复、AI Key 配置和常见说明。
+**Chinese is the primary user guide:** [README.zh-CN.md](README.zh-CN.md)
 
-Turn long livestream recordings into reviewable rough cuts, subtitles, covers, and publish handoff packages on your own machine.
+English documentation is kept in this file for international users and contributors.
 
-Video Automation is built first for livestream/game/education creators and small teams that batch-process recordings. It watches or accepts local media, creates one isolated job folder per source video, analyzes the media, transcribes speech, suggests cuts, and can render preview or final videos while keeping the original recording untouched.
+Video Automation is a local AI workflow that turns long livestream or recorded videos into publish-ready short clips for Douyin, Bilibili, and YouTube Shorts, with smart rough cuts, subtitles, AI cover generation, and publish handoff files.
+
+| Dashboard | Job review | Publish handoff |
+|---|---|---|
+| ![Dashboard placeholder](docs/assets/dashboard-placeholder.svg) | ![Job detail placeholder](docs/assets/job-detail-placeholder.svg) | ![Publish handoff placeholder](docs/assets/publish-placeholder.svg) |
+
+> These are placeholder visuals. Replace the SVG files in `docs/assets/` with real screenshots or a demo GIF when you prepare a release page.
+
+## Why It Exists
+
+- **Local-first:** your source recordings and generated files stay on your machine unless you explicitly enable an external AI provider.
+- **Built for livestream clipping:** import long recordings, transcribe speech, detect usable sections, review clips, and export short-form outputs.
+- **Multi-platform outputs:** built-in presets for Douyin, Bilibili, and YouTube Shorts.
+- **Creator workflow included:** subtitles, AI cover candidates, metadata, project export, and publish handoff packages.
+- **Beginner-friendly desktop path:** Windows Lite launcher, Health page checks, and one-click repair for portable tools such as FFmpeg.
+- **Automation-ready:** CLI and local HTTP API for batch processing and integration with tools such as n8n.
 
 Fastest path to value:
 
@@ -14,8 +32,6 @@ Fastest path to value:
 2. Use one-click repair if FFmpeg or other required portable tools are missing.
 3. Drag in a video, choose a creator profile such as Douyin or Bilibili, and start processing.
 4. Review the suggested clips, export the final video, then use the publish handoff package for upload.
-
-For non-technical users, most setup lives in the Health and Settings pages. The `.env` file remains available for expert-only tuning.
 
 ## Quick Start: Run Locally
 
@@ -706,6 +722,46 @@ DEMUCS_DEVICE=auto
 
 When enabled, `--plan-uvr` writes `uvr/vocals.wav` and `uvr/instrumental.wav` for each job. Demucs is optional and is not bundled into Lite desktop builds.
 
+## FAQ
+
+### What hardware do I need?
+
+Minimum practical setup:
+
+- Windows 10/11, macOS, or Linux.
+- Python 3.11+ if running from source.
+- FFmpeg and FFprobe.
+- 16 GB RAM is recommended for long recordings.
+- A modern NVIDIA GPU is recommended for faster transcription and rendering, but CPU mode can still run smaller jobs.
+
+For smoother local creator workflows:
+
+- 32 GB RAM.
+- NVIDIA GPU with 8 GB+ VRAM for faster `faster-whisper` and NVENC rendering.
+- SSD storage with enough free space for source videos, intermediate files, and final exports.
+
+### How long does processing take?
+
+Processing time depends on video length, transcription backend, GPU availability, render settings, subtitle burn-in, and optional AI modules.
+
+Typical rough estimates:
+
+- Short 1-5 minute clips: often a few minutes.
+- 30-60 minute recordings: commonly tens of minutes on a GPU machine.
+- Multi-hour livestream recordings: plan for a long batch job, especially if transcription, subtitles, final rendering, and AI extras are enabled.
+
+The first run may be slower because models or tools may need to be downloaded or initialized.
+
+### Do I need an API key?
+
+No for the basic local workflow. Local import, transcription with configured local backends, cut planning, subtitles, preview/final rendering, and publish handoff files can run without AI cover or LLM keys.
+
+You only need provider keys when you enable AI covers, semantic highlights, metadata generation, or subtitle translation.
+
+### Does it upload my videos?
+
+Not by default. The app is local-first. External uploads only happen when you explicitly use an external AI provider or platform integration that requires sending content to that provider.
+
 ## Boundaries
 
 - Original recordings are not modified.
@@ -723,3 +779,5 @@ This project is licensed under the MIT License. See `LICENSE` for details.
 Third-party tools, models, fonts, and APIs used with this project may have their own licenses or terms. See `NOTICE` for a short attribution and responsibility note.
 
 For the Chinese manual, see `README.zh-CN.md`.
+
+If this project helps you, please consider giving it a Star to support the work.

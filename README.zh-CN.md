@@ -1,10 +1,28 @@
 # Video Automation 中文说明
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![GitHub stars](https://img.shields.io/github/stars/1076184145/video-automation?style=social)](https://github.com/1076184145/video-automation/stargazers)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-required-orange.svg)](https://ffmpeg.org/)
+
 **语言：** [English](README.md) | 简体中文
 
-Video Automation 是一个把长录播变成可审核粗剪、字幕、封面和发布交接包的本地自动化工作流。
+Video Automation 是一个本地 AI 视频自动化工具，可以把直播/录播长视频自动转成适合抖音、B 站、YouTube Shorts 的短视频，支持智能剪辑、字幕、AI 封面生成和发布交接包。
 
-它优先服务直播切片、游戏录播、教育录播创作者，以及需要批量处理素材的小团队。系统可以接收本地视频文件，为每个素材创建独立 job，完成媒体探测、音频提取、语音转写、剪辑建议、字幕生成、预览视频和最终视频导出。原始录播不会被修改。
+| 仪表板 | 任务审核 | 发布交接 |
+|---|---|---|
+| ![仪表板占位图](docs/assets/dashboard-placeholder.svg) | ![任务详情占位图](docs/assets/job-detail-placeholder.svg) | ![发布交接占位图](docs/assets/publish-placeholder.svg) |
+
+> 以上是界面占位图。准备发布页时，把 `docs/assets/` 里的 SVG 替换成真实截图或演示 GIF 即可。
+
+## 项目亮点
+
+- **本地优先**：原始视频和任务产物默认都保存在你的电脑上，只有主动启用外部 AI 服务时才会上传相关内容。
+- **面向直播切片**：导入长录播后，自动转写、检测可用片段、生成剪辑建议，最后导出短视频。
+- **多平台预设**：内置抖音、B 站、YouTube Shorts 等常用输出方向。
+- **创作者工作流完整**：字幕、AI 封面候选、标题简介标签、工程导出和发布交接包都在同一个本地面板里完成。
+- **新手更容易启动**：Windows Lite 桌面启动器、健康检查页和一键修复工具可以降低 FFmpeg 等依赖配置门槛。
+- **适合自动化**：提供 CLI 和本地 HTTP API，方便接入 n8n、扣子或自建批处理流程。
 
 最快上手路径：
 
@@ -12,8 +30,6 @@ Video Automation 是一个把长录播变成可审核粗剪、字幕、封面和
 2. 如果 FFmpeg 等必要便携工具缺失，点击一键修复。
 3. 拖入一个视频，选择抖音或 B 站等创作者预设，然后开始处理。
 4. 审核剪辑建议，导出成片，再使用发布交接包上传平台。
-
-普通用户优先使用健康检查页和设置页完成配置；`.env` 仍保留给专家参数调优。
 
 ## 快速开始：本地运行
 
@@ -748,6 +764,46 @@ D:\video-automation\venv\Scripts\python.exe D:\video-automation\run_worker.py --
 
 也可以直接调用本地 HTTP API。
 
+## FAQ
+
+### 最低硬件要求是什么？
+
+最低可用配置：
+
+- Windows 10/11、macOS 或 Linux。
+- 从源码运行需要 Python 3.11+。
+- 必须有 FFmpeg 和 FFprobe。
+- 建议至少 16 GB 内存，长录播会更稳。
+- 没有 NVIDIA 显卡也可以跑小任务，但转写和渲染会慢很多。
+
+更推荐的创作者配置：
+
+- 32 GB 内存。
+- NVIDIA 显卡，8 GB 以上显存更适合长视频转写和 NVENC 渲染。
+- SSD，并预留足够空间给原视频、中间产物和最终成片。
+
+### 处理一个视频大概要多久？
+
+处理耗时取决于视频长度、转写后端、是否有 GPU、渲染参数、是否烧录字幕，以及是否启用 AI 封面/翻译/高光等增强能力。
+
+粗略参考：
+
+- 1-5 分钟短视频：通常几分钟内。
+- 30-60 分钟录播：GPU 机器上一般按“几十分钟”预估。
+- 多小时直播录播：建议当作批处理长任务运行，特别是同时启用转写、字幕、最终渲染和 AI 增强时。
+
+第一次运行可能更慢，因为模型或工具可能需要下载、加载或初始化。
+
+### 一定要填写 API Key 吗？
+
+不需要。基础本地流程可以不填 Key，包括本地导入、转写、剪辑建议、字幕、预览/最终渲染和发布交接包。
+
+只有启用 AI 封面、语义高光、标题简介标签生成或字幕翻译时，才需要配置对应服务商 Key。
+
+### 会上传我的视频吗？
+
+默认不会。项目是本地优先工具。只有你主动启用外部 AI 服务或平台集成时，相关内容才会发送给对应服务商。
+
 ## 当前边界
 
 - 原始录播不会被修改。
@@ -765,3 +821,5 @@ D:\video-automation\venv\Scripts\python.exe D:\video-automation\run_worker.py --
 本项目可选调用的第三方工具、模型、字体和 API 可能有各自的许可证或服务条款。简要说明见 `NOTICE`。
 
 英文说明见 `README.md`。
+
+如果这个项目对你有帮助，欢迎给我一个 Star ⭐ 支持一下！

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Publish package screenshot placeholder</title>
+  <desc id="desc">Placeholder image for covers, metadata, and publish handoff files.</desc>
+  <rect width="1280" height="720" rx="36" fill="#101018"/>
+  <rect x="80" y="74" width="1120" height="572" rx="32" fill="#1d202a" stroke="#ffffff" stroke-opacity=".08"/>
+  <rect x="128" y="128" width="310" height="456" rx="28" fill="#071411" stroke="#26e0b1" stroke-opacity=".42"/>
+  <rect x="165" y="174" width="236" height="320" rx="18" fill="#26323a"/>
+  <rect x="180" y="514" width="206" height="22" rx="11" fill="#26e0b1"/>
+  <rect x="500" y="138" width="610" height="88" rx="22" fill="#121620"/>
+  <rect x="500" y="264" width="610" height="88" rx="22" fill="#121620"/>
+  <rect x="500" y="390" width="610" height="88" rx="22" fill="#121620"/>
+  <rect x="500" y="516" width="360" height="52" rx="18" fill="#26e0b1"/>
+  <text x="805" y="190" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" fill="#f5fffb" font-weight="700">Covers, subtitles, metadata</text>
+  <text x="805" y="318" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="26" fill="#b5c9c4">Publish handoff package</text>
+  <text x="640" y="630" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" fill="#8ca19c">Placeholder - replace with real screenshot or GIF</text>
+</svg>

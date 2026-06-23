@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Dashboard screenshot placeholder</title>
+  <desc id="desc">Placeholder image for the Video Automation dashboard.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#071411"/>
+      <stop offset="1" stop-color="#15121f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" rx="36" fill="url(#bg)"/>
+  <rect x="72" y="70" width="130" height="580" rx="24" fill="#101820" stroke="#1fd6aa" stroke-opacity=".3"/>
+  <rect x="250" y="84" width="850" height="68" rx="22" fill="#1b2028"/>
+  <rect x="250" y="190" width="300" height="185" rx="26" fill="#20242f" stroke="#2ee6b8" stroke-opacity=".35"/>
+  <rect x="585" y="190" width="300" height="185" rx="26" fill="#20242f" stroke="#2ee6b8" stroke-opacity=".22"/>
+  <rect x="920" y="190" width="230" height="185" rx="26" fill="#20242f" stroke="#2ee6b8" stroke-opacity=".22"/>
+  <rect x="250" y="420" width="900" height="150" rx="26" fill="#20242f" stroke="#ffffff" stroke-opacity=".08"/>
+  <circle cx="116" cy="128" r="28" fill="#12d6aa"/>
+  <rect x="305" y="236" width="190" height="16" rx="8" fill="#effff9" opacity=".9"/>
+  <rect x="305" y="270" width="140" height="12" rx="6" fill="#9fb6b0"/>
+  <rect x="305" y="314" width="190" height="18" rx="9" fill="#12d6aa"/>
+  <text x="640" y="642" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="38" fill="#eafff8" font-weight="700">Dashboard placeholder</text>
+</svg>
