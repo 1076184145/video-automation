@@ -13,9 +13,9 @@ Video Automation is a local AI workflow that turns long livestream or recorded v
 
 | Dashboard | Job review | Publish handoff |
 |---|---|---|
-| ![Dashboard placeholder](docs/assets/dashboard-placeholder.svg) | ![Job detail placeholder](docs/assets/job-detail-placeholder.svg) | ![Publish handoff placeholder](docs/assets/publish-placeholder.svg) |
+| ![Dashboard screenshot](docs/assets/dashboard.png) | ![Job review screenshot](docs/assets/job-detail.png) | ![Publish handoff screenshot](docs/assets/publish-handoff.png) |
 
-> These are placeholder visuals. Replace the SVG files in `docs/assets/` with real screenshots or a demo GIF when you prepare a release page.
+> Screenshots are captured from the Chinese UI with private video previews and file names masked for public documentation.
 
 ## Why It Exists
 
