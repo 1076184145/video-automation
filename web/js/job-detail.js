@@ -366,7 +366,7 @@ export async function renderJobDetail(match) {
         return;
       }
 
-      const [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health] = await Promise.all([
+      const [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health] = await Promise.all([
         loadJobFile(name, files, "manifest.json"),
         loadJobFile(name, files, "corrupt.json"),
         loadJobFile(name, files, "cuts.json"),
@@ -375,6 +375,7 @@ export async function renderJobDetail(match) {
         loadJobFile(name, files, "freeze.json"),
         loadJobFile(name, files, "scene.json"),
         loadJobFile(name, files, "waveform.json"),
+        loadJobFile(name, files, "stage_timings.json"),
         loadJobFile(name, files, "cover_manifest.json"),
         loadJobFile(name, files, "segments_manifest.json"),
         loadJobFile(name, files, "metadata.json"),
@@ -387,7 +388,7 @@ export async function renderJobDetail(match) {
       ]);
       if (disposed) return null;
 
-      const payload = { manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health };
+      const payload = { manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health };
 
       if (isFirstRender) {
         app.innerHTML = renderJobDetailShell();

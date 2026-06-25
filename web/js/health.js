@@ -4,6 +4,7 @@ import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml } from "./utils.js";
 
 const INSTALLABLE_CHECKS = new Set(["ffmpeg_path", "ffprobe_path"]);
+const TRANSCRIPTION_CHECKS = new Set(["faster_whisper", "ctranslate2_cuda", "funasr"]);
 const HEALTH_CHECK_LABEL_KEYS = {
   root: "health.check.root",
   input_recordings_dir: "health.check.input_recordings_dir",
@@ -42,6 +43,7 @@ export async function renderHealth() {
       clearTimeout(loadingTimer);
       renderPayload(payload);
       bindInstallButton();
+      bindRecoveryButtons();
       startEvents();
     } catch (error) {
       clearTimeout(loadingTimer);
@@ -70,6 +72,26 @@ export async function renderHealth() {
     });
   }
 
+  function bindRecoveryButtons() {
+    const switchButton = document.getElementById("switch-whisper-cli");
+    if (switchButton) {
+      switchButton.addEventListener("click", async () => {
+        setButtonLoading(switchButton, true, t("health.switching_backend"));
+        try {
+          const payload = await API.updateSettings({ env: { WHISPER_BACKEND: "cli" } });
+          latestPayload = payload;
+          renderPayload(payload);
+          bindInstallButton();
+          bindRecoveryButtons();
+          showToast(t("health.switched_backend"), "success");
+        } catch (error) {
+          showToast(`${t("common.error")} ${error.message}`, "error");
+          setButtonLoading(switchButton, false);
+        }
+      });
+    }
+  }
+
   function startEvents() {
     if (events) return;
     events = API.openEvents();
@@ -86,6 +108,7 @@ export async function renderHealth() {
         latestPayload = payload;
         renderPayload(payload);
         bindInstallButton();
+        bindRecoveryButtons();
       }
     });
   }
@@ -97,9 +120,11 @@ export async function renderHealth() {
     if (latestPayload && target) {
       target.outerHTML = renderInstallPanel(latestPayload);
       bindInstallButton();
+      bindRecoveryButtons();
     } else if (latestPayload && ["running", "done", "failed"].includes(String(state.status || ""))) {
       renderPayload(latestPayload);
       bindInstallButton();
+      bindRecoveryButtons();
     }
     if (state.status === "done") {
       showToast(t("health.autofix_done"), "success");
@@ -157,6 +182,7 @@ export function renderHealthPayloadForTest(payload = {}) {
       ${ready ? `<a class="button primary health-start-action" href="#/new">${t("health.start_job")}</a>` : ""}
     </section>
     ${renderInstallPanel(payload)}
+    ${renderRecoveryPanel(payload)}
     ${renderHealthDetails(checks)}
   `;
 }
@@ -221,6 +247,39 @@ function installableMissingChecks(payload) {
     if (check.exists) return false;
     return INSTALLABLE_CHECKS.has(check.name);
   });
+}
+
+function renderRecoveryPanel(payload) {
+  const checks = Array.isArray(payload.checks) ? payload.checks : [];
+  const missingTranscription = checks.filter((check) => {
+    if (check.exists) return false;
+    return TRANSCRIPTION_CHECKS.has(check.name);
+  });
+  if (!missingTranscription.length) return "";
+  const whisperCliReady = checks.some((check) => check.name === "whisper_bin" && check.exists);
+  const backend = String(payload.settings?.whisper?.backend || "");
+  const missingNames = missingTranscription.map((check) => healthCheckLabel(check.name)).join(", ");
+  const installCommand = "python -m pip install -r requirements-optional.txt";
+  const cliAction = whisperCliReady && backend !== "cli"
+    ? `<button class="button" id="switch-whisper-cli" type="button">${t("health.switch_to_cli")}</button>`
+    : "";
+  return `
+    <section class="panel health-recovery-panel">
+      <div class="panel-head">
+        <div>
+          <h2>${t("health.transcription_missing_title")}</h2>
+          <p>${escapeHtml(template(t("health.transcription_missing_note"), { names: missingNames }))}</p>
+        </div>
+        ${cliAction}
+      </div>
+      <div class="notice">
+        <strong>${t("health.transcription_recommended_title")}</strong>
+        <span>${t("health.transcription_recommended_note")}</span>
+      </div>
+      <p class="muted">${t("health.transcription_install_note")}</p>
+      <code class="health-command">${escapeHtml(installCommand)}</code>
+    </section>
+  `;
 }
 
 function isOptionalCheck(check) {

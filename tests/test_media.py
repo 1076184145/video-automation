@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -190,7 +191,7 @@ class AudioExtractionTests(unittest.TestCase):
     def test_pipeline_audio_stage_uses_joint_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            settings = SimpleNamespace(source_integrity_scan_enabled=False)
+            settings = SimpleNamespace(source_integrity_scan_enabled=False, high_quality_audio_enabled=True)
             job = SimpleNamespace(
                 status="pending",
                 source_path=root / "source.mp4",
@@ -233,6 +234,98 @@ class AudioExtractionTests(unittest.TestCase):
                 force=False,
             )
 
+    def test_pipeline_audio_stage_skips_high_quality_audio_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = SimpleNamespace(source_integrity_scan_enabled=False, high_quality_audio_enabled=False)
+            job = SimpleNamespace(
+                status="pending",
+                source_path=root / "source.mp4",
+                job_dir=root / "job",
+                set_status=lambda _status: None,
+                fail=lambda _error: None,
+            )
+
+            def run_audio_stage(_progress, _job, stages, context):
+                next(stage for stage in stages if stage.name == "extract_audio").run(context)
+
+            with (
+                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(worker, "run_pipeline", side_effect=run_audio_stage),
+                patch.object(worker, "extract_audio_outputs", create=True) as joint,
+                patch.object(worker, "generate_waveform"),
+            ):
+                worker.process_job(
+                    settings,  # type: ignore[arg-type]
+                    job,  # type: ignore[arg-type]
+                    force=False,
+                    detect_silence_enabled=False,
+                    detect_freeze_enabled=False,
+                    detect_scenes_enabled=False,
+                    render_review_enabled=False,
+                    render_final_enabled=False,
+                    vertical_enabled=False,
+                    burn_subtitles_enabled=False,
+                    plan_crop_enabled=False,
+                    plan_uvr_enabled=False,
+                    skip_transcribe=False,
+                    progress_enabled=False,
+                )
+
+            joint.assert_called_once_with(
+                settings,
+                job.source_path,
+                job.job_dir / "audio.wav",
+                None,
+                force=False,
+            )
+
+    def test_pipeline_audio_stage_keeps_high_quality_audio_for_uvr(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = SimpleNamespace(source_integrity_scan_enabled=False, high_quality_audio_enabled=False)
+            job = SimpleNamespace(
+                status="pending",
+                source_path=root / "source.mp4",
+                job_dir=root / "job",
+                set_status=lambda _status: None,
+                fail=lambda _error: None,
+            )
+
+            def run_audio_stage(_progress, _job, stages, context):
+                next(stage for stage in stages if stage.name == "extract_audio").run(context)
+
+            with (
+                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(worker, "run_pipeline", side_effect=run_audio_stage),
+                patch.object(worker, "extract_audio_outputs", create=True) as joint,
+                patch.object(worker, "generate_waveform"),
+            ):
+                worker.process_job(
+                    settings,  # type: ignore[arg-type]
+                    job,  # type: ignore[arg-type]
+                    force=False,
+                    detect_silence_enabled=False,
+                    detect_freeze_enabled=False,
+                    detect_scenes_enabled=False,
+                    render_review_enabled=False,
+                    render_final_enabled=False,
+                    vertical_enabled=False,
+                    burn_subtitles_enabled=False,
+                    plan_crop_enabled=False,
+                    plan_uvr_enabled=True,
+                    skip_transcribe=False,
+                    progress_enabled=False,
+                )
+
+            joint.assert_called_once_with(
+                settings,
+                job.source_path,
+                job.job_dir / "audio.wav",
+                job.job_dir / "audio_hq.flac",
+                force=False,
+            )
+
     def test_pipeline_integrity_scan_and_audio_extraction_share_media_preparation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -240,6 +333,7 @@ class AudioExtractionTests(unittest.TestCase):
                 source_integrity_scan_enabled=True,
                 source_integrity_scan_timeout_multiplier=3.0,
                 source_integrity_scan_max_errors=40,
+                high_quality_audio_enabled=True,
             )
             job = SimpleNamespace(
                 status="pending",
@@ -313,6 +407,118 @@ class AudioExtractionTests(unittest.TestCase):
                 job.job_dir / "audio_hq.flac",
                 force=True,
             )
+
+
+class WaveformFallbackTests(unittest.TestCase):
+    def test_waveform_fallback_uses_native_payload_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.wav"
+            _write_test_wav(audio_path)
+            native_payload = {
+                "status": "ready",
+                "source": "rust_wave_fallback",
+                "sample_rate": 100,
+                "channels": 1,
+                "bits": 16,
+                "pixels_per_second": 20,
+                "duration": 0.1,
+                "data": [-1, 1],
+            }
+
+            with patch.object(media.native_waveform, "generate_waveform", return_value=native_payload) as native:
+                payload = media._generate_waveform_fallback(
+                    audio_path,
+                    reason="audiowaveform_not_configured",
+                    tool="audiowaveform",
+                    native_enabled=True,
+                )
+
+            native.assert_called_once_with(audio_path, pixels_per_second=20)
+            self.assertEqual(payload["source"], "rust_wave_fallback")
+            self.assertEqual(payload["fallback_reason"], "audiowaveform_not_configured")
+            self.assertEqual(payload["tool"], "audiowaveform")
+            self.assertEqual(payload["data"], [-1, 1])
+
+    def test_waveform_fallback_skips_native_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.wav"
+            _write_test_wav(audio_path)
+
+            with patch.object(media.native_waveform, "generate_waveform") as native:
+                payload = media._generate_waveform_fallback(
+                    audio_path,
+                    reason="audiowaveform_not_configured",
+                    tool="audiowaveform",
+                    native_enabled=False,
+                )
+
+            native.assert_not_called()
+            self.assertEqual(payload["source"], "python_wave_fallback")
+            self.assertEqual(payload["status"], "ready")
+            self.assertTrue(payload["data"])
+
+    def test_waveform_fallback_recovers_from_native_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.wav"
+            _write_test_wav(audio_path)
+
+            with patch.object(media.native_waveform, "generate_waveform", side_effect=RuntimeError("native failed")):
+                with self.assertLogs("video_automation.media", level="WARNING") as logs:
+                    payload = media._generate_waveform_fallback(
+                        audio_path,
+                        reason="audiowaveform_failed",
+                        tool="audiowaveform",
+                        error="cli failed",
+                        native_enabled=True,
+                    )
+
+            self.assertEqual(payload["source"], "python_wave_fallback")
+            self.assertEqual(payload["error"], "cli failed")
+            self.assertTrue(payload["data"])
+            self.assertIn("Native waveform fallback failed", "\n".join(logs.output))
+
+    def test_waveform_fallback_skips_native_for_large_wav(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.wav"
+            _write_test_wav(audio_path)
+
+            with (
+                patch.object(Path, "stat", return_value=SimpleNamespace(st_size=media.NATIVE_WAVEFORM_MAX_BYTES + 1)),
+                patch.object(media.native_waveform, "generate_waveform") as native,
+                self.assertLogs("video_automation.media", level="INFO") as logs,
+            ):
+                payload = media._generate_waveform_fallback(
+                    audio_path,
+                    reason="audiowaveform_not_configured",
+                    tool="audiowaveform",
+                    native_enabled=True,
+                )
+
+            native.assert_not_called()
+            self.assertEqual(payload["source"], "python_wave_fallback")
+            self.assertIn("Skipping native waveform fallback", "\n".join(logs.output))
+
+    def test_installed_native_waveform_matches_python_fallback(self) -> None:
+        try:
+            import video_automation_native  # noqa: F401
+        except ImportError:
+            self.skipTest("optional video_automation_native extension is not installed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.wav"
+            _write_test_wav(audio_path)
+
+            native_payload = media.native_waveform.generate_waveform(audio_path, pixels_per_second=20)
+            python_payload = media._generate_waveform_fallback(
+                audio_path,
+                reason="audiowaveform_not_configured",
+                tool="audiowaveform",
+                native_enabled=False,
+            )
+
+        self.assertEqual(native_payload["source"], "rust_wave_fallback")
+        for key in ("sample_rate", "channels", "bits", "pixels_per_second", "duration", "data"):
+            self.assertEqual(native_payload[key], python_payload[key])
 
 
 class VisualDetectionTests(unittest.TestCase):
@@ -410,6 +616,15 @@ class VisualDetectionTests(unittest.TestCase):
                 job.job_dir / "scene.json",
                 force=False,
             )
+
+
+def _write_test_wav(path: Path) -> None:
+    samples = [-32768, -1000, 0, 1000, 32767, -2000, -1000, 0, 1000, 2000]
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(100)
+        handle.writeframes(b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in samples))
 
 
 if __name__ == "__main__":

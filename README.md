@@ -109,7 +109,7 @@ Leave these blank if you only need local media processing, transcription, subtit
 - Batch drag-and-drop import and submission, with batch-level progress grouped on the dashboard
 - Upload progress while importing large media files in the Web UI
 - Recording picker for files already in `input\recordings`
-- Workflow profiles: analysis, Douyin, Bilibili, YouTube Shorts
+- Workflow profiles: Fast Mode, analysis, Douyin, Bilibili, YouTube Shorts
 - Job cards with status, progress, thumbnails, and quick navigation
 - Job detail page with pipeline status, video preview, timeline, transcript, clip editor, and downloads
 - Real-time status updates through Server-Sent Events, with title badges and optional browser notifications for completed jobs
@@ -167,11 +167,12 @@ Common outputs:
 ```text
 job.json                  Job state, stage progress, errors
 job.log                   Per-job log
+stage_timings.json        Per-stage timing diagnostics for finding bottlenecks
 manifest.json             ffprobe media info and quick fingerprint
 thumbnail.jpg             Dashboard thumbnail
 audio.wav                 Whisper/transcription audio, optionally filtered
-audio_hq.flac             High-quality audio copy for editing
-waveform.json             Timeline waveform data from audiowaveform or Python fallback
+audio_hq.flac             Optional high-quality audio copy for editing / UVR
+waveform.json             Timeline waveform data from audiowaveform or native/Python fallback
 transcript.txt            Plain text transcript
 transcript.srt            SRT subtitle file
 transcript.json           Structured transcript segments, with word timestamps when enabled
@@ -440,7 +441,9 @@ Recommended workflow:
 3. Keep output FPS at `30` for livestream recordings unless you specifically need to preserve the source timing.
 4. If NVENC is missing or unstable, switch the render encoder back to `libx264`.
 
-The job detail page plays a lightweight `web_preview.mp4` when available, so large or high-FPS videos stay smooth in the browser. Downloads and platform uploads still use the full-quality `final.mp4`.
+On CPU-only machines, lower the x264 speed preset in **Settings** to `veryfast` for quicker exports. `RENDER_X264_CRF=0` keeps the platform defaults; use a higher CRF only when you prefer smaller/faster files over quality.
+
+The job detail page plays a lightweight `web_preview.mp4` when available, so large or high-FPS videos stay smooth in the browser. Downloads and platform uploads still use the full-quality `final.mp4`. **Fast Mode** skips this extra proxy render to produce `final.mp4` sooner.
 
 One-click platform profiles render `final.mp4` directly. Choose **Custom** and enable preview rendering only when you also need a separate `review.mp4`.
 
@@ -555,7 +558,7 @@ cd D:\video-automation
 --once <file>        Process one media file
 --batch <json>       Process a batch JSON file
 --watch              Watch input\recordings
---profile <name>     analysis / douyin / bilibili / youtube_shorts
+--profile <name>     fast / analysis / douyin / bilibili / youtube_shorts
 --force              Re-run and overwrite existing outputs
 --detect-silence     Generate silence.json
 --detect-freeze      Generate freeze.json
@@ -632,12 +635,17 @@ Configuration is loaded from `.env`, with `.env.example` as fallback. Environmen
 
 The Web Settings page can save common high-frequency options such as transcription model/language, cut thresholds, subtitle style, render preview settings, AI cover provider/model, LLM model, batch limits, and upload-size limits. Saving writes a whitelist of keys to `.env` and hot-reloads the running API for future jobs and enhancement actions. Advanced paths, deployment-only values, and full manual control remain available by editing `.env` directly.
 
+Optional native acceleration is controlled by `NATIVE_WAVEFORM_ENABLED` and `NATIVE_CUTS_ENABLED`. Keep them enabled for the fastest local workflow; turn either one off from Settings if you need to diagnose native extension issues or compare against the pure Python fallback.
+
 Important defaults:
 
 ```text
 FFMPEG_PATH=ffmpeg
 FFPROBE_PATH=ffprobe
 AUDIOWAVEFORM_PATH=audiowaveform
+NATIVE_WAVEFORM_ENABLED=true
+NATIVE_CUTS_ENABLED=true
+HIGH_QUALITY_AUDIO_ENABLED=true
 WHISPER_BACKEND=funasr-whisper
 WHISPER_MODEL=large-v3
 WHISPER_MODEL_FALLBACKS=large-v3-turbo,medium

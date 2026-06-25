@@ -136,6 +136,9 @@ class Settings:
     ffmpeg_path: Path
     ffprobe_path: Path
     audiowaveform_path: Path
+    native_waveform_enabled: bool
+    native_cuts_enabled: bool
+    high_quality_audio_enabled: bool
     whisper_bin: Path
     whisper_backend: str
     whisper_model: str
@@ -212,6 +215,8 @@ class Settings:
     export_platforms: tuple[str, ...]
     render_video_encoder: str
     render_output_fps: int
+    render_x264_preset: str
+    render_x264_crf: int
     render_nvenc_preset: str
     render_nvenc_cq: int
     render_nvenc_preview_preset: str
@@ -266,6 +271,9 @@ class Settings:
             ffmpeg_path=_portable_tool_path(root, "FFMPEG_PATH", "ffmpeg.exe", "ffmpeg"),
             ffprobe_path=_portable_tool_path(root, "FFPROBE_PATH", "ffprobe.exe", "ffprobe"),
             audiowaveform_path=_portable_tool_path(root, "AUDIOWAVEFORM_PATH", "audiowaveform.exe", "audiowaveform"),
+            native_waveform_enabled=_bool_env("NATIVE_WAVEFORM_ENABLED", True),
+            native_cuts_enabled=_bool_env("NATIVE_CUTS_ENABLED", True),
+            high_quality_audio_enabled=_bool_env("HIGH_QUALITY_AUDIO_ENABLED", True),
             whisper_bin=Path(_env("WHISPER_BIN", "whisper")),
             whisper_backend=_env("WHISPER_BACKEND", "faster-whisper"),
             whisper_model=_env("WHISPER_MODEL", "large-v3"),
@@ -342,6 +350,8 @@ class Settings:
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
             render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),
+            render_x264_preset=_env("RENDER_X264_PRESET", "medium"),
+            render_x264_crf=max(0, _int_env("RENDER_X264_CRF", 0)),
             render_nvenc_preset=_env("RENDER_NVENC_PRESET", "p5"),
             render_nvenc_cq=max(1, _int_env("RENDER_NVENC_CQ", 21)),
             render_nvenc_preview_preset=_env("RENDER_NVENC_PREVIEW_PRESET", "p4"),

@@ -54,6 +54,36 @@ class SettingsApiTests(unittest.TestCase):
             },
         )
 
+    def test_normalize_env_updates_accepts_native_waveform_toggle(self) -> None:
+        self.assertEqual(
+            _normalize_env_updates({"NATIVE_WAVEFORM_ENABLED": "false"}),
+            {"NATIVE_WAVEFORM_ENABLED": "false"},
+        )
+
+    def test_normalize_env_updates_accepts_native_cuts_toggle(self) -> None:
+        self.assertEqual(
+            _normalize_env_updates({"NATIVE_CUTS_ENABLED": "false"}),
+            {"NATIVE_CUTS_ENABLED": "false"},
+        )
+
+    def test_normalize_env_updates_accepts_high_quality_audio_toggle(self) -> None:
+        self.assertEqual(
+            _normalize_env_updates({"HIGH_QUALITY_AUDIO_ENABLED": "false"}),
+            {"HIGH_QUALITY_AUDIO_ENABLED": "false"},
+        )
+
+    def test_normalize_env_updates_accepts_x264_render_settings(self) -> None:
+        self.assertEqual(
+            _normalize_env_updates({
+                "RENDER_X264_PRESET": "veryfast",
+                "RENDER_X264_CRF": "23",
+            }),
+            {
+                "RENDER_X264_PRESET": "veryfast",
+                "RENDER_X264_CRF": "23",
+            },
+        )
+
     def test_normalize_env_updates_rejects_removed_input_modules(self) -> None:
         for key in ("DOWNLOAD_ENABLED", "LIVE_RECORDING_ENABLED", "OLIVED_RESOLVER_PATH"):
             with self.subTest(key=key):

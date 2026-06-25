@@ -106,6 +106,10 @@ export function renderJobDetailShell() {
         hidden
       >
         <div id="section-actions"></div>
+        <section class="panel performance-panel">
+          <h2>${t("job.performance")}</h2>
+          <div id="section-stage-timings"></div>
+        </section>
         <section class="panel pipeline-panel">
           <details class="debug-details">
             <summary>${t("job.pipeline_debug")}</summary>
@@ -131,6 +135,7 @@ export function normalizeJobDetailPayload(payload = {}) {
     manifest: objectOrEmpty(payload.manifest),
     cuts: objectOrEmpty(payload.cuts),
     transcript: objectOrEmpty(payload.transcript),
+    stageTimings: objectOrEmpty(payload.stageTimings),
   };
 }
 
@@ -177,6 +182,7 @@ export function updateJobDetailView(
   safeHtml("section-source-warning", renderSourceWarning(payload.corrupt));
   safeHtml("section-actions", renderJobActions());
   safeHtml("section-progress", renderLiveProgress(job));
+  safeRenderHtml("section-stage-timings", () => renderStageTimings(payload.stageTimings));
   safeHtml("section-pipeline", STAGES.map((stage) => renderStage(stage, job, files)).join(""));
 
   const preview = selectPreviewName(files);
@@ -239,4 +245,36 @@ export function updateJobDetailView(
   `);
 
   updateLiveStatus(job);
+}
+
+export function renderStageTimings(stageTimings) {
+  const rows = Array.isArray(stageTimings?.stages)
+    ? stageTimings.stages
+        .filter((item) => item?.status === "complete" && Number.isFinite(Number(item.duration_seconds)))
+        .sort((a, b) => Number(b.duration_seconds) - Number(a.duration_seconds))
+        .slice(0, 6)
+    : [];
+  if (!rows.length) {
+    return `<div class="empty">${t("job.performance_empty")}</div>`;
+  }
+  const total = Number(stageTimings.total_duration_seconds);
+  const totalHtml = Number.isFinite(total) && total > 0
+    ? `<span>${t("job.performance_total")}: <strong>${formatTime(total)}</strong></span>`
+    : "";
+  return `
+    <div class="stage-timings">
+      <div class="stage-timings-head">
+        <p class="muted">${t("job.performance_note")}</p>
+        ${totalHtml}
+      </div>
+      <div class="stage-timing-list">
+        ${rows.map((item) => `
+          <div class="stage-timing-row">
+            <span>${escapeHtml(t(`stage.${item.stage}`))}</span>
+            <strong>${formatTime(item.duration_seconds)}</strong>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
 }

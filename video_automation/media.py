@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,9 +15,12 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
+from . import native_waveform
 
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".mov", ".flv", ".avi", ".m4v", ".webm", ".mp3", ".m4a", ".wav"}
+NATIVE_WAVEFORM_MAX_BYTES = 512 * 1024 * 1024
+logger = logging.getLogger(__name__)
 SILENCE_START_RE = re.compile(r"silence_start:\s*([\d.]+)")
 SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)")
 FREEZE_START_RE = re.compile(r"freeze_start:\s*([\d.]+)")
@@ -452,7 +456,12 @@ def generate_waveform(settings: Settings, audio_path: Path, waveform_path: Path,
         if cached is not None:
             return cached
     if not _tool_exists(settings.audiowaveform_path):
-        payload = _generate_waveform_fallback(audio_path, reason="audiowaveform_not_configured", tool=str(settings.audiowaveform_path))
+        payload = _generate_waveform_fallback(
+            audio_path,
+            reason="audiowaveform_not_configured",
+            tool=str(settings.audiowaveform_path),
+            native_enabled=getattr(settings, "native_waveform_enabled", True),
+        )
         write_json_atomic(waveform_path, payload)
         return payload
     temp_path = waveform_path.with_suffix(".tmp.json")
@@ -473,6 +482,7 @@ def generate_waveform(settings: Settings, audio_path: Path, waveform_path: Path,
             reason="audiowaveform_failed",
             tool=str(settings.audiowaveform_path),
             error=result.stderr.strip(),
+            native_enabled=getattr(settings, "native_waveform_enabled", True),
         )
         write_json_atomic(waveform_path, payload)
         return payload
@@ -489,7 +499,35 @@ def generate_waveform(settings: Settings, audio_path: Path, waveform_path: Path,
     return read_json_file(waveform_path) or {"status": "failed", "data": []}
 
 
-def _generate_waveform_fallback(audio_path: Path, *, reason: str, tool: str, error: str = "") -> dict[str, Any]:
+def _generate_waveform_fallback(
+    audio_path: Path,
+    *,
+    reason: str,
+    tool: str,
+    error: str = "",
+    native_enabled: bool = True,
+) -> dict[str, Any]:
+    if native_enabled:
+        try:
+            audio_size = audio_path.stat().st_size
+            if audio_size > NATIVE_WAVEFORM_MAX_BYTES:
+                logger.info(
+                    "Skipping native waveform fallback for large WAV (%s bytes): %s",
+                    audio_size,
+                    audio_path,
+                )
+                raise native_waveform.NativeWaveformUnavailable("audio file is too large for native waveform fallback")
+            payload = native_waveform.generate_waveform(audio_path, pixels_per_second=20)
+            payload["status"] = payload.get("status") or "ready"
+            payload["source"] = payload.get("source") or "rust_wave_fallback"
+            payload["fallback_reason"] = reason
+            payload["tool"] = tool
+            payload["error"] = error
+            return payload
+        except native_waveform.NativeWaveformUnavailable:
+            pass
+        except Exception as exc:
+            logger.warning("Native waveform fallback failed for %s: %s", audio_path, exc)
     try:
         with wave.open(str(audio_path), "rb") as handle:
             channels = max(1, handle.getnchannels())

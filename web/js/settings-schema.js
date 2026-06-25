@@ -30,6 +30,8 @@ const ENV_KEY_MAP = {
   SUBTITLE_CENSOR_REPLACEMENT: "censor_replacement",
   RENDER_VIDEO_ENCODER: "render_video_encoder",
   RENDER_OUTPUT_FPS: "render_output_fps",
+  RENDER_X264_PRESET: "render_x264_preset",
+  RENDER_X264_CRF: "render_x264_crf",
   RENDER_NVENC_CQ: "render_nvenc_cq",
   RENDER_NVENC_PREVIEW_CQ: "render_nvenc_preview_cq",
   WEB_PREVIEW_ENABLED: "web_preview_enabled",
@@ -55,6 +57,9 @@ const ENV_KEY_MAP = {
   LLM_MODEL: "llm_model",
   API_BATCH_LIMIT: "batch_limit",
   RECORDING_UPLOAD_MAX_BYTES: "recording_upload_max_bytes",
+  NATIVE_WAVEFORM_ENABLED: "native_waveform_enabled",
+  NATIVE_CUTS_ENABLED: "native_cuts_enabled",
+  HIGH_QUALITY_AUDIO_ENABLED: "high_quality_audio_enabled",
 };
 
 const STATIC_RECOMMENDATIONS = {
@@ -105,6 +110,8 @@ const STATIC_RECOMMENDATIONS = {
   "api.allowed_origins": "",
   "exports.platforms": "douyin, bilibili, youtube_shorts",
   "exports.render_output_fps": 30,
+  "exports.render_x264_preset": "medium",
+  "exports.render_x264_crf": 0,
   "exports.render_nvenc_preset": "p5",
   "exports.render_nvenc_cq": 21,
   "exports.render_nvenc_preview_preset": "p4",
@@ -120,6 +127,9 @@ const STATIC_RECOMMENDATIONS = {
   "exports.webhook_url": "",
   "optional_modules.llm_provider": "openai-compatible",
   "optional_modules.llm_model": "",
+  "optional_modules.native_waveform_enabled": true,
+  "optional_modules.native_cuts_enabled": true,
+  "optional_modules.high_quality_audio_enabled": true,
   "optional_modules.llm_translation_batch_size": 24,
   "optional_modules.llm_translation_batch_chars": 6000,
   "optional_modules.demucs_model": "htdemucs",

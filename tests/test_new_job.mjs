@@ -18,7 +18,12 @@ globalThis.window = {
   addEventListener() {},
 };
 
-const { builtInProfileForTest, renderNewJobFormForTest } = await import("../web/js/new-job.js");
+const {
+  builtInProfileForTest,
+  localPathFromFileForTest,
+  renderNewJobFormForTest,
+  shouldConfirmBrowserUploadForTest,
+} = await import("../web/js/new-job.js");
 
 test("new job keeps the primary path visible and collapses secondary input methods", () => {
   const html = renderNewJobFormForTest();
@@ -66,9 +71,38 @@ test("new job uses a compact two-column desktop flow and returns to one column o
 });
 
 test("one-click profiles avoid a redundant review render", () => {
-  for (const profile of ["douyin", "bilibili", "youtube_shorts"]) {
+  for (const profile of ["fast", "douyin", "bilibili", "youtube_shorts"]) {
     const payload = builtInProfileForTest(profile);
     assert.equal(payload.render_final, true);
     assert.equal(payload.render_review, false);
   }
+});
+
+test("fast profile favors speed over optional deep analysis", () => {
+  const html = renderNewJobFormForTest();
+  const payload = builtInProfileForTest("fast");
+
+  assert.match(html, /value="fast"/);
+  assert.equal(payload.source_integrity_scan, false);
+  assert.equal(payload.detect_silence, true);
+  assert.equal(payload.detect_scenes, true);
+  assert.equal(payload.detect_freeze, false);
+  assert.equal(payload.plan_crop, false);
+  assert.equal(payload.burn_subtitles, true);
+});
+
+test("large browser drag uploads ask for confirmation before copying", () => {
+  const largeBrowserFile = { name: "recording.mp4", size: 2 * 1024 * 1024 * 1024, type: "video/mp4" };
+  const desktopFile = { name: "recording.mp4", size: 2 * 1024 * 1024 * 1024, type: "video/mp4", path: "D:\\recordings\\recording.mp4" };
+
+  assert.equal(shouldConfirmBrowserUploadForTest([largeBrowserFile]), true);
+  assert.equal(shouldConfirmBrowserUploadForTest([desktopFile]), false);
+  assert.equal(shouldConfirmBrowserUploadForTest([desktopFile, largeBrowserFile]), true);
+  assert.equal(localPathFromFileForTest(desktopFile), "D:\\recordings\\recording.mp4");
+});
+
+test("small browser drag can copy without an extra confirmation step", () => {
+  const smallBrowserFile = { name: "clip.mp4", size: 30 * 1024 * 1024, type: "video/mp4" };
+
+  assert.equal(shouldConfirmBrowserUploadForTest([smallBrowserFile]), false);
 });

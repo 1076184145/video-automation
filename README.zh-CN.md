@@ -107,7 +107,7 @@ COVER_API_KEY=
 - 支持一次拖入多个视频，批量导入并批量提交任务；同一批次会在仪表板聚合显示整体进度
 - 大文件导入时显示上传百分比进度
 - 支持从 `input\recordings` 中直接选择已有录播
-- 工作流预设：只分析、抖音、B 站、YouTube Shorts
+- 工作流预设：极速模式、只分析、抖音、B 站、YouTube Shorts
 - Dashboard 展示任务状态、进度、缩略图和快速入口
 - 任务详情页展示 Pipeline、视频预览、时间线、转写文本、剪辑点编辑器和下载区
 - 通过 Server-Sent Events 实时更新任务状态；后台标签页会显示完成计数，浏览器已授权时可弹出系统通知
@@ -189,11 +189,12 @@ D:\video-automation\processing\jobs\<时间戳-素材名>\
 ```text
 job.json                  job 状态、阶段进度、错误信息
 job.log                   单个 job 日志
+stage_timings.json        各阶段耗时诊断，用来定位瓶颈
 manifest.json             ffprobe 媒体信息和快速文件指纹
 thumbnail.jpg             Dashboard 缩略图
 audio.wav                 转写用音频，可选应用降噪/滤波
-audio_hq.flac             高质量音频，供后续剪辑或调音
-waveform.json             音量波形数据，来自 audiowaveform 或 Python fallback
+audio_hq.flac             可选高质量音频，供后续剪辑、调音或 UVR
+waveform.json             音量波形数据，来自 audiowaveform 或 Rust/Python fallback
 transcript.txt            纯文本转写
 transcript.srt            SRT 字幕
 transcript.json           结构化转写片段，启用时包含词级时间戳
@@ -463,7 +464,9 @@ CROP_ANCHOR_Y=0.5
 3. 直播录播建议保持输出帧率为 `30`，只有明确需要保留源时间轴时再改为 `0`。
 4. 如果健康检查显示 NVENC 不可用，或渲染不稳定，把编码器改回 `libx264`。
 
-任务详情页会优先播放轻量的 `web_preview.mp4`，让大文件或高帧率视频在浏览器里更流畅。下载成片和上传平台仍使用完整质量的 `final.mp4`。
+只有 CPU 的机器，可以在 **设置** 中把 x264 编码速度改为 `veryfast` 来更快导出。`RENDER_X264_CRF=0` 会保留平台默认画质；只有更看重速度/体积时，再调高 CRF。
+
+任务详情页会优先播放轻量的 `web_preview.mp4`，让大文件或高帧率视频在浏览器里更流畅。下载成片和上传平台仍使用完整质量的 `final.mp4`。**极速模式** 会跳过这一步额外代理转码，更快拿到 `final.mp4`。
 
 内置平台预设会直接生成 `final.mp4`。只有确实需要同时保留 `review.mp4` 时，才选择 **自定义** 并手动启用预览渲染。
 
@@ -582,7 +585,7 @@ cd D:\video-automation
 --once <file>        处理单个媒体文件
 --batch <json>       按 JSON 文件批处理
 --watch              监听 input\recordings
---profile <name>     analysis / douyin / bilibili / youtube_shorts
+--profile <name>     fast / analysis / douyin / bilibili / youtube_shorts
 --force              强制重跑并覆盖已有产物
 --detect-silence     生成 silence.json
 --detect-freeze      生成 freeze.json
@@ -657,12 +660,17 @@ POST   /process/batch
 
 Web 设置页可以直接保存高频常用项，例如转写模型/语言、剪辑阈值、字幕样式、预览渲染、AI 封面 provider/model、LLM 模型、批量任务上限和浏览器上传大小限制。保存时只会写入白名单内的 `.env` key，并热重载当前 API；未来新任务和增强操作会使用新配置，已经运行中的任务仍保持启动时配置。更高级的路径、部署项和完整手动控制仍可直接编辑 `.env`。
 
+可选 native 加速由 `NATIVE_WAVEFORM_ENABLED` 和 `NATIVE_CUTS_ENABLED` 控制。日常使用建议保持开启；如果需要排查 native 扩展问题，或想和纯 Python 回退路径对比，可以在设置页关闭对应开关。
+
 重要配置：
 
 ```text
 FFMPEG_PATH=ffmpeg
 FFPROBE_PATH=ffprobe
 AUDIOWAVEFORM_PATH=audiowaveform
+NATIVE_WAVEFORM_ENABLED=true
+NATIVE_CUTS_ENABLED=true
+HIGH_QUALITY_AUDIO_ENABLED=true
 WHISPER_BACKEND=funasr-whisper
 WHISPER_MODEL=large-v3
 WHISPER_MODEL_FALLBACKS=large-v3-turbo,medium

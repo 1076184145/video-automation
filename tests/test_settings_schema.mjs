@@ -40,7 +40,7 @@ test("editable settings use creator-facing Chinese labels", () => {
   assert.equal(settingEnvLabel("COVER_API_KEY"), "封面 API Key");
   assert.equal(
     t("settings.edit_ai_note"),
-    "AI 功能仅使用你自行配置的第三方 API Key；本项目不提供托管 Key 或额度。",
+    "这里配置字幕翻译、语义高光、标题简介等文本 AI 的 LLM_MODEL，也配置封面生成。所有 AI 功能仅使用你自行配置的第三方 API Key。",
   );
 });
 
@@ -61,6 +61,26 @@ test("settings groups stay collapsed until the user opens one", () => {
   assert.doesNotMatch(first, / open>/);
   assert.match(first, /<summary class="settings-edit-summary">/);
   assert.doesNotMatch(later, / open>/);
+});
+
+test("AI settings expose LLM_MODEL before cover-specific fields", () => {
+  const group = {
+    title: "settings.edit_ai",
+    note: "settings.edit_ai_note",
+    fields: [
+      { env: "LLM_PROVIDER", path: ["optional_modules", "llm_provider"], type: "select", options: ["openai", "openai-compatible", "google"] },
+      { env: "LLM_MODEL", path: ["optional_modules", "llm_model"], placeholder: "settings.placeholder.llm_model" },
+      { env: "COVER_MODEL", path: ["covers", "model"] },
+    ],
+  };
+  const html = renderEditableGroup(group, {
+    optional_modules: { llm_provider: "google", llm_model: "" },
+    covers: { model: "imagen-4.0-generate-preview-06-06" },
+  }, [], 0);
+
+  assert.match(html, /文本 AI 模型/);
+  assert.match(html, /例如 gemini-2\.5-flash/);
+  assert.ok(html.indexOf("LLM_MODEL") < html.indexOf("COVER_MODEL"));
 });
 
 test("recommended settings updates include only editable values that differ", () => {
@@ -172,6 +192,7 @@ test("every current health settings key has a Chinese display label", () => {
     optional_modules: [
       "llm_provider", "llm_model",
       "google_base_url", "google_api_key_configured",
+      "native_waveform_enabled", "native_cuts_enabled", "high_quality_audio_enabled",
       "llm_translation_batch_size", "llm_translation_batch_chars",
       "audio_separation_engine", "demucs_model", "demucs_device",
       "audio_separation_timeout_seconds", "publish_enabled", "publish_providers",

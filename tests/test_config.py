@@ -83,6 +83,42 @@ class EnvConfigTests(unittest.TestCase):
         self.assertEqual(settings.api_batch_limit, 12)
         self.assertEqual(settings.recording_upload_max_bytes, 1048576)
 
+    def test_native_waveform_enabled_loads_from_environment(self) -> None:
+        self._remember_env("NATIVE_WAVEFORM_ENABLED")
+        os.environ["NATIVE_WAVEFORM_ENABLED"] = "false"
+
+        settings = config.Settings.load()
+
+        self.assertFalse(settings.native_waveform_enabled)
+
+    def test_native_cuts_enabled_loads_from_environment(self) -> None:
+        self._remember_env("NATIVE_CUTS_ENABLED")
+        os.environ["NATIVE_CUTS_ENABLED"] = "false"
+
+        settings = config.Settings.load()
+
+        self.assertFalse(settings.native_cuts_enabled)
+
+    def test_high_quality_audio_enabled_loads_from_environment(self) -> None:
+        self._remember_env("HIGH_QUALITY_AUDIO_ENABLED")
+        os.environ["HIGH_QUALITY_AUDIO_ENABLED"] = "false"
+
+        settings = config.Settings.load()
+
+        self.assertFalse(settings.high_quality_audio_enabled)
+
+    def test_x264_render_settings_load_from_environment(self) -> None:
+        self._remember_env("RENDER_X264_PRESET", "RENDER_X264_CRF")
+        os.environ.update({
+            "RENDER_X264_PRESET": "veryfast",
+            "RENDER_X264_CRF": "23",
+        })
+
+        settings = config.Settings.load()
+
+        self.assertEqual(settings.render_x264_preset, "veryfast")
+        self.assertEqual(settings.render_x264_crf, 23)
+
 
 if __name__ == "__main__":
     unittest.main()
