@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from video_automation.cuts import (
     _attach_transcript_to_clips,
@@ -8,6 +9,7 @@ from video_automation.cuts import (
     _validate_editor_clips,
     build_invalid_segments,
 )
+from video_automation import cuts
 
 
 class CutPlanningTests(unittest.TestCase):
@@ -65,6 +67,66 @@ class CutPlanningTests(unittest.TestCase):
             duration=5.0,
         )
         self.assertEqual([(clip["start"], clip["end"]) for clip in clips], [(0.0, 2.0), (4.0, 5.0)])
+
+
+class NativeCutsTests(unittest.TestCase):
+    def test_build_invalid_segments_uses_native_when_enabled(self) -> None:
+        silence_payload = {"silences": [{"start": 2, "end": 8}]}
+        freeze_payload = {"freezes": [{"start": 5, "end": 10}]}
+        with patch.object(cuts.native_cuts, "merge_invalid_ranges", return_value=[{"fake": "data"}]) as native:
+            payload = cuts.build_invalid_segments(20.0, silence_payload, freeze_payload, native_enabled=True)
+            native.assert_called_once_with(20.0, silence_payload["silences"], freeze_payload["freezes"])
+            self.assertEqual(payload, [{"fake": "data"}])
+
+    def test_build_invalid_segments_skips_native_when_disabled(self) -> None:
+        silence_payload = {"silences": [{"start": 2, "end": 8}]}
+        freeze_payload = {"freezes": [{"start": 5, "end": 10}]}
+        with patch.object(cuts.native_cuts, "merge_invalid_ranges") as native:
+            payload = cuts.build_invalid_segments(20.0, silence_payload, freeze_payload, native_enabled=False)
+            native.assert_not_called()
+            self.assertEqual(len(payload), 1)
+
+    def test_native_cuts_matches_python_fallback(self) -> None:
+        try:
+            import video_automation_native  # noqa: F401
+        except ImportError:
+            self.skipTest("optional video_automation_native extension is not installed")
+
+        silence_payload = {"silences": [{"start": 2, "end": 8}, {"start": 12, "end": 15}]}
+        freeze_payload = {"freezes": [{"start": 5, "end": 10}, {"start": 14, "end": 18}]}
+
+        python_res = cuts.build_invalid_segments(20.0, silence_payload, freeze_payload, native_enabled=False)
+        native_res = cuts.build_invalid_segments(20.0, silence_payload, freeze_payload, native_enabled=True)
+
+        self.assertEqual(python_res, native_res)
+
+    def test_native_clip_generation_preserves_python_reason_metadata(self) -> None:
+        try:
+            import video_automation_native  # noqa: F401
+        except ImportError:
+            self.skipTest("optional video_automation_native extension is not installed")
+
+        invalid_segments = [
+            {"start": 122.028, "end": 122.938, "duration": 0.91, "drop": True, "reason": "silence+freeze"},
+            {"start": 149.628, "end": 167.958, "duration": 18.33, "drop": True, "reason": "silence+freeze"},
+        ]
+
+        python_clips = cuts._clips_from_invalid_segments(
+            170.0,
+            invalid_segments,
+            0.35,
+            min_clip_seconds=2.0,
+            merge_gap_seconds=1.5,
+        )
+        native_clips = cuts.native_cuts.generate_and_stabilize_clips(
+            170.0,
+            invalid_segments,
+            0.35,
+            2.0,
+            1.5,
+        )
+
+        self.assertEqual(native_clips, python_clips)
 
 
 if __name__ == "__main__":

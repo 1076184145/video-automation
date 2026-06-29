@@ -653,14 +653,35 @@ def _x264_encoding_args(settings: Settings, *, final: bool) -> list[str]:
         ],
     }
     if final:
-        return presets.get(platform, [
+        return _apply_x264_overrides(settings, presets.get(platform, [
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        ])
+        ]))
     return [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
     ]
+
+
+def _apply_x264_overrides(settings: Settings, args: list[str]) -> list[str]:
+    result = list(args)
+    preset = str(getattr(settings, "render_x264_preset", "") or "").strip()
+    if preset:
+        _replace_arg_value(result, "-preset", preset)
+    try:
+        crf = int(getattr(settings, "render_x264_crf", 0) or 0)
+    except (TypeError, ValueError):
+        crf = 0
+    if crf > 0:
+        _replace_arg_value(result, "-crf", str(crf))
+    return result
+
+
+def _replace_arg_value(args: list[str], option: str, value: str) -> None:
+    try:
+        args[args.index(option) + 1] = value
+    except (ValueError, IndexError):
+        args.extend([option, value])
 
 
 def _nvenc_encoding_args(settings: Settings, *, final: bool) -> list[str]:

@@ -18,6 +18,7 @@ const options = [
 const CUSTOM_PROFILE_STORAGE_KEY = "videoAutomationCustomProfiles";
 const NEW_JOB_DISCLOSURE_STORAGE_KEY = "videoAutomationNewJobDisclosures";
 const BUILTIN_PROFILES = {
+  fast: { source_integrity_scan: false, detect_silence: true, detect_freeze: false, detect_scenes: true, plan_crop: false, render_review: false, render_final: true, vertical: false, burn_subtitles: true },
   analysis: { source_integrity_scan: true, detect_silence: true, detect_freeze: true, detect_scenes: true, plan_crop: true },
   douyin: { source_integrity_scan: true, detect_silence: true, detect_freeze: true, detect_scenes: true, plan_crop: true, render_review: false, render_final: true, vertical: true, burn_subtitles: true },
   bilibili: { source_integrity_scan: true, detect_silence: true, detect_freeze: true, detect_scenes: true, plan_crop: true, render_review: false, render_final: true, vertical: false, burn_subtitles: true },
@@ -28,6 +29,7 @@ const UPLOAD_PROGRESS_THROTTLE_MS = 160;
 const BATCH_PATH_LIMIT = 30;
 const UPLOAD_FILE_LIMIT = 8;
 const UPLOAD_TOTAL_LIMIT_BYTES = 20 * 1024 * 1024 * 1024;
+const BROWSER_UPLOAD_CONFIRM_BYTES = 512 * 1024 * 1024;
 let batchPaths = [];
 let sourcePathBatchMirror = false;
 
@@ -335,7 +337,7 @@ async function uploadRecording(file) {
   return uploadRecordings([file]);
 }
 
-async function uploadRecordings(files) {
+async function uploadRecordings(files, options = {}) {
   const dropzone = document.getElementById("upload-dropzone");
   if (!dropzone) return;
   if (files.length > UPLOAD_FILE_LIMIT) {
@@ -379,6 +381,10 @@ async function uploadRecordings(files) {
   }
   if (!uploadFiles.length) {
     setUploadMessage(`${t("new.batch_direct_added")} ${directPaths.length} ${t("new.batch_files")}`);
+    return;
+  }
+  if (shouldConfirmBrowserUploadForTest(files) && !options.confirmBrowserUpload) {
+    setBrowserUploadConfirmation(uploadFiles, () => uploadRecordings(files, { confirmBrowserUpload: true }));
     return;
   }
   dropzone.classList.add("uploading");
@@ -444,8 +450,38 @@ async function runWithConcurrency(items, limit, worker) {
 
 function localPathFromFile(file) {
   const path = file?.path || file?.mozFullPath;
-  if (typeof path === "string" && /^[A-Za-z]:[\\/]/.test(path)) return path;
+  if (typeof path === "string" && (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\"))) {
+    return cleanSourcePath(path);
+  }
   return "";
+}
+
+export function shouldConfirmBrowserUploadForTest(files) {
+  const items = Array.from(files || []).filter(Boolean);
+  if (!items.length) return false;
+  const filesToCopy = items.filter((file) => !localPathFromFile(file));
+  if (!filesToCopy.length) return false;
+  const copyBytes = filesToCopy.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  return copyBytes >= BROWSER_UPLOAD_CONFIRM_BYTES;
+}
+
+export function localPathFromFileForTest(file) {
+  return localPathFromFile(file);
+}
+
+function setBrowserUploadConfirmation(files, onConfirm) {
+  const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  setUploadMessage(`
+    <div class="upload-confirm">
+      <strong>${t("new.browser_upload_confirm_title")}</strong>
+      <p>${t("new.browser_upload_confirm_note")
+        .replace("{count}", String(files.length))
+        .replace("{size}", formatBytes(totalBytes))}</p>
+      <p>${t("new.browser_upload_path_tip")}</p>
+      <button class="button compact-button" id="confirm-browser-upload" type="button">${t("new.browser_upload_confirm_action")}</button>
+    </div>
+  `);
+  document.getElementById("confirm-browser-upload")?.addEventListener("click", onConfirm, { once: true });
 }
 
 function addBatchPath(path) {
@@ -602,6 +638,7 @@ function renderProfileOptions() {
   return `
     <option value="">${t("new.profile_custom")}</option>
     <optgroup label="${t("new.profile_builtin_group")}">
+      <option value="fast">${t("new.profile_fast")}</option>
       <option value="analysis">${t("new.profile_analysis")}</option>
       <option value="douyin">${t("new.profile_douyin")}</option>
       <option value="bilibili">${t("new.profile_bilibili")}</option>

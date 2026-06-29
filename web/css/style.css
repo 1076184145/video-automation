@@ -1200,6 +1200,20 @@ kbd {
   letter-spacing: 0.04em;
 }
 .debug-details[open] summary { margin-bottom: 16px; color: var(--text-primary); }
+.stage-timings { display: grid; gap: 14px; }
+.stage-timings-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
+.stage-timing-list { display: grid; gap: 8px; }
+.stage-timing-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+.stage-timing-row strong { color: var(--accent-text); font-variant-numeric: tabular-nums; }
 .pipeline { display: flex; flex-wrap: nowrap; gap: 12px; overflow-x: auto; padding-bottom: 12px; scroll-behavior: smooth; }
 .pipeline::-webkit-scrollbar { height: 6px; }
 .pipeline::-webkit-scrollbar-track { background: var(--bg-surface); border-radius: 10px; }

@@ -7,6 +7,16 @@ from .config import Settings
 
 
 PROFILE_PRESETS: dict[str, dict[str, Any]] = {
+    "fast": {
+        "detect_silence": True,
+        "detect_freeze": False,
+        "detect_scenes": True,
+        "plan_crop": False,
+        "render_review": False,
+        "render_final": True,
+        "vertical": False,
+        "burn_subtitles": True,
+    },
     "analysis": {
         "detect_silence": True,
         "detect_freeze": True,
@@ -83,6 +93,15 @@ def apply_profile_settings(settings: Settings, profile: str | None) -> Settings:
     value = normalize_profile(profile)
     if not value:
         return settings
+    if value == "fast":
+        return replace(
+            settings,
+            source_integrity_scan_enabled=False,
+            high_quality_audio_enabled=False,
+            web_preview_enabled=False,
+            render_x264_preset="veryfast",
+            render_x264_crf=23,
+        )
     updates: dict[str, Any] = {"export_platforms": (value,)}
     if value in {"douyin", "bilibili"}:
         updates["ass_preset"] = value

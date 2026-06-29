@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "video-automation-native"
+version = "0.1.0"
+description = "Optional native accelerators for Video Automation"
+requires-python = ">=3.10"
+
+[tool.maturin]
+module-name = "video_automation_native"
+features = ["pyo3/extension-module"]

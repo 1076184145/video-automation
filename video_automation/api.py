@@ -36,7 +36,7 @@ from .segments import generate_platform_segments
 from .subtitle_translation import translate_subtitles, translated_clipped_ass_name, translated_final_video_name
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
 from .transcribe import transcribe_audio
-from .worker import clear_health_cache, health_payload, process_job
+from .worker import _high_quality_audio_path, clear_health_cache, health_payload, process_job
 
 CHUNK_SIZE = 1024 * 1024
 MAX_JSON_BODY_SIZE = 2 * 1024 * 1024
@@ -94,6 +94,8 @@ EDITABLE_ENV_KEYS = {
     "SUBTITLE_MIN_DURATION_SECONDS",
     "RENDER_VIDEO_ENCODER",
     "RENDER_OUTPUT_FPS",
+    "RENDER_X264_PRESET",
+    "RENDER_X264_CRF",
     "RENDER_NVENC_PRESET",
     "RENDER_NVENC_CQ",
     "RENDER_NVENC_PREVIEW_PRESET",
@@ -122,6 +124,9 @@ EDITABLE_ENV_KEYS = {
     "GOOGLE_BASE_URL",
     "API_BATCH_LIMIT",
     "RECORDING_UPLOAD_MAX_BYTES",
+    "NATIVE_WAVEFORM_ENABLED",
+    "NATIVE_CUTS_ENABLED",
+    "HIGH_QUALITY_AUDIO_ENABLED",
     "AUDIO_SEPARATION_ENGINE",
     "DEMUCS_PATH",
     "DEMUCS_MODEL",
@@ -1568,7 +1573,7 @@ def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[st
                 settings,
                 job.source_path,
                 job.job_dir / "audio.wav",
-                job.job_dir / "audio_hq.flac",
+                _high_quality_audio_path(settings, job, plan_uvr_enabled=bool(options.get("plan_uvr", False))),
                 force=True,
             )
             generate_waveform(settings, job.job_dir / "audio.wav", job.job_dir / "waveform.json", force=True)

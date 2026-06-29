@@ -21,7 +21,7 @@ from .config import Settings
 from .crop import generate_vertical_crop_plan
 from .cuts import generate_cuts
 from .hooks import generate_uvr_plan
-from .io_utils import write_text_atomic
+from .io_utils import write_json_atomic, write_text_atomic
 from .jobs import Job, configure_job_logger, create_job, find_resume_jobs, list_jobs
 from .media import MEDIA_EXTENSIONS, detect_silence, detect_visual_events, extract_audio_outputs, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once", type=Path, help="Process one media file and exit")
     parser.add_argument("--batch", type=Path, help="Process media files from a JSON batch file and exit")
     parser.add_argument("--watch", action="store_true", help="Watch input recordings directory")
-    parser.add_argument("--profile", choices=["analysis", "douyin", "bilibili", "youtube_shorts"], help="Apply a creator workflow preset")
+    parser.add_argument("--profile", choices=["fast", "analysis", "douyin", "bilibili", "youtube_shorts"], help="Apply a creator workflow preset")
     parser.add_argument("--force", action="store_true", help="Regenerate outputs")
     parser.add_argument("--detect-silence", action="store_true", help="Generate silence.json and silence-based cuts")
     parser.add_argument("--detect-freeze", action="store_true", help="Generate freeze.json with ffmpeg freezedetect")
@@ -546,6 +546,8 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "platforms": ", ".join(settings.export_platforms),
             "render_video_encoder": settings.render_video_encoder,
             "render_output_fps": settings.render_output_fps,
+            "render_x264_preset": settings.render_x264_preset,
+            "render_x264_crf": settings.render_x264_crf,
             "render_nvenc_preset": settings.render_nvenc_preset,
             "render_nvenc_cq": settings.render_nvenc_cq,
             "render_nvenc_preview_preset": settings.render_nvenc_preview_preset,
@@ -565,6 +567,9 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "llm_model": settings.llm_model,
             "google_base_url": settings.google_base_url,
             "google_api_key_configured": bool(settings.google_api_key),
+            "native_waveform_enabled": settings.native_waveform_enabled,
+            "native_cuts_enabled": settings.native_cuts_enabled,
+            "high_quality_audio_enabled": settings.high_quality_audio_enabled,
             "llm_translation_batch_size": settings.llm_translation_batch_size,
             "llm_translation_batch_chars": settings.llm_translation_batch_chars,
             "audio_separation_engine": settings.audio_separation_engine,
@@ -1149,7 +1154,7 @@ def process_job(
     try:
         logger.info("Processing %s", job.source_path)
         audio_path = job.job_dir / "audio.wav"
-        audio_hq_path = job.job_dir / "audio_hq.flac"
+        audio_hq_path = _high_quality_audio_path(settings, job, plan_uvr_enabled=plan_uvr_enabled)
         context: dict[str, Any] = {
             "audio_path": audio_path,
             "audio_hq_path": audio_hq_path,
@@ -1412,6 +1417,9 @@ def process_job(
 
 def run_pipeline(progress: ProgressReporter, job: Job, stages: list[PipelineStage], context: dict[str, Any]) -> None:
     total_stages = len(stages)
+    timings: list[dict[str, Any]] = []
+    pipeline_started_at = datetime.now().isoformat(timespec="seconds")
+    _write_stage_timings(job, timings, status="running", total_stages=total_stages, started_at=pipeline_started_at)
     progress.emit(
         "pipeline:start",
         job_dir=str(job.job_dir),
@@ -1428,6 +1436,15 @@ def run_pipeline(progress: ProgressReporter, job: Job, stages: list[PipelineStag
         }
         if not stage.enabled:
             progress.emit("stage:skip", **stage_payload, reason="disabled")
+            timings.append({
+                "stage": stage.name,
+                "status": "skipped",
+                "stage_number": index,
+                "total_stages": total_stages,
+                "duration_seconds": 0.0,
+                "reason": "disabled",
+            })
+            _write_stage_timings(job, timings, status="running", total_stages=total_stages, started_at=pipeline_started_at)
             continue
         job.start_stage(stage.status, stage.name)
         started_at = time.monotonic()
@@ -1442,14 +1459,57 @@ def run_pipeline(progress: ProgressReporter, job: Job, stages: list[PipelineStag
                 duration_seconds=round(time.monotonic() - started_at, 3),
                 error=str(exc),
             )
+            timings.append({
+                "stage": stage.name,
+                "status": "failed",
+                "stage_number": index,
+                "total_stages": total_stages,
+                "duration_seconds": round(time.monotonic() - started_at, 3),
+                "error": str(exc),
+            })
+            _write_stage_timings(job, timings, status="failed", total_stages=total_stages, started_at=pipeline_started_at)
             raise
         job.complete_stage()
+        timings.append({
+            "stage": stage.name,
+            "status": "complete",
+            "stage_number": index,
+            "total_stages": total_stages,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+        })
+        _write_stage_timings(job, timings, status="running", total_stages=total_stages, started_at=pipeline_started_at)
         progress.emit(
             "stage:complete",
             **stage_payload,
             status=job.status,
             duration_seconds=round(time.monotonic() - started_at, 3),
         )
+    _write_stage_timings(job, timings, status="complete", total_stages=total_stages, started_at=pipeline_started_at)
+
+
+def _high_quality_audio_path(settings: Settings, job: Job, *, plan_uvr_enabled: bool) -> Path | None:
+    if plan_uvr_enabled or getattr(settings, "high_quality_audio_enabled", True):
+        return job.job_dir / "audio_hq.flac"
+    return None
+
+
+def _write_stage_timings(
+    job: Job,
+    stages: list[dict[str, Any]],
+    *,
+    status: str,
+    total_stages: int,
+    started_at: str,
+) -> None:
+    payload = {
+        "status": status,
+        "started_at": started_at,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "total_stages": total_stages,
+        "total_duration_seconds": round(sum(float(item.get("duration_seconds") or 0.0) for item in stages), 3),
+        "stages": stages,
+    }
+    write_json_atomic(job.job_dir / "stage_timings.json", payload)
 
 
 def create_empty_transcripts(job_dir: Path, *, force: bool) -> None:

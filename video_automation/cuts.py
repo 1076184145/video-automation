@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+from . import native_cuts
+from .config import Settings
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 
+logger = logging.getLogger(__name__)
 
 def generate_cuts(
     job_dir: Path,
@@ -26,19 +30,49 @@ def generate_cuts(
     freeze_payload = _read_json(job_dir / "freeze.json")
     scene_payload = _read_json(job_dir / "scene.json")
     transcript_payload = _read_json(job_dir / "transcript.json")
-    invalid_segments = build_invalid_segments(duration, silence_payload, freeze_payload)
-    clips = _clips_from_invalid_segments(
-        duration,
-        invalid_segments,
-        silence_payload.get("min_gap_seconds", 0.35),
-        min_clip_seconds=min_clip_seconds,
-        merge_gap_seconds=merge_gap_seconds,
-    )
+
+    settings = Settings.load()
+    native_enabled = getattr(settings, "native_cuts_enabled", True)
+
+    invalid_segments = build_invalid_segments(duration, silence_payload, freeze_payload, native_enabled=native_enabled)
+
+    clips = None
+    if native_enabled:
+        try:
+            clips = native_cuts.generate_and_stabilize_clips(
+                duration, invalid_segments, silence_payload.get("min_gap_seconds", 0.35), min_clip_seconds, merge_gap_seconds
+            )
+        except Exception as e:
+            logger.warning(f"Native clips generation failed: {e}. Falling back to Python.")
+            clips = None
+
+    if clips is None:
+        clips = _clips_from_invalid_segments(
+            duration,
+            invalid_segments,
+            silence_payload.get("min_gap_seconds", 0.35),
+            min_clip_seconds=min_clip_seconds,
+            merge_gap_seconds=merge_gap_seconds,
+        )
+
     transcript_segments = _summarize_segments(transcript_payload)
-    clips = _attach_transcript_to_clips(clips, transcript_segments)
     scenes = _summarize_scenes(scene_payload, duration)
     clips = _attach_scenes_to_clips(clips, scenes)
-    clips = _score_content_value(clips)
+
+    scored_clips = None
+    if native_enabled:
+        try:
+            scored_clips = native_cuts.attach_transcript_and_score(clips, transcript_segments)
+        except Exception as e:
+            logger.warning(f"Native scoring failed: {e}. Falling back to Python.")
+            scored_clips = None
+
+    if scored_clips is None:
+        clips = _attach_transcript_to_clips(clips, transcript_segments)
+        clips = _score_content_value(clips)
+    else:
+        clips = scored_clips
+
     semantic_highlights = _semantic_highlights(job_dir)
     clips = _attach_semantic_highlights(clips, semantic_highlights)
     payload = {
@@ -85,9 +119,26 @@ def update_cuts_from_editor(job_dir: Path, clips: list[dict[str, Any]]) -> dict[
     edited_clips = _validate_editor_clips(clips, duration)
     transcript_segments = current.get("transcript_segments") if isinstance(current.get("transcript_segments"), list) else []
     scenes = current.get("highlight_signals", {}).get("scenes", [])
-    edited_clips = _attach_transcript_to_clips(edited_clips, transcript_segments)
+
+    settings = Settings.load()
+    native_enabled = getattr(settings, "native_cuts_enabled", True)
+
     edited_clips = _attach_scenes_to_clips(edited_clips, scenes if isinstance(scenes, list) else [])
-    edited_clips = _score_content_value(edited_clips)
+
+    scored_clips = None
+    if native_enabled:
+        try:
+            scored_clips = native_cuts.attach_transcript_and_score(edited_clips, transcript_segments)
+        except Exception as e:
+            logger.warning(f"Native editor scoring failed: {e}. Falling back to Python.")
+            scored_clips = None
+
+    if scored_clips is None:
+        edited_clips = _attach_transcript_to_clips(edited_clips, transcript_segments)
+        edited_clips = _score_content_value(edited_clips)
+    else:
+        edited_clips = scored_clips
+
     semantic_highlights = _semantic_highlights(job_dir, current)
     edited_clips = _attach_semantic_highlights(edited_clips, semantic_highlights)
 
@@ -151,7 +202,17 @@ def _read_json(path: Path) -> dict[str, Any]:
     return read_json_file(path) or {}
 
 
-def build_invalid_segments(duration: float, silence_payload: dict[str, Any], freeze_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def build_invalid_segments(duration: float, silence_payload: dict[str, Any], freeze_payload: dict[str, Any], native_enabled: bool = False) -> list[dict[str, Any]]:
+    if native_enabled:
+        try:
+            return native_cuts.merge_invalid_ranges(
+                duration,
+                silence_payload.get("silences", []),
+                freeze_payload.get("freezes", [])
+            )
+        except Exception as e:
+            logger.warning(f"Native invalid segments merge failed: {e}. Falling back to Python.")
+
     silences = _valid_ranges(silence_payload.get("silences", []), duration)
     freezes = _valid_ranges(freeze_payload.get("freezes", []), duration)
     if silences and freezes:

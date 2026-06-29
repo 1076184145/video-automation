@@ -58,6 +58,28 @@ test("missing required tools lead with a repair summary and auto-fix action", ()
   assert.match(html, /一键修复环境/);
 });
 
+test("missing transcription modules prioritize FunASR installation with CLI as temporary fallback", () => {
+  const html = renderHealthPayloadForTest({
+    ok: false,
+    checks: [
+      requiredChecks[0],
+      requiredChecks[1],
+      { name: "whisper_bin", path: "whisper", exists: true, optional: true, status: "ok" },
+      { name: "faster_whisper", path: "python:faster_whisper", exists: false, optional: false, status: "missing" },
+      { name: "ctranslate2_cuda", path: "python:ctranslate2", exists: false, optional: false, status: "missing" },
+    ],
+    settings: { whisper: { backend: "funasr-whisper" } },
+  });
+
+  assert.match(html, /health-recovery-panel/);
+  assert.match(html, /转写依赖缺失/);
+  assert.match(html, /优先安装 FunASR/);
+  assert.match(html, /中文直播录播/);
+  assert.match(html, /id="switch-whisper-cli"/);
+  assert.match(html, /临时切换到 Whisper CLI/);
+  assert.match(html, /python -m pip install -r requirements-optional\.txt/);
+});
+
 test("optional components do not block the ready state", () => {
   const html = renderHealthPayloadForTest({
     ok: true,

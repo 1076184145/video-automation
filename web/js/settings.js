@@ -72,6 +72,8 @@ const editableGroups = [
     fields: [
       { env: "RENDER_VIDEO_ENCODER", path: ["exports", "render_video_encoder"], type: "select", options: ["libx264", "h264_nvenc"] },
       { env: "RENDER_OUTPUT_FPS", path: ["exports", "render_output_fps"], type: "number", min: 0, step: 1 },
+      { env: "RENDER_X264_PRESET", path: ["exports", "render_x264_preset"], type: "select", options: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"] },
+      { env: "RENDER_X264_CRF", path: ["exports", "render_x264_crf"], type: "number", min: 0, max: 35, step: 1 },
       { env: "RENDER_NVENC_CQ", path: ["exports", "render_nvenc_cq"], type: "number", min: 1, step: 1 },
       { env: "RENDER_NVENC_PREVIEW_CQ", path: ["exports", "render_nvenc_preview_cq"], type: "number", min: 1, step: 1 },
       { env: "WEB_PREVIEW_ENABLED", path: ["exports", "web_preview_enabled"], type: "checkbox" },
@@ -87,6 +89,8 @@ const editableGroups = [
     title: "settings.edit_ai",
     note: "settings.edit_ai_note",
     fields: [
+      { env: "LLM_PROVIDER", path: ["optional_modules", "llm_provider"], type: "select", options: ["openai", "openai-compatible", "google"] },
+      { env: "LLM_MODEL", path: ["optional_modules", "llm_model"], placeholder: "settings.placeholder.llm_model" },
       { env: "COVER_PROVIDER", path: ["covers", "provider"], type: "select", options: ["openai", "openai-compatible", "openrouter", "google", "disabled"] },
       { env: "COVER_BASE_URL", path: ["covers", "base_url"] },
       { env: "COVER_MODEL", path: ["covers", "model"] },
@@ -98,16 +102,17 @@ const editableGroups = [
       { env: "GOOGLE_API_KEY", secret: true, configuredPath: ["optional_modules", "google_api_key_configured"] },
       { env: "GOOGLE_BASE_URL", path: ["optional_modules", "google_base_url"] },
       { env: "COVER_HTTP_REFERER", path: ["covers", "http_referer"] },
-      { env: "COVER_APP_TITLE", path: ["covers", "app_title"] },
-      { env: "LLM_PROVIDER", path: ["optional_modules", "llm_provider"], type: "select", options: ["openai", "openai-compatible", "google"] },
-      { env: "LLM_MODEL", path: ["optional_modules", "llm_model"] }
+      { env: "COVER_APP_TITLE", path: ["covers", "app_title"] }
     ]
   },
   {
     title: "settings.edit_modules",
     fields: [
       { env: "API_BATCH_LIMIT", path: ["api", "batch_limit"], type: "number", min: 1, step: 1 },
-      { env: "RECORDING_UPLOAD_MAX_BYTES", path: ["api", "recording_upload_max_bytes"], type: "number", min: 0, step: 1048576 }
+      { env: "RECORDING_UPLOAD_MAX_BYTES", path: ["api", "recording_upload_max_bytes"], type: "number", min: 0, step: 1048576 },
+      { env: "NATIVE_WAVEFORM_ENABLED", path: ["optional_modules", "native_waveform_enabled"], type: "checkbox" },
+      { env: "NATIVE_CUTS_ENABLED", path: ["optional_modules", "native_cuts_enabled"], type: "checkbox" },
+      { env: "HIGH_QUALITY_AUDIO_ENABLED", path: ["optional_modules", "high_quality_audio_enabled"], type: "checkbox" }
     ]
   }
 ];
@@ -233,7 +238,11 @@ function renderEditableField(field, settings, checks) {
     </label>`;
   }
   const type = field.secret ? "password" : field.type === "number" ? "number" : "text";
-  const placeholder = field.secret ? (configured ? t("settings.secret_keep") : t("settings.secret_empty")) : "";
+  const placeholder = field.secret
+    ? (configured ? t("settings.secret_keep") : t("settings.secret_empty"))
+    : field.placeholder
+      ? t(field.placeholder)
+      : "";
   return `<label class="settings-edit-field">
     ${label}
     <input ${common} type="${type}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"${field.min !== undefined ? ` min="${field.min}"` : ""}${field.max !== undefined ? ` max="${field.max}"` : ""}${field.step !== undefined ? ` step="${field.step}"` : ""}>
