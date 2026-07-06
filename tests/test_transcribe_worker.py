@@ -153,6 +153,26 @@ class PersistentTranscriptionWorkerTests(unittest.TestCase):
 
 
 class TranscriptionWorkerProtocolTests(unittest.TestCase):
+    def test_warmup_request_waits_for_model_without_transcribing_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            response_path = root / "response.json"
+            calls: list[object] = []
+
+            payload = process_request(
+                SimpleNamespace(),
+                object(),
+                {
+                    "warmup": True,
+                    "job_dir": str(root),
+                    "response_path": str(response_path),
+                },
+                transcribe=lambda *_args: calls.append(object()),
+            )
+
+            self.assertEqual(payload, {"status": "ok", "warmup": True})
+            self.assertEqual(calls, [])
+
     def test_process_request_writes_success_response_after_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

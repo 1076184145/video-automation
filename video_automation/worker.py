@@ -28,8 +28,20 @@ from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generat
 from .profiles import apply_profile_settings, profile_flags
 from .render import generate_render_preview, render_final_video, render_review_video
 from .resources import job_gpu_status_callbacks
+from .task_queue import QueueControlRequested
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
 from .transcribe import transcribe_audio
+
+
+def _transcription_backend_label(backend: str) -> str:
+    normalized = str(backend or "").strip().lower()
+    if normalized in {"funasr", "funasr-whisper", "funasr-faster-whisper"}:
+        return "FunASR"
+    if normalized == "faster-whisper":
+        return "Faster-Whisper"
+    if normalized == "cli":
+        return "Whisper CLI"
+    return normalized or "Transcription backend"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1137,6 +1149,8 @@ def process_job(
     skip_transcribe: bool,
     progress_enabled: bool,
     whisper_language: str | None = None,
+    selected_stages: list[str] | None = None,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> Job:
     logger = configure_job_logger(job)
     progress = ProgressReporter(progress_enabled)
@@ -1202,6 +1216,8 @@ def process_job(
                 manifest = stage_context.get("manifest") or {}
                 duration = float(manifest.get("duration_seconds") or 0)
                 estimated_seconds = max(settings.whisper_timeout_min_seconds, duration * settings.whisper_timeout_multiplier)
+                backend_label = _transcription_backend_label(settings.whisper_backend)
+                logger.info("Transcribing with %s", backend_label)
                 stop_heartbeat = threading.Event()
                 resource_waiting = threading.Event()
                 job.stage_estimate_seconds = round(estimated_seconds, 2)
@@ -1223,7 +1239,7 @@ def process_job(
                         percent = min(95.0, elapsed / estimated_seconds * 100) if estimated_seconds > 0 else None
                         job.update_stage_progress(
                             percent,
-                            message=f"Whisper transcribing, elapsed {int(elapsed)}s. Percent is estimated.",
+                            message=f"{backend_label} transcribing, elapsed {int(elapsed)}s. Percent is estimated.",
                         )
 
                 started_at = time.monotonic()
@@ -1376,23 +1392,31 @@ def process_job(
                 ),
             )
 
+        stage_selection = expand_stage_selection(selected_stages)
+
+        def enabled(stage_name: str, default: bool) -> bool:
+            return default and (stage_selection is None or stage_name in stage_selection)
+
         stages = [
-            PipelineStage("probe", "probing", True, probe_stage),
-            PipelineStage("detect_corruption", "detecting_corruption", settings.source_integrity_scan_enabled, corruption_stage),
-            PipelineStage("extract_audio", "extracting_audio", True, extract_audio_stage),
-            PipelineStage("transcribe", "transcribing", True, transcribe_stage),
-            PipelineStage("detect_silence", "detecting_silence", detect_silence_enabled, silence_stage),
-            PipelineStage("detect_freeze", "detecting_freeze", detect_freeze_enabled, freeze_stage),
-            PipelineStage("detect_scenes", "detecting_scenes", detect_scenes_enabled, scenes_stage),
-            PipelineStage("plan_cuts", "planning_cuts", True, cuts_stage),
-            PipelineStage("plan_crop", "planning_crop", plan_crop_enabled or vertical_enabled, crop_stage),
-            PipelineStage("style_subtitles", "styling_subtitles", (not skip_transcribe) or burn_subtitles_enabled, subtitles_stage),
-            PipelineStage("plan_uvr", "planning_uvr", plan_uvr_enabled, uvr_stage),
-            PipelineStage("plan_render", "planning_render", True, render_preview_stage),
-            PipelineStage("render_review", "rendering_review", render_review_enabled, render_review_stage),
-            PipelineStage("render_final", "rendering_final", render_final_enabled, render_final_stage),
+            PipelineStage("probe", "probing", enabled("probe", True), probe_stage),
+            PipelineStage("detect_corruption", "detecting_corruption", enabled("detect_corruption", settings.source_integrity_scan_enabled), corruption_stage),
+            PipelineStage("extract_audio", "extracting_audio", enabled("extract_audio", True), extract_audio_stage),
+            PipelineStage("transcribe", "transcribing", enabled("transcribe", True), transcribe_stage),
+            PipelineStage("detect_silence", "detecting_silence", enabled("detect_silence", detect_silence_enabled), silence_stage),
+            PipelineStage("detect_freeze", "detecting_freeze", enabled("detect_freeze", detect_freeze_enabled), freeze_stage),
+            PipelineStage("detect_scenes", "detecting_scenes", enabled("detect_scenes", detect_scenes_enabled), scenes_stage),
+            PipelineStage("plan_cuts", "planning_cuts", enabled("plan_cuts", True), cuts_stage),
+            PipelineStage("plan_crop", "planning_crop", enabled("plan_crop", plan_crop_enabled or vertical_enabled), crop_stage),
+            PipelineStage("style_subtitles", "styling_subtitles", enabled("style_subtitles", (not skip_transcribe) or burn_subtitles_enabled), subtitles_stage),
+            PipelineStage("plan_uvr", "planning_uvr", enabled("plan_uvr", plan_uvr_enabled), uvr_stage),
+            PipelineStage("plan_render", "planning_render", enabled("plan_render", True), render_preview_stage),
+            PipelineStage("render_review", "rendering_review", enabled("render_review", render_review_enabled), render_review_stage),
+            PipelineStage("render_final", "rendering_final", enabled("render_final", render_final_enabled), render_final_stage),
         ]
-        run_pipeline(progress, job, stages, context)
+        if control_callback is None:
+            run_pipeline(progress, job, stages, context)
+        else:
+            run_pipeline(progress, job, stages, context, control_callback=control_callback)
         job.set_status("done" if render_final_enabled else "needs_review")
         progress.emit(
             "pipeline:complete",
@@ -1402,6 +1426,13 @@ def process_job(
         )
         logger.info("Job complete: %s", job.job_dir)
         return job
+    except QueueControlRequested as exc:
+        logger.info("Queue control requested: %s", exc.action)
+        if exc.action == "paused":
+            job.set_status("queued")
+        else:
+            job.fail("Canceled by user")
+        raise
     except Exception as exc:
         logger.exception("Job failed")
         job.fail(str(exc))
@@ -1415,7 +1446,50 @@ def process_job(
         return job
 
 
-def run_pipeline(progress: ProgressReporter, job: Job, stages: list[PipelineStage], context: dict[str, Any]) -> None:
+PIPELINE_STAGE_DEPENDENCIES: dict[str, set[str]] = {
+    "probe": set(),
+    "detect_corruption": {"probe"},
+    "extract_audio": {"probe"},
+    "transcribe": {"probe", "extract_audio"},
+    "detect_silence": {"probe", "extract_audio"},
+    "detect_freeze": {"probe"},
+    "detect_scenes": {"probe"},
+    "plan_cuts": {"probe", "extract_audio", "transcribe"},
+    "plan_crop": {"probe"},
+    "style_subtitles": {"probe", "extract_audio", "transcribe", "plan_cuts"},
+    "plan_uvr": {"probe", "extract_audio"},
+    "plan_render": {"probe", "extract_audio", "transcribe", "plan_cuts", "style_subtitles"},
+    "render_review": {"probe", "extract_audio", "transcribe", "plan_cuts", "style_subtitles", "plan_render"},
+    "render_final": {"probe", "extract_audio", "transcribe", "plan_cuts", "plan_crop", "style_subtitles", "plan_render"},
+}
+
+
+def expand_stage_selection(selected_stages: list[str] | None) -> set[str] | None:
+    if not selected_stages:
+        return None
+    requested = {str(stage).strip() for stage in selected_stages if str(stage).strip()}
+    unknown = sorted(requested - PIPELINE_STAGE_DEPENDENCIES.keys())
+    if unknown:
+        raise ValueError(f"unknown pipeline stage: {unknown[0]}")
+    expanded = set(requested)
+    pending = list(requested)
+    while pending:
+        stage = pending.pop()
+        for dependency in PIPELINE_STAGE_DEPENDENCIES[stage]:
+            if dependency not in expanded:
+                expanded.add(dependency)
+                pending.append(dependency)
+    return expanded
+
+
+def run_pipeline(
+    progress: ProgressReporter,
+    job: Job,
+    stages: list[PipelineStage],
+    context: dict[str, Any],
+    *,
+    control_callback: Callable[[], str | None] | None = None,
+) -> None:
     total_stages = len(stages)
     timings: list[dict[str, Any]] = []
     pipeline_started_at = datetime.now().isoformat(timespec="seconds")
@@ -1427,6 +1501,9 @@ def run_pipeline(progress: ProgressReporter, job: Job, stages: list[PipelineStag
         total_stages=total_stages,
     )
     for index, stage in enumerate(stages, start=1):
+        action = control_callback() if control_callback else None
+        if action in {"paused", "canceled"}:
+            raise QueueControlRequested(action)
         stage_payload = {
             "job_dir": str(job.job_dir),
             "source_path": str(job.source_path),

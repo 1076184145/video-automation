@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from video_automation import covers, render
-from video_automation.jobs import Job, load_job
+from video_automation.jobs import load_job
 from video_automation.subtitle_translation import _validate_translation_workload
 
 

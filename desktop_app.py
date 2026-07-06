@@ -10,7 +10,7 @@ from contextlib import suppress
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from video_automation.api import create_server
+from video_automation.api import _start_transcription_warmup, create_server
 from video_automation.config import Settings
 from video_automation.worker import bootstrap_dirs, health_payload
 
@@ -97,6 +97,7 @@ def _start_server(settings: Settings) -> tuple[ThreadingHTTPServer | None, bool]
         raise
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
     thread.start()
+    _start_transcription_warmup(settings)
     return server, True
 
 

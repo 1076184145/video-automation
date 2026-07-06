@@ -2,790 +2,175 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
-[![GitHub stars](https://img.shields.io/github/stars/1076184145/video-automation?style=social)](https://github.com/1076184145/video-automation/stargazers)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-required-orange.svg)](https://ffmpeg.org/)
 
-**Chinese is the primary user guide:** [README.zh-CN.md](README.zh-CN.md)
+**中文说明：[README.zh-CN.md](README.zh-CN.md)**
 
-English documentation is kept in this file for international users and contributors.
+Turn a long local recording into a reviewed short video with transcript, subtitles, cover images, and export files. Everything runs on your computer unless you choose an external AI service.
 
-Video Automation is a local AI workflow that turns long livestream or recorded videos into publish-ready short clips for Douyin, Bilibili, and YouTube Shorts, with smart rough cuts, subtitles, AI cover generation, and publish handoff files.
+![Video Automation dashboard](docs/assets/dashboard.png)
 
-| Dashboard | Job review | Publish handoff |
-|---|---|---|
-| ![Dashboard screenshot](docs/assets/dashboard.png) | ![Job review screenshot](docs/assets/job-detail.png) | ![Publish handoff screenshot](docs/assets/publish-handoff.png) |
+> Video Automation accepts local video files. URL downloading and livestream recording are not included. Original files are never modified, and platform login or automatic publishing is disabled by default.
 
-> Screenshots are captured from the Chinese UI with private video previews and file names masked for public documentation.
+## Start in 5 Minutes
 
-## Why It Exists
+### Windows app (recommended)
 
-- **Local-first:** your source recordings and generated files stay on your machine unless you explicitly enable an external AI provider.
-- **Built for livestream clipping:** import long recordings, transcribe speech, detect usable sections, review clips, and export short-form outputs.
-- **Multi-platform outputs:** built-in presets for Douyin, Bilibili, and YouTube Shorts.
-- **Creator workflow included:** subtitles, AI cover candidates, metadata, project export, and publish handoff packages.
-- **Beginner-friendly desktop path:** Windows Lite launcher, Health page checks, and one-click repair for portable tools such as FFmpeg.
-- **Automation-ready:** CLI and local HTTP API for batch processing and integration with tools such as n8n.
+1. Download the latest Windows package from [GitHub Releases](https://github.com/1076184145/video-automation/releases).
+2. Install or unzip it, then run `VideoAutomationLite.exe`.
+3. Open **Health**. If FFmpeg or FFprobe is missing, click **Auto-fix Dependencies**.
+4. Open **New Job** and add one local video.
+5. Choose a profile such as **Fast**, **Douyin**, or **Bilibili**, then start processing.
+6. Open the finished job, review it, and download `final.mp4`.
 
-Fastest path to value:
+The basic workflow does not require an API key.
 
-1. Start the desktop app or local server and open the Health page.
-2. Use one-click repair if FFmpeg or other required portable tools are missing.
-3. Drag in a video, choose a creator profile such as Douyin or Bilibili, and start processing.
-4. Review the suggested clips, export the final video, then use the publish handoff package for upload.
+### Run from source
 
-## Quick Start: Run Locally
+Requirements:
 
-Prebuilt Windows packages are published on the repository's [Releases](https://github.com/1076184145/video-automation/releases) page.
+- Python 3.11 or newer
+- FFmpeg and FFprobe available on `PATH`
+- Git
+- Optional: an NVIDIA GPU for faster transcription and rendering
 
-### Option A: Windows desktop build
-
-If you downloaded a release package or installer:
-
-1. Install or unzip Video Automation.
-2. Start `VideoAutomationLite.exe`.
-3. Open the Health page when prompted.
-4. Click **Auto-fix Dependencies** if FFmpeg or FFprobe is missing.
-5. Go to **New Job**, drag in a video, choose a profile, and start processing.
-
-The desktop app runs a local server in the background and opens the Web UI for you. Your videos, job outputs, and API keys stay on your machine unless you explicitly use an external AI provider.
-
-### Option B: Run from source
-
-Prerequisites:
-
-- Windows 10/11, macOS, or Linux.
-- Python 3.11+.
-- FFmpeg and FFprobe. On Windows, the Health page can install portable copies into `tools\bin`.
-- Optional: NVIDIA CUDA for faster transcription/rendering.
-
-Setup:
+Windows PowerShell:
 
 ```powershell
-git clone https://github.com/<your-name>/<your-repo>.git
-cd <your-repo>
-py -3.12 -m venv venv
+git clone https://github.com/1076184145/video-automation.git
+cd video-automation
+py -m venv venv
 .\venv\Scripts\python.exe -m pip install --upgrade pip
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Start the local Web app:
-
-```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-optional.txt
 .\venv\Scripts\python.exe .\run_worker.py --serve
 ```
 
-Then open:
+macOS or Linux:
 
-```text
-http://127.0.0.1:8765/#/
+```bash
+git clone https://github.com/1076184145/video-automation.git
+cd video-automation
+python3 -m venv venv
+./venv/bin/python -m pip install --upgrade pip
+./venv/bin/python -m pip install -r requirements.txt
+./venv/bin/python -m pip install -r requirements-optional.txt
+./venv/bin/python run_worker.py --serve
 ```
 
-First run checklist:
+Open [http://127.0.0.1:8765/#/](http://127.0.0.1:8765/#/) in your browser. Keep the terminal window open while using the app.
 
-1. Open **Health** and fix missing required tools.
-2. Open **Settings** only if you want to change model, GPU, subtitle, render, or AI options.
-3. Open **New Job** and drag in a video or enter a local file path.
-4. Wait for the job to reach **Needs review** or **Done**.
-5. Open the job page, review clips, then download `final.mp4`, subtitles, covers, or publish handoff files.
+## Daily Workflow
 
-The basic local workflow works with the built-in defaults. If you need AI covers, translation, or custom model settings, open the Web Settings page and fill in the required fields there.
+1. **Import:** drag in a local video or select one from `input/recordings`.
+2. **Choose:** select a profile and enable only the options you need.
+3. **Process:** the app inspects the video, transcribes speech, suggests cuts, and renders selected outputs.
+4. **Review:** preview clips, edit cuts or transcript text, and rerun when needed.
+5. **Export:** download the final video, subtitles, cover, or manual publish package.
 
-### Optional AI features
+Profiles are starting points:
 
-AI cover generation, semantic highlights, metadata, and subtitle translation require your own provider key. Configure keys in the Web Settings page or in a private `.env` file:
+| Profile | Use it for |
+|---|---|
+| **Fast** | A quick final video with less optional analysis |
+| **Analysis** | Transcript and detection results without a full export |
+| **Douyin** | Vertical short-video output |
+| **Bilibili** | Standard Bilibili-oriented output |
+| **YouTube Shorts** | Vertical Shorts output |
 
-```text
-OPENAI_API_KEY=
-GOOGLE_API_KEY=
-COVER_API_KEY=
-```
+## Features
 
-Leave these blank if you only need local media processing, transcription, subtitles, and rendering.
+Included in the local workflow:
 
-## Current Features
+- Single and batch video import
+- Job progress, restart recovery, and a persistent task queue
+- Speech transcription with Whisper-compatible local backends
+- Silence, freeze, scene, and damaged-frame checks
+- Suggested cuts, transcript editing, and subtitle generation
+- Browser preview plus full-quality `final.mp4`
+- Vertical `1080x1920` output and subtitle burn-in
+- Projects, reusable recipes, creator settings, and review revisions
+- Premiere Pro and Jianying/CapCut handoff files
+- Manual upload packages for supported platforms
 
-- Local Web dashboard at `http://127.0.0.1:8765/#/`
-- Drag-and-drop video import into `input\recordings`
-- Batch drag-and-drop import and submission, with batch-level progress grouped on the dashboard
-- Upload progress while importing large media files in the Web UI
-- Recording picker for files already in `input\recordings`
-- Workflow profiles: Fast Mode, analysis, Douyin, Bilibili, YouTube Shorts
-- Job cards with status, progress, thumbnails, and quick navigation
-- Job detail page with pipeline status, video preview, timeline, transcript, clip editor, and downloads
-- Real-time status updates through Server-Sent Events, with title badges and optional browser notifications for completed jobs
-- Editable cut list with automatic preview re-render after saving
-- Editable transcript text with timestamp-to-preview seeking
-- AI video cover generation with portrait and landscape candidates
-- Optional enhancement modules for platform segmentation, subtitle translation, AI metadata, semantic highlights, project export, and publish packages
-- Timeline waveform data, using `audiowaveform` when available and a Python WAV fallback otherwise
-- Clip stabilization that merges tiny fragments and short-gap jump cuts before review
-- Approve/review flow for marking a job as complete
-- Health page for local tool checks, one-click portable tool repair, and Settings page for saving common runtime options
-- HTTP Range support for video/audio preview seeking
-- Local HTTP API for automation tools such as n8n or Coze
-- Controlled parallel processing with `API_PARALLEL_JOBS`
-- CLI worker for single-file, watch, batch, resume, cleanup, and status workflows
-- Standard-library unit tests for core parsing, cut planning, subtitle, and configuration helpers
+Optional features:
 
-## Project Structure
+- AI covers, translation, titles, descriptions, and highlight suggestions
+- NVIDIA CUDA/NVENC acceleration
+- FunASR and faster-whisper local speech backends
+- Demucs audio separation
+- A separately configured publishing connector; manual packages remain the fallback
 
-See `docs/PROJECT_STRUCTURE.md` for the current file layout, module responsibility map, and runtime directory notes.
+AI features require a key from the provider you select. Add it in **Settings** or a private `.env` file. See [`.env.example`](.env.example) for available settings.
 
-## Processing Pipeline
+## Important Outputs
 
-Typical pipeline stages:
+Each job is stored under `processing/jobs/<job-name>/`.
 
-```text
-probe
-detect_corruption
-extract_audio
-transcribe
-detect_silence
-detect_freeze
-detect_scenes
-plan_cuts
-style_subtitles
-plan_crop
-plan_uvr
-plan_render
-render_review
-render_final
-```
+| File | What it is |
+|---|---|
+| `final.mp4` | Full-quality finished video |
+| `web_preview.mp4` | Smaller browser preview |
+| `transcript.txt` / `.srt` | Transcript and subtitles |
+| `cuts.json` | Suggested or edited clip ranges |
+| `cover_*.jpg` | Generated or selected covers |
+| `publish_packages/` | Files and text for manual upload |
+| `project_exports/` | Premiere Pro or Jianying/CapCut handoff files |
 
-Not every stage runs for every job. Optional stages depend on CLI flags, Web options, or the selected workflow profile.
+## Troubleshooting
 
-## Job Outputs
+**The app says FFmpeg or FFprobe is missing**
 
-Each source file creates a folder under:
-
-```text
-D:\video-automation\processing\jobs\<timestamp-source-name>\
-```
-
-Common outputs:
-
-```text
-job.json                  Job state, stage progress, errors
-job.log                   Per-job log
-stage_timings.json        Per-stage timing diagnostics for finding bottlenecks
-manifest.json             ffprobe media info and quick fingerprint
-thumbnail.jpg             Dashboard thumbnail
-audio.wav                 Whisper/transcription audio, optionally filtered
-audio_hq.flac             Optional high-quality audio copy for editing / UVR
-waveform.json             Timeline waveform data from audiowaveform or native/Python fallback
-transcript.txt            Plain text transcript
-transcript.srt            SRT subtitle file
-transcript.json           Structured transcript segments, with word timestamps when enabled
-transcript_translated_zh.* Optional translated transcript JSON/TXT/SRT output
-subtitles.ass             Styled ASS subtitle file
-subtitles_clipped.ass     Subtitle file remapped to edited clips
-subtitles_translated_zh*.ass Optional translated ASS subtitle output
-corrupt.json              Source video decode integrity scan
-silence.json              Silence detection output
-freeze.json               Freeze/static-frame detection output
-scene.json                Scene-change detection output
-cuts.json                 Structured cut suggestions and edited clips
-cuts.md                   Human-readable cut sheet
-crop_plan.json            Vertical framing plan
-uvr_plan.json             Vocal/BGM separation plan/status
-render_preview.json       Preview render command plan
-review.mp4                Preview video
-final_render_preview.json Final render command plan
-final.mp4                 Final rendered video
-final_translated_zh.mp4   Optional final render with translated subtitles
-web_preview.mp4           Lightweight Web playback proxy; final quality is unchanged
-web_preview.json          Web playback proxy render metadata
-cover_manifest.json       AI cover generation status and candidate metadata
-cover_9x16_01.jpg         Portrait cover candidates
-cover_16x9_01.jpg         Landscape cover candidates
-cover_vertical.jpg        Selected portrait cover
-cover_landscape.jpg       Selected landscape cover
-segments_manifest.json    Optional platform segment manifest
-segments/*.mp4            Optional platform-sized video parts
-metadata.json             Optional AI title/description/tag metadata
-highlights.json           Optional LLM semantic highlights
-publish_package.json      Optional manual upload package manifest
-project_export_manifest.json Optional Premiere/Jianying export manifest
-project_exports/*         Optional editor handoff files
-```
-
-`uvr_plan.json` is plan-only by default. If you install Demucs and set `AUDIO_SEPARATION_ENGINE=demucs`, the same `plan_uvr` stage runs audio separation and writes `uvr/vocals.wav` plus `uvr/instrumental.wav`.
-
-## Web Dashboard
-
-Start the local server:
+Open **Health** and use **Auto-fix Dependencies**. Source users can run:
 
 ```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --serve
-```
-
-Open:
-
-```text
-http://127.0.0.1:8765/#/
-```
-
-The Web UI supports:
-
-- Drag a video onto the New Job page
-- Drag multiple videos to import and submit them as a batch
-- See upload progress while a large file is imported
-- Select an existing file from `input\recordings`
-- Pick a workflow profile
-- Choose transcription language
-- Enable silence, freeze, scene detection, preview render, final render, vertical 9:16, embedded subtitles, and skip-transcribe options
-- Review and edit clips
-- Click transcript timestamps to seek the preview video
-- Edit transcript text directly and regenerate subtitles/preview
-- Preview `review.mp4` or `final.mp4`
-- Generate 3 or 5 AI cover candidates, then choose portrait and landscape covers
-- Generate optional platform-sized segments, translated subtitles, AI metadata, semantic highlights, and manual publish packages
-- Download creator-facing outputs and advanced JSON outputs
-- Real-time job updates without polling. When the tab is hidden, completed/review/failed jobs update the browser title badge; if browser notifications have already been granted, a system notification is also shown.
-
-UI labels use creator-facing terms. For example, `render_review` appears as preview video, and `burn_subtitles` appears as embedded subtitles.
-
-## Desktop Launcher
-
-Phase 1 desktop support is a lightweight Python shell around the existing API and Web UI.
-
-Install the optional desktop dependency:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe -m pip install pywebview
-```
-
-Start the desktop launcher:
-
-```powershell
-.\venv\Scripts\python.exe .\desktop_app.py
-```
-
-`desktop_app.py` starts the same local API server and opens `http://127.0.0.1:8765/#/` in a native WebView window. If `pywebview` is not installed, it falls back to the system browser. If the API port is already in use, it assumes the service is already running and opens the UI without starting a second server.
-
-To build the recommended lightweight Windows onedir package:
-
-```powershell
-cd D:\video-automation
-.\tools\build_desktop.ps1 -InstallDeps -Lite -Clean
-```
-
-The lite bundle excludes heavy optional ML libraries such as torch, FunASR, SciPy, and ModelScope. This keeps the desktop shell portable and small enough for first-pass distribution. To build a full bundle that includes whatever optional ML packages are currently installed in the venv, omit `-Lite`:
-
-```powershell
-.\tools\build_desktop.ps1 -Clean
-```
-
-To create a zip package from the desktop bundle:
-
-```powershell
-.\tools\package_desktop.ps1 -Lite -SkipBuild
-```
-
-Omit `-SkipBuild` if you want the script to rebuild before packaging. The zip is written to `dist\releases\`.
-
-To build a normal Windows installer, install Inno Setup 6 and run:
-
-```powershell
-.\tools\build_installer.ps1 -Version 0.1.0
-```
-
-The installer is written to `dist\installers\`. It installs the Lite desktop bundle under the current user's local app data folder, so it does not require administrator privileges. If Inno Setup is installed in a custom location, set `INNO_SETUP_COMPILER` to the full path of `ISCC.exe`.
-
-Portable command-line tools can be placed in `tools\bin` before running from source or building the desktop package:
-
-```text
-tools\bin\ffmpeg.exe
-tools\bin\ffprobe.exe
-tools\bin\audiowaveform.exe
-```
-
-On Windows, you can download the common portable tools with:
-
-```powershell
-.\tools\install_desktop_tools.ps1
-```
-
-This downloads `ffmpeg.exe` and `ffprobe.exe` into `tools\bin`. Use `-Force` to replace existing files or `-SkipFfmpeg` to skip installation.
-
-The same repair flow is available inside the Web UI: open the Health page and click **Auto-fix Dependencies** when `ffmpeg` or `ffprobe` is missing. The backend runs `tools\install_desktop_tools.ps1` in the background and streams progress through SSE, then refreshes the health check automatically.
-
-Explicit Settings / `.env` paths still take priority. If no portable executable is found, the app falls back to the normal command name on PATH. You can check the current resolution with:
-
-```powershell
-.\tools\check_desktop_tools.ps1
-```
-
-The generated bundle includes the Web assets and `.env.example`, but it intentionally does not bundle your `.env` secrets. Keep models and API keys configured through the Settings page or `.env`. The Health page can install the common portable tools into `tools\bin`; optional ML libraries and API keys remain user-managed.
-
-## Testing
-
-The project uses Python's standard-library `unittest` for the initial test suite, so no test dependency is required.
-
-Run the current regression checks:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe -m unittest discover -s tests
-.\venv\Scripts\python.exe -m compileall .\video_automation .\run_worker.py
-node --check .\web\js\app.js
-node --check .\web\js\router.js
-node --check .\web\js\job-detail.js
-node --check .\web\js\download-section.js
-node --check .\web\js\i18n.js
-```
-
-Current tests cover configuration loading, ffmpeg parser helpers, cut planning helpers, transcript-to-clip association, ASS subtitle formatting, subtitle timeline remapping, and subtitle wrapping.
-
-## AI Video Covers
-
-The Job Detail page includes an optional AI cover panel. Cover generation is separate from the main editing pipeline, so it does not change `needs_review`, `done`, or `failed` job state.
-
-Configure an image API key before using it. Official OpenAI works with the defaults. OpenAI-compatible Images API gateways can be used by changing `COVER_BASE_URL` and `COVER_API_KEY`. OpenRouter is also supported through Chat Completions image output. Google AI Studio is supported through the native Gemini `generateContent` API.
-
-```text
-COVER_PROVIDER=openai
-COVER_BASE_URL=https://api.openai.com/v1
-COVER_MODEL=gpt-image-2
-COVER_COUNT=3
-COVER_ASPECTS=9:16,16:9
-COVER_QUALITY=medium
-COVER_OUTPUT_FORMAT=jpeg
-COVER_TITLE_FONT=Microsoft YaHei
-COVER_API_KEY=YOUR_OPENAI_OR_COMPATIBLE_KEY
-COVER_HTTP_REFERER=http://127.0.0.1:8765
-COVER_APP_TITLE=Video Automation
-```
-
-If `COVER_API_KEY` is empty, the worker falls back to `OPENAI_API_KEY`. This lets you use one key for official OpenAI covers, or a separate third-party key for cover generation while keeping text LLM settings independent. `COVER_HTTP_REFERER` is optional; leave it blank unless your gateway asks for a referer header. For local use, `http://127.0.0.1:8765` is a reasonable value.
-
-OpenRouter example:
-
-```text
-COVER_PROVIDER=openrouter
-COVER_BASE_URL=https://openrouter.ai/api/v1
-COVER_API_KEY=YOUR_OPENROUTER_KEY
-COVER_MODEL=google/gemini-2.5-flash-image
-COVER_MODALITIES=image,text
-COVER_HTTP_REFERER=http://127.0.0.1:8765
-COVER_APP_TITLE=Video Automation
-```
-
-For OpenRouter, choose a model whose `output_modalities` includes `image`; OpenRouter recommends checking models via `https://openrouter.ai/api/v1/models?output_modalities=image`.
-
-Google AI Studio example:
-
-```text
-GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY
-GOOGLE_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-COVER_PROVIDER=google
-COVER_MODEL=gemini-2.5-flash-image
-```
-
-For Google covers, `COVER_API_KEY` takes precedence when set; otherwise the worker uses `GOOGLE_API_KEY`. Each candidate is one Gemini image request, then Pillow performs the exact 9:16 or 16:9 crop and local title overlay. The image model may be downloaded or changed by Google over time, so use a currently available image-capable Gemini model from Google AI Studio.
-
-The worker builds a prompt from `manifest.json`, `cuts.json`, `transcript.json`, and the job title. The model generates background images without readable text, then local post-processing adds the chosen title with a deterministic font overlay. This avoids unreliable AI-generated Chinese text.
-
-Outputs:
-
-- Portrait candidates: `cover_9x16_01.jpg`, `cover_9x16_02.jpg`, ...
-- Landscape candidates: `cover_16x9_01.jpg`, `cover_16x9_02.jpg`, ...
-- Selected files: `cover_vertical.jpg` and `cover_landscape.jpg`
-
-The default request creates 3 portrait and 3 landscape candidates. Choosing 5 candidates increases API usage. Common failures are missing `COVER_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY`, an incompatible model or endpoint, insufficient quota, network errors, or content rejection by the image API. The Health page marks `Pillow` and the selected provider key as optional cover-related checks.
-
-## Optional Enhancement Modules
-
-These modules are manual job add-ons. They do not run inside the default pipeline and do not change job review status.
-
-- Platform segments: choose Douyin, Bilibili, or YouTube Shorts in Job Detail to create `segments_manifest.json` and `segments/<platform>_part_01.mp4` files from `final.mp4` or `review.mp4`.
-- Subtitle translation: use either `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=google`, `LLM_MODEL=gemini-2.5-flash`, and `GOOGLE_API_KEY`. Outputs include `transcript_translated_<lang>.json/.txt/.srt` and `subtitles_translated_<lang>.ass`; rendering `final_translated_<lang>.mp4` is a separate button so long renders do not block translation.
-- AI metadata: use the same OpenAI or Google text configuration to generate editable `metadata.json` with title, description, tag, hashtag, and cover-title ideas.
-- Semantic highlights: uses the same LLM settings to write `highlights.json` and attach `semantic_score` to clips where possible.
-- Publish center v1: creates `publish_package.json` plus `publish_packages/douyin/` and `publish_packages/bilibili/` handoff folders with title, description, tags, hashtags, local video path, checklist, and platform metadata files. It also writes `publish_extension_manifest.json` and exposes `GET /publish/packages` for a trusted browser extension to read local handoff data. It does not log in or upload automatically.
-- Project export: creates `project_export_manifest.json` plus `project_exports/premiere/premiere_timeline.xml` for Premiere Pro import and `project_exports/jianying_package/` for Jianying/CapCut manual import. The Jianying package is not a proprietary draft project.
-
-URL downloading and livestream recording have been removed from the Web workflow. New Job now focuses on local paths, drag-and-drop import, and files already present in `input\recordings`, which keeps the editing and cover-generation loop lighter and more predictable.
-
-## Vertical Output
-
-Vertical rendering targets `1080x1920`.
-
-Supported vertical modes:
-
-- `VERTICAL_MODE=blur`: preserve the source frame as foreground and fill the 9:16 background with a blurred duplicate
-- `VERTICAL_MODE=pad`: preserve the source frame with black padding
-- `VERTICAL_MODE=crop`: crop to fill 9:16 using configured anchors
-
-The crop planner can remove stable black borders from the source before fitting or cropping. This is useful for recordings that contain black bars from capture software.
-
-Manual anchor settings are available for deterministic crop mode:
-
-```text
-CROP_ANCHOR_X=0.5
-CROP_ANCHOR_Y=0.5
-```
-
-This is not automatic face tracking.
-
-## GPU Render Acceleration
-
-If your machine has an NVIDIA GPU, you can use FFmpeg NVENC for faster renders.
-
-Recommended workflow:
-
-1. Open **Health** and confirm `h264_nvenc` is available.
-2. Open **Settings** and set the render encoder to `h264_nvenc`.
-3. Keep output FPS at `30` for livestream recordings unless you specifically need to preserve the source timing.
-4. If NVENC is missing or unstable, switch the render encoder back to `libx264`.
-
-On CPU-only machines, lower the x264 speed preset in **Settings** to `veryfast` for quicker exports. `RENDER_X264_CRF=0` keeps the platform defaults; use a higher CRF only when you prefer smaller/faster files over quality.
-
-The job detail page plays a lightweight `web_preview.mp4` when available, so large or high-FPS videos stay smooth in the browser. Downloads and platform uploads still use the full-quality `final.mp4`. **Fast Mode** skips this extra proxy render to produce `final.mp4` sooner.
-
-One-click platform profiles render `final.mp4` directly. Choose **Custom** and enable preview rendering only when you also need a separate `review.mp4`.
-
-## Transcription
-
-For Chinese livestream recordings, choose the Chinese-first backend in Settings. It tries FunASR first and falls back to faster-whisper when FunASR is unavailable or fails.
-
-Recommended workflow:
-
-1. Use **FunASR + Whisper fallback** for Chinese speech.
-2. Keep language detection on **Auto** for mixed-language or uncertain sources.
-3. Add hotwords or an initial prompt only when you know the source language and recurring terms. For example, use placeholders such as `<host name>, <show name>, <game title>, <custom term>` rather than a full sentence.
-4. Use subtitle replacements for repeated misrecognitions, such as names, game terms, or platform slang.
-5. If CUDA is unstable or runs out of memory, switch to a smaller model, lower the batch size, or use CPU mode.
-
-Transcription always writes the same downstream files: `transcript.txt`, `transcript.srt`, and `transcript.json`. Subtitle replacements are applied to transcript and subtitle outputs.
-
-ASS subtitle sizing is resolution-aware. For vertical output, `subtitles_clipped.ass` is regenerated against `1080x1920`, long transcript segments are split over time, and each on-screen subtitle is capped by:
-
-```text
-ASS_MAX_LINES=2
-ASS_VERTICAL_FONT_SIZE=44
-```
-
-The first FunASR run downloads model files. By default, the isolated FunASR worker stays alive and reuses the loaded model for later jobs. Use strict FunASR only when you want missing dependencies or model errors to stop the job instead of falling back.
-
-## Cut Stabilization
-
-The initial cut plan removes invalid spans from silence/freeze detection, then stabilizes kept clips so short pauses do not create excessive jump cuts.
-
-Current defaults:
-
-```text
-SILENCE_MIN_GAP_SECONDS=0.35
-CUT_MIN_CLIP_SECONDS=2.0
-CUT_MERGE_GAP_SECONDS=1.5
-SOURCE_INTEGRITY_SCAN_ENABLED=true
-SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
-SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
-VISUAL_DETECT_KEYFRAMES_ONLY=true
-VISUAL_DETECT_FPS=2
-VISUAL_DETECT_WIDTH=480
-```
-
-`CUT_MERGE_GAP_SECONDS` controls how aggressively adjacent kept clips separated by a short removed gap are merged. Increase it for smoother rough cuts; decrease it for tighter, more aggressive editing.
-
-`SOURCE_INTEGRITY_SCAN_ENABLED` runs an ffmpeg decode scan and writes `corrupt.json`. It does not fail the job, but the Web UI warns when the source file has damaged H.264 frames so you can re-download/re-export the source or remove damaged clips before final rendering.
-
-`VISUAL_DETECT_KEYFRAMES_ONLY` makes freeze and scene detection decode only keyframes, which is much faster on long recordings. Disable it if you need denser scene-change markers. `VISUAL_DETECT_FPS` and `VISUAL_DETECT_WIDTH` downsample only visual analysis and do not affect rendered videos; the FPS limiter is used only when keyframe-only mode is disabled.
-
-## CLI Examples
-
-Health check:
-
-```powershell
-cd D:\video-automation
 .\venv\Scripts\python.exe .\run_worker.py --health
 ```
 
-Process one file:
+**The first job is slow**
+
+Speech models may download and initialize on first use. Later jobs reuse local model files and can start faster.
+
+**CUDA or GPU processing fails**
+
+Choose a smaller speech model or switch transcription/rendering to CPU in **Settings**.
+
+**An AI button reports a missing key**
+
+The local editing workflow still works. Configure a provider key only if you want that AI feature.
+
+**Where are my jobs?**
+
+Open `processing/jobs/`. Do not commit this folder, `.env`, logs, private videos, or generated exports to Git.
+
+## Developer Commands
 
 ```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --once "D:\path\to\recording.mp4" --detect-silence --detect-scenes
+# Show every CLI option
+.\venv\Scripts\python.exe .\run_worker.py --help
+
+# Machine-readable health check
+.\venv\Scripts\python.exe .\run_worker.py --health --json
+
+# Process one local file
+.\venv\Scripts\python.exe .\run_worker.py --once "D:\path\video.mp4" --profile douyin --progress
+
+# Run Python tests
+.\venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Use a profile:
+The local Web server binds to `127.0.0.1:8765` by default. Do not expose it publicly without authentication, network controls, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --once "D:\path\to\recording.mp4" --profile douyin --progress
-```
+## Privacy and Boundaries
 
-Watch the recordings folder:
+- Videos, jobs, and provider keys stay on your computer by default.
+- External AI features send only the required request and credential directly to the provider you choose.
+- The project does not operate an intermediary server or a remote self-update service.
+- Manual publish packages do not log in or upload automatically.
+- You are responsible for the rights to process and publish your media.
 
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --watch --profile analysis
-```
-
-Resume failed or incomplete jobs:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --resume
-```
-
-List known jobs:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --status
-```
-
-Clean old jobs with a dry run:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --cleanup-days 30 --dry-run
-```
-
-Run the batch example:
-
-```powershell
-cd D:\video-automation
-.\venv\Scripts\python.exe .\run_worker.py --batch ".\examples\batch.example.json" --progress
-```
-
-## Common CLI Flags
-
-```text
---once <file>        Process one media file
---batch <json>       Process a batch JSON file
---watch              Watch input\recordings
---profile <name>     fast / analysis / douyin / bilibili / youtube_shorts
---force              Re-run and overwrite existing outputs
---detect-silence     Generate silence.json
---detect-freeze      Generate freeze.json
---detect-scenes      Generate scene.json
---render-review      Generate review.mp4
---render-final       Generate final.mp4
---vertical           Render final video as 1080x1920
---burn-subtitles     Embed ASS subtitles into final.mp4
---plan-crop          Generate crop_plan.json
---plan-uvr           Generate audio separation / UVR plan, or run Demucs when enabled
---skip-transcribe    Create empty transcript outputs
---serve              Start the local Web UI and API
---health             Check configured tools
---status             List jobs
---resume             Resume incomplete jobs
---json               JSON output for health/status
---progress           Emit JSONL progress events
-```
-
-## HTTP API
-
-Start:
-
-```powershell
-D:\video-automation\venv\Scripts\python.exe D:\video-automation\run_worker.py --serve
-```
-
-Default base URL:
-
-```text
-http://127.0.0.1:8765
-```
-
-Endpoints:
-
-```text
-GET    /
-GET    /health
-POST   /health/install-tools
-GET    /events
-GET    /recordings
-POST   /recordings/upload?filename=<name>
-GET    /jobs
-GET    /jobs/<job-folder-name>
-DELETE /jobs/<job-folder-name>
-GET    /jobs/<job-folder-name>/files/<filename>
-POST   /jobs/<job-folder-name>/approve
-POST   /jobs/<job-folder-name>/cuts
-POST   /jobs/<job-folder-name>/transcript
-POST   /jobs/<job-folder-name>/rerun
-POST   /jobs/<job-folder-name>/covers/generate
-POST   /jobs/<job-folder-name>/covers/select
-POST   /jobs/<job-folder-name>/segments/generate
-POST   /jobs/<job-folder-name>/metadata/generate
-POST   /jobs/<job-folder-name>/metadata
-POST   /jobs/<job-folder-name>/highlights/generate
-POST   /jobs/<job-folder-name>/publish/package
-GET    /publish/packages
-POST   /jobs/<job-folder-name>/project-export/generate
-POST   /jobs/<job-folder-name>/subtitles/translate
-POST   /process
-POST   /process/batch
-```
-
-`POST /process` accepts JSON and returns a job immediately while processing continues in the background. Query `GET /jobs/<job-folder-name>` for status or subscribe to `GET /events` for Server-Sent Events.
-
-Mutation endpoints such as delete, rerun, cut editing, and transcript editing reject jobs that are still processing with `409 Conflict`. JSON request bodies are validated and malformed JSON returns `400`.
-
-The Web UI and API reject browser requests from untrusted origins. The built-in local origins are allowed automatically. If you host a separate local frontend or connect a browser-based automation tool from another port, add exact origins to `API_ALLOWED_ORIGINS`, for example `http://localhost:3000,http://127.0.0.1:5678`.
-
-## Configuration
-
-Configuration is loaded from `.env`, with `.env.example` as fallback. Environment variables still have highest priority, including empty strings when intentionally set. The file loader caches `.env` and `.env.example` by file timestamp and size, so repeated `Settings.load()` calls no longer reread the files every time; editing either file is picked up automatically on the next read.
-
-The Web Settings page can save common high-frequency options such as transcription model/language, cut thresholds, subtitle style, render preview settings, AI cover provider/model, LLM model, batch limits, and upload-size limits. Saving writes a whitelist of keys to `.env` and hot-reloads the running API for future jobs and enhancement actions. Advanced paths, deployment-only values, and full manual control remain available by editing `.env` directly.
-
-Optional native acceleration is controlled by `NATIVE_WAVEFORM_ENABLED` and `NATIVE_CUTS_ENABLED`. Keep them enabled for the fastest local workflow; turn either one off from Settings if you need to diagnose native extension issues or compare against the pure Python fallback.
-
-Important defaults:
-
-```text
-FFMPEG_PATH=ffmpeg
-FFPROBE_PATH=ffprobe
-AUDIOWAVEFORM_PATH=audiowaveform
-NATIVE_WAVEFORM_ENABLED=true
-NATIVE_CUTS_ENABLED=true
-HIGH_QUALITY_AUDIO_ENABLED=true
-WHISPER_BACKEND=funasr-whisper
-WHISPER_MODEL=large-v3
-WHISPER_MODEL_FALLBACKS=large-v3-turbo,medium
-WHISPER_LANGUAGE=auto
-WHISPER_WORD_TIMESTAMPS=true
-WHISPER_VAD_FILTER=true
-FASTER_WHISPER_DEVICE=cuda
-FASTER_WHISPER_COMPUTE_TYPE=int8_float16
-FASTER_WHISPER_BATCH_SIZE=8
-FUNASR_MODEL=paraformer-zh
-FUNASR_VAD_MODEL=fsmn-vad
-FUNASR_PUNC_MODEL=ct-punc
-FUNASR_DEVICE=cuda:0
-FUNASR_HOTWORDS=
-CUT_MIN_CLIP_SECONDS=2.0
-CUT_MERGE_GAP_SECONDS=1.5
-SOURCE_INTEGRITY_SCAN_ENABLED=true
-SOURCE_INTEGRITY_SCAN_TIMEOUT_MULTIPLIER=3.0
-SOURCE_INTEGRITY_SCAN_MAX_ERRORS=40
-VISUAL_DETECT_KEYFRAMES_ONLY=true
-VISUAL_DETECT_FPS=2
-VISUAL_DETECT_WIDTH=480
-API_HOST=127.0.0.1
-API_PORT=8765
-API_PARALLEL_JOBS=2
-API_BATCH_LIMIT=30
-RECORDING_UPLOAD_MAX_BYTES=21474836480
-API_ALLOWED_ORIGINS=
-LLM_PROVIDER=openai
-LLM_MODEL=
-LLM_TRANSLATION_BATCH_SIZE=24
-LLM_TRANSLATION_BATCH_CHARS=6000
-GOOGLE_API_KEY=
-GOOGLE_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-PUBLISH_ENABLED=false
-PUBLISH_PROVIDERS=
-VERTICAL_MODE=blur
-ASS_FONT_NAME=Microsoft YaHei
-ASS_FONT_SIZE=56
-COVER_PROVIDER=openai
-COVER_MODEL=gpt-image-2
-COVER_COUNT=3
-COVER_ASPECTS=9:16,16:9
-COVER_QUALITY=medium
-COVER_OUTPUT_FORMAT=jpeg
-COVER_TITLE_FONT=Microsoft YaHei
-COVER_BASE_URL=https://api.openai.com/v1
-COVER_API_KEY=
-COVER_HTTP_REFERER=
-COVER_APP_TITLE=Video Automation
-OPENAI_API_KEY=
-UVR_PATH=
-AUDIO_SEPARATION_ENGINE=plan
-DEMUCS_PATH=demucs
-DEMUCS_MODEL=htdemucs
-DEMUCS_DEVICE=auto
-AUDIO_SEPARATION_TIMEOUT_SECONDS=7200
-```
-
-`AUDIOWAVEFORM_PATH` is optional. If it is missing, the worker generates simplified waveform data from `audio.wav` so the Web timeline can still show audio rhythm.
-
-`UVR_PATH` is an optional legacy integration hook for an external Ultimate Vocal Remover executable. Leave it blank unless you actively use that tool. Typical Windows example:
-
-```text
-UVR_PATH=F:\Ultimate Vocal Remover\UVR.exe
-```
-
-For native audio separation, leave `AUDIO_SEPARATION_ENGINE=plan` unless Demucs is installed. To run it from the UVR stage:
-
-```powershell
-.\venv\Scripts\python.exe -m pip install demucs
-```
-
-Then set:
-
-```text
-AUDIO_SEPARATION_ENGINE=demucs
-DEMUCS_PATH=demucs
-DEMUCS_MODEL=htdemucs
-DEMUCS_DEVICE=auto
-```
-
-When enabled, `--plan-uvr` writes `uvr/vocals.wav` and `uvr/instrumental.wav` for each job. Demucs is optional and is not bundled into Lite desktop builds.
-
-## FAQ
-
-### What hardware do I need?
-
-Minimum practical setup:
-
-- Windows 10/11, macOS, or Linux.
-- Python 3.11+ if running from source.
-- FFmpeg and FFprobe.
-- 16 GB RAM is recommended for long recordings.
-- A modern NVIDIA GPU is recommended for faster transcription and rendering, but CPU mode can still run smaller jobs.
-
-For smoother local creator workflows:
-
-- 32 GB RAM.
-- NVIDIA GPU with 8 GB+ VRAM for faster `faster-whisper` and NVENC rendering.
-- SSD storage with enough free space for source videos, intermediate files, and final exports.
-
-### How long does processing take?
-
-Processing time depends on video length, transcription backend, GPU availability, render settings, subtitle burn-in, and optional AI modules.
-
-Typical rough estimates:
-
-- Short 1-5 minute clips: often a few minutes.
-- 30-60 minute recordings: commonly tens of minutes on a GPU machine.
-- Multi-hour livestream recordings: plan for a long batch job, especially if transcription, subtitles, final rendering, and AI extras are enabled.
-
-The first run may be slower because models or tools may need to be downloaded or initialized.
-
-### Do I need an API key?
-
-No for the basic local workflow. Local import, transcription with configured local backends, cut planning, subtitles, preview/final rendering, and publish handoff files can run without AI cover or LLM keys.
-
-You only need provider keys when you enable AI covers, semantic highlights, metadata generation, or subtitle translation.
-
-### Does it upload my videos?
-
-Not by default. The app is local-first. External uploads only happen when you explicitly use an external AI provider or platform integration that requires sending content to that provider.
-
-## Boundaries
-
-- Original recordings are not modified.
-- The project creates rough-cut suggestions and local render outputs.
-- Fine timeline editing is still limited compared with a full NLE.
-- UVR/Demucs, webhook, automatic platform publishing, and publisher connectors are not executed by default.
-- Dynamic face/subject tracking is not included; vertical crop anchors are deterministic.
-
-Example payloads live in `examples/`. Design and frontend review notes live in `docs/reviews/`.
+Report security issues privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-This project is licensed under the MIT License. See `LICENSE` for details.
-
-Third-party tools, models, fonts, and APIs used with this project may have their own licenses or terms. See `NOTICE` for a short attribution and responsibility note.
-
-For the Chinese manual, see `README.zh-CN.md`.
-
-If this project helps you, please consider giving it a Star to support the work.
+Video Automation is available under the [MIT License](LICENSE). Third-party tools, models, fonts, and APIs may have separate terms; see [NOTICE](NOTICE).

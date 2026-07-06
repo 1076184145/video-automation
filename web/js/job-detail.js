@@ -5,22 +5,25 @@ import { bindClipEditor, clipFromRow, refreshClipRowNumbers, renderClipRow, setC
 import { bindDetailResizer, bindTimelineActions, seekPreview } from "./detail-layout.js";
 import { bindJobDetailTabs } from "./detail-tabs.js";
 import { bindEnhancementActions } from "./enhancement-panel.js";
+import { eventHub } from "./event-hub.js";
 import { bindTranscriptEditor } from "./transcript-editor.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { bindDownloadActions, bindJobActions, bindReviewActions } from "./job-actions.js";
-import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile, parseEventPayload } from "./job-detail-data.js";
+import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile } from "./job-detail-data.js";
 import { renderJobDetailShell, updateJobDetailView } from "./job-detail-view.js";
 import { deriveLiveProgress, updateLiveStatus } from "./job-status.js";
 import { restoreNativeVideoControls } from "./preview-player.js";
+import { loadReviewDraft } from "./review-drafts.js";
+import { bindRevisionHistory } from "./revision-history.js";
 import { renderTimeline } from "./timeline.js";
 import { showToast } from "./toast.js";
 import { fileMap, formatTime, isTerminal } from "./utils.js";
 
-export async function renderJobDetail(match) {
+export async function renderJobDetail(match, { signal } = {}) {
   const name = decodeURIComponent(match[1]);
   const app = document.getElementById("app");
-  let events = null;
+  let eventUnsubscribers = [];
   let renderedKey = "";
   let lastStatus = "";
   let resizeTimer = null;
@@ -61,28 +64,24 @@ export async function renderJobDetail(match) {
   app.addEventListener("change", markEditing, true);
 
   function startEvents() {
-    if (document.visibilityState !== "visible" || isTerminal(lastStatus) || events) return;
-    events = API.openEvents();
-    events.addEventListener("hello", (event) => {
-      const payload = parseEventPayload(event);
+    if (document.visibilityState !== "visible" || isTerminal(lastStatus) || eventUnsubscribers.length) return;
+    eventUnsubscribers = [
+      eventHub.subscribe("hello", (payload) => {
       const current = (payload.jobs || []).find((job) => isJobEventForName(job, name));
       if (current) {
         handleLiveJobEvent(current);
       }
-    });
-    events.addEventListener("job", (event) => {
-      const job = parseEventPayload(event);
+      }),
+      eventHub.subscribe("job", (job) => {
       if (!isJobEventForName(job, name)) return;
       handleLiveJobEvent(job);
-    });
-    events.onerror = () => {
-      // EventSource reconnects automatically.
-    };
+      }),
+    ];
   }
 
   function stopEvents() {
-    if (events) events.close();
-    events = null;
+    eventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+    eventUnsubscribers = [];
   }
 
   function handleLiveJobEvent(job) {
@@ -343,7 +342,7 @@ export async function renderJobDetail(match) {
   async function load(forceRender = false) {
     if (disposed) return null;
     try {
-      const job = await API.getJob(name);
+      const job = await API.getJob(name, { signal });
       if (disposed) return null;
       lastStatus = job.status;
       const files = fileMap(job);
@@ -366,7 +365,7 @@ export async function renderJobDetail(match) {
         return;
       }
 
-      const [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health] = await Promise.all([
+      let [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health, revisions, quality] = await Promise.all([
         loadJobFile(name, files, "manifest.json"),
         loadJobFile(name, files, "corrupt.json"),
         loadJobFile(name, files, "cuts.json"),
@@ -384,11 +383,22 @@ export async function renderJobDetail(match) {
         loadJobFile(name, files, "highlight_render_status.json"),
         loadJobFile(name, files, "publish_package.json"),
         loadJobFile(name, files, "project_export_manifest.json"),
-        loadHealthSafe()
+        loadHealthSafe(),
+        API.getRevisions(name, { signal }).then((result) => result.items || []).catch(() => []),
+        job.status === "needs_review" ? API.getJobQuality(name, { signal }).catch(() => null) : Promise.resolve(null)
       ]);
       if (disposed) return null;
 
-      const payload = { manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health };
+      const cutsDraft = loadReviewDraft(name, "cuts");
+      if (cutsDraft) {
+        cuts = { ...(cuts || {}), clips: cutsDraft.data };
+      }
+      const transcriptDraft = loadReviewDraft(name, "transcript");
+      if (transcriptDraft) {
+        transcript = { ...(transcript || {}), segments: transcriptDraft.data };
+      }
+
+      const payload = { manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health, revisions, quality };
 
       if (isFirstRender) {
         app.innerHTML = renderJobDetailShell();
@@ -399,6 +409,7 @@ export async function renderJobDetail(match) {
           bindDetailResizer(app),
           bindReviewActions(app, name, () => load(true)),
           bindJobActions(app, name, () => load(true)),
+          bindRevisionHistory(app, name, () => load(true)),
           bindClipEditor(app, name, () => {
             isEditingClips = false;
             return load(true);
@@ -422,6 +433,8 @@ export async function renderJobDetail(match) {
         isEditingTranscript,
         bindPreview: bindPreviewPlayer,
       });
+      if (cutsDraft) isEditingClips = true;
+      if (transcriptDraft) isEditingTranscript = true;
       renderedKey = nextKey;
 
       const canvas = document.querySelector("canvas.timeline");
@@ -451,7 +464,7 @@ export async function renderJobDetail(match) {
   }
 
   function detailSectionsNeedRender() {
-    return ["section-covers", "section-enhancements", "section-downloads"].some((id) => {
+    return ["section-covers", "section-enhancements", "section-downloads", "section-revisions"].some((id) => {
       const element = document.getElementById(id);
       return element && (!element.innerHTML.trim() || Boolean(element.querySelector(".loading")));
     });
@@ -466,7 +479,7 @@ export async function renderJobDetail(match) {
   }
 
   await load();
-  if (!events && !isTerminal(lastStatus)) {
+  if (!eventUnsubscribers.length && !isTerminal(lastStatus)) {
     startEvents();
   }
   return () => {

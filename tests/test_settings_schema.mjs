@@ -63,6 +63,21 @@ test("settings groups stay collapsed until the user opens one", () => {
   assert.doesNotMatch(later, / open>/);
 });
 
+test("FunASR-first settings label WHISPER_MODEL as the fallback model", () => {
+  const group = {
+    title: "settings.edit_whisper",
+    fields: [
+      { env: "WHISPER_BACKEND", path: ["whisper", "backend"], type: "select", options: ["funasr-whisper", "faster-whisper"] },
+      { env: "WHISPER_MODEL", path: ["whisper", "model"] },
+    ],
+  };
+  const html = renderEditableGroup(group, {
+    whisper: { backend: "funasr-whisper", model: "small" },
+  }, [], 0);
+
+  assert.match(html, /Whisper 回退模型/);
+});
+
 test("AI settings expose LLM_MODEL before cover-specific fields", () => {
   const group = {
     title: "settings.edit_ai",

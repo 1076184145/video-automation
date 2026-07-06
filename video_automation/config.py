@@ -212,6 +212,8 @@ class Settings:
     google_base_url: str
     publish_enabled: bool
     publish_providers: tuple[str, ...]
+    bilibili_api_base_url: str
+    bilibili_api_endpoints: dict[str, str]
     export_platforms: tuple[str, ...]
     render_video_encoder: str
     render_output_fps: int
@@ -347,6 +349,14 @@ class Settings:
             google_base_url=_env("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             publish_enabled=_bool_env("PUBLISH_ENABLED", False),
             publish_providers=_words_env("PUBLISH_PROVIDERS", ""),
+            bilibili_api_base_url=_env("BILIBILI_API_BASE_URL", ""),
+            bilibili_api_endpoints={
+                "validate": _env("BILIBILI_VALIDATE_PATH", ""),
+                "create_upload": _env("BILIBILI_CREATE_UPLOAD_PATH", ""),
+                "complete_upload": _env("BILIBILI_COMPLETE_UPLOAD_PATH", ""),
+                "publish": _env("BILIBILI_PUBLISH_PATH", ""),
+                "query": _env("BILIBILI_QUERY_PATH", ""),
+            },
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
             render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),

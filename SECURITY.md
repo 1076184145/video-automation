@@ -53,3 +53,9 @@ Keep the following files and data private:
 
 The repository `.gitignore` excludes common local runtime directories such as
 `input/`, `processing/`, `logs/`, `dist/`, and `.env`.
+
+## Updates
+
+Video Automation has no remote self-update mechanism. Obtain updates from the
+GitHub Releases page or build them from source, and verify that you are using
+the intended repository and release before installing.

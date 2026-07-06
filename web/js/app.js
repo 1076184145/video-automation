@@ -1,27 +1,22 @@
 ﻿import { language, setLanguage, t } from "./i18n.js";
-import { addRoute, startRouter } from "./router.js";
-import { renderDashboard } from "./dashboard.js";
-import { renderJobDetail } from "./job-detail.js?v=20260606-4";
-import { renderNewJob } from "./new-job.js";
-import { renderSettings } from "./settings.js";
-import { renderHealth } from "./health.js";
+import { eventHub } from "./event-hub.js";
+import { addRoute, lazyView, startRouter } from "./router.js";
 import { showToast } from "./toast.js";
-import { API } from "./api.js";
+import { applyTheme, nextThemePreference, savedThemePreference, saveThemePreference, watchSystemTheme } from "./theme.js";
 import { basename, isTerminal, jobName, statusGroup } from "./utils.js";
-
-const THEME_STORAGE_KEY = "videoAutomationTheme";
 
 const navItems = [
   ["#/", "nav.dashboard", iconGrid()],
+  ["#/projects", "nav.projects", iconFolder()],
   ["#/new", "nav.new", iconPlus()],
-  ["#/health", "nav.health", iconHeart()],
+  ["#/publish", "nav.publish", iconUpload()],
   ["#/settings", "nav.settings", iconGear()]
 ];
 
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.innerHTML = navItems.map(([href, key, icon]) => `
-    <a class="nav-link ${active(href)}" href="${href}" title="${t(key)}" aria-label="${t(key)}">${icon}</a>
+    <a class="nav-link ${active(href)}" href="${href}" title="${t(key)}" aria-label="${t(key)}">${icon}<span class="nav-label">${t(key)}</span></a>
   `).join("");
   const switcher = document.getElementById("language-switch");
   switcher.innerHTML = `
@@ -41,40 +36,34 @@ function active(href) {
   return current.startsWith(href) ? "active" : "";
 }
 
-const THEMES = ["default", "deep", "sunset", "purple"];
-
 function savedTheme() {
-  const theme = localStorage.getItem(THEME_STORAGE_KEY);
-  return THEMES.includes(theme) ? theme : "default";
-}
-
-function applyTheme(theme = savedTheme()) {
-  document.documentElement.dataset.theme = theme;
+  return savedThemePreference();
 }
 
 function themeLabel() {
-  return t(`theme.${savedTheme()}`);
+  return { system: "A", light: "☀", dark: "☾" }[savedTheme()] || "A";
 }
 
 function toggleTheme() {
-  const current = savedTheme();
-  const next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
-  localStorage.setItem(THEME_STORAGE_KEY, next);
-  applyTheme(next);
+  const next = nextThemePreference(savedTheme());
+  saveThemePreference(next);
   renderNav();
-  showToast(`${t("theme.changed")} ${t(`theme.${next}`)}`, "success");
+  showToast(t("theme.changed"), "success");
 }
 
 window.addEventListener("hashchange", renderNav);
 window.addEventListener("languagechange", renderNav);
 
-addRoute(/^\/$/, renderDashboard, "nav.dashboard");
-addRoute(/^\/jobs\/([^/]+)$/, renderJobDetail, (match) => decodeURIComponent(match[1] || ""));
-addRoute(/^\/new$/, renderNewJob, "nav.new");
-addRoute(/^\/settings$/, renderSettings, "nav.settings");
-addRoute(/^\/health$/, renderHealth, "nav.health");
+addRoute(/^\/$/, lazyView(() => import("./dashboard.js"), "renderDashboard"), "nav.dashboard");
+addRoute(/^\/projects$/, lazyView(() => import("./projects.js"), "renderProjects"), "nav.projects");
+addRoute(/^\/jobs\/([^/]+)$/, lazyView(() => import("./job-detail.js?v=20260606-4"), "renderJobDetail"), (match) => decodeURIComponent(match[1] || ""));
+addRoute(/^\/new(?:\?.*)?$/, lazyView(() => import("./new-job.js"), "renderNewJob"), "nav.new");
+addRoute(/^\/publish$/, lazyView(() => import("./publish-center.js"), "renderPublishCenterPage"), "nav.publish");
+addRoute(/^\/settings$/, lazyView(() => import("./settings.js"), "renderSettings"), "nav.settings");
+addRoute(/^\/health$/, lazyView(() => import("./health.js"), "renderHealth"), "nav.health");
 
 applyTheme();
+watchSystemTheme(renderNav);
 renderNav();
 startRouter();
 installShortcutHelp();
@@ -157,7 +146,6 @@ function isTypingTarget(target) {
 }
 
 function installBrowserNotifications() {
-  let events = null;
   let hiddenTerminalCount = 0;
   const notified = new Set();
   const originalTitle = () => {
@@ -173,14 +161,6 @@ function installBrowserNotifications() {
   const resetBadge = () => {
     hiddenTerminalCount = 0;
     updateBadge();
-  };
-
-  const parsePayload = (event) => {
-    try {
-      return JSON.parse(event.data || "{}");
-    } catch {
-      return {};
-    }
   };
 
   const notifyJob = (job) => {
@@ -213,16 +193,7 @@ function installBrowserNotifications() {
     };
   };
 
-  const start = () => {
-    if (events) return;
-    events = API.openEvents();
-    events.addEventListener("job", (event) => notifyJob(parsePayload(event)));
-    events.onerror = () => {
-      // EventSource reconnects automatically.
-    };
-  };
-
-  start();
+  eventHub.subscribe("job", notifyJob);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") resetBadge();
   });
@@ -237,6 +208,12 @@ function iconPlus() {
 }
 function iconHeart() {
   return `<svg viewBox="0 0 24 24"><path d="M12 21 4.6 13.6a5.2 5.2 0 0 1 7.4-7.3 5.2 5.2 0 0 1 7.4 7.3L12 21Zm0-2.9 5.9-5.9a3.2 3.2 0 0 0-4.5-4.5L12 9.1l-1.4-1.4a3.2 3.2 0 0 0-4.5 4.5l5.9 5.9Z"/></svg>`;
+}
+function iconUpload() {
+  return `<svg viewBox="0 0 24 24"><path d="M11 16V7.8L8.4 10.4 7 9l5-5 5 5-1.4 1.4L13 7.8V16h-2Zm-5 4a3 3 0 0 1-3-3v-3h2v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3h2v3a3 3 0 0 1-3 3H6Z"/></svg>`;
+}
+function iconFolder() {
+  return `<svg viewBox="0 0 24 24"><path d="M3 5.5A2.5 2.5 0 0 1 5.5 3H10l2 2h6.5A2.5 2.5 0 0 1 21 7.5v10a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-12Zm2.5-.5a.5.5 0 0 0-.5.5v12a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-10a.5.5 0 0 0-.5-.5h-7.3l-2-2H5.5Z"/></svg>`;
 }
 function iconGear() {
   return `<svg viewBox="0 0 24 24"><path d="m19.4 13.5 1.7 1.3-2 3.5-2-.8a7.8 7.8 0 0 1-1.8 1l-.3 2.1h-4l-.3-2.1a7.8 7.8 0 0 1-1.8-1l-2 .8-2-3.5 1.7-1.3a7 7 0 0 1 0-2.1L4.9 10l2-3.5 2 .8a7.8 7.8 0 0 1 1.8-1l.3-2.1h4l.3 2.1a7.8 7.8 0 0 1 1.8 1l2-.8 2 3.5-1.7 1.3a7 7 0 0 1 0 2.1ZM13 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/></svg>`;

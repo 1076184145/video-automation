@@ -9,7 +9,6 @@ D:\video-automation
 ├── video_automation/       Python workflow package
 ├── web/                    Local Web dashboard served by --serve
 ├── docs/                   Project documentation
-├── docs/reviews/           UI and frontend review reports
 ├── examples/               Example input files for CLI/API workflows
 ├── input/                  Runtime input folders
 ├── processing/             Runtime job outputs
@@ -37,7 +36,7 @@ Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of sour
 | Media processing | `media.py`, `crop.py`, `render.py`, `progress.py`, `covers.py`, `segments.py` | ffprobe/ffmpeg operations, vertical framing, rendering, progress parsing, AI cover candidates, platform video segments |
 | Transcription and subtitles | `transcribe.py`, `transcribe_runner.py`, `subtitles.py`, `profanity.py` | Whisper/faster-whisper, transcript files, ASS subtitles, text cleanup |
 | Cut planning | `cuts.py`, `profiles.py` | Invalid segment logic, clip scoring, workflow profiles |
-| Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `downloads.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, download queue, LLM metadata/highlights, publish package, old job cleanup |
+| Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, LLM metadata/highlights, publish package, old job cleanup |
 | Entrypoints | `worker.py`, `api.py` | CLI worker, pipeline orchestration, local HTTP API/Web server |
 
 ## Web Dashboard
@@ -71,16 +70,13 @@ web/
 | Visualization | `timeline.js` | Canvas timeline, marks, waveform rendering, tooltip behavior |
 | Styling | `css/style.css` | Layout, controls, responsive behavior, dark theme |
 
-## Examples and Reviews
+## Examples
 
 - `examples/batch.example.json`: sample batch-processing payload.
-- `docs/reviews/UI_DESIGN_REVIEW.md`: UI design review notes.
-- `docs/reviews/FRONTEND_OPTIMIZATION_REPORT.md`: frontend optimization review notes.
 
 ## Runtime Directories
 
 - `input/recordings`: videos selected by the Web UI, dragged into the browser, or watched by `--watch`.
-- `input/downloads`: optional yt-dlp download queue output before importing files into normal jobs.
 - `processing/jobs`: generated job folders and all media outputs.
 - `logs`: worker-level logs.
 - `venv`: local dependency environment.

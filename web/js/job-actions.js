@@ -218,12 +218,33 @@ function setActionMessage(message, isError = false) {
   box.innerHTML = `<div class="${isError ? "error" : "notice"}">${message}</div>`;
 }
 
-export function renderReviewActions() {
+export function renderQualityGate(quality) {
+  if (!quality || typeof quality !== "object") return "";
+  const blocking = Array.isArray(quality.blocking) ? quality.blocking : [];
+  const advisory = Array.isArray(quality.advisory) ? quality.advisory : [];
+  if (!blocking.length && !advisory.length) {
+    return `<div class="quality-gate passed" role="status"><strong>${t("quality.passed")}</strong></div>`;
+  }
+  const item = (entry) => {
+    const context = [entry.expected && `${t("quality.expected")}: ${entry.expected}`, entry.actual && `${t("quality.actual")}: ${entry.actual}`]
+      .filter(Boolean).join(" · ");
+    return `<li><strong>${escapeHtml(entry.message || entry.code || "")}</strong>${context ? `<span>${escapeHtml(context)}</span>` : ""}</li>`;
+  };
+  return `
+    <div class="quality-gate ${blocking.length ? "blocked" : "advisory"}" ${blocking.length ? 'role="alert"' : 'role="status"'}>
+      <strong>${blocking.length ? t("quality.blocked") : t("quality.advisory")}</strong>
+      ${blocking.length ? `<ul>${blocking.map(item).join("")}</ul>` : ""}
+      ${advisory.length ? `<p>${t("quality.advisory")}</p><ul>${advisory.map(item).join("")}</ul>` : ""}
+    </div>`;
+}
+
+export function renderReviewActions(quality) {
   return `
     <section class="panel review-actions">
       <div>
         <h2>${t("status.review")}</h2>
         <p class="page-subtitle">${t("job.approve_note")}</p>
+        ${renderQualityGate(quality)}
         <div id="approve-error"></div>
       </div>
       <button class="button primary" id="approve-job" type="button">${t("job.approve")}</button>
@@ -242,7 +263,8 @@ export function bindReviewActions(root, jobName, reload) {
         await reload();
       } catch (error) {
         const box = document.getElementById("approve-error");
-        if (box) box.innerHTML = `<div class="error">${t("job.approve_failed")}${escapeHtml(error.message)}</div>`;
+        const details = error.payload?.error?.details;
+        if (box) box.innerHTML = `<div class="error">${t("job.approve_failed")}${escapeHtml(error.message)}</div>${renderQualityGate(details)}`;
         showToast(`${t("job.approve_failed")}${error.message}`, "error");
         setButtonLoading(button, false);
       }

@@ -492,6 +492,38 @@ def _run_funasr_subprocess(settings: Settings, audio_path: Path, job_dir: Path) 
 
 
 def _run_funasr_persistent(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+    _run_funasr_worker_request(
+        settings,
+        request={
+            "audio_path": str(audio_path),
+            "job_dir": str(job_dir),
+        },
+        timeout_seconds=_transcribe_timeout(settings, audio_path),
+    )
+
+
+def warm_transcription_backend(settings: Settings) -> bool:
+    if settings.whisper_backend not in {"funasr", "funasr-whisper", "funasr-faster-whisper"}:
+        return False
+    if not getattr(settings, "funasr_persistent_worker", True):
+        return False
+    try:
+        _run_funasr_worker_request(
+            settings,
+            request={"warmup": True, "job_dir": str(settings.root / "processing")},
+            timeout_seconds=900,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _run_funasr_worker_request(
+    settings: Settings,
+    *,
+    request: dict[str, Any],
+    timeout_seconds: float,
+) -> None:
     python_executable = _project_python(settings)
     command = [
         str(python_executable),
@@ -504,16 +536,15 @@ def _run_funasr_persistent(settings: Settings, audio_path: Path, job_dir: Path) 
         _FUNASR_PERSISTENT_WORKER.run(
             command=command,
             signature=_funasr_worker_signature(settings),
-            request={
-                "audio_path": str(audio_path),
-                "job_dir": str(job_dir),
-            },
-            timeout_seconds=_transcribe_timeout(settings, audio_path),
+            request=request,
+            timeout_seconds=timeout_seconds,
             cwd=settings.root,
             env=env,
         )
     except TranscriptionTaskError:
-        _remove_partial_transcripts(job_dir)
+        job_dir = request.get("job_dir")
+        if job_dir and not request.get("warmup"):
+            _remove_partial_transcripts(Path(str(job_dir)))
         raise
 
 

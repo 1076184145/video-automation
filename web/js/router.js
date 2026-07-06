@@ -3,9 +3,39 @@ import { escapeHtml } from "./utils.js";
 
 const routes = [];
 let cleanup = null;
+let renderId = 0;
+const routeLifecycle = createRouteLifecycle();
+
+export function createRouteLifecycle() {
+  let controller = null;
+  return {
+    next() {
+      controller?.abort();
+      controller = new AbortController();
+      return controller;
+    },
+    dispose() {
+      controller?.abort();
+      controller = null;
+    },
+  };
+}
 
 export function addRoute(pattern, render, title) {
   routes.push({ pattern, render, title });
+}
+
+export function lazyView(importer, exportName) {
+  let modulePromise = null;
+  return async (...args) => {
+    modulePromise ||= importer();
+    const module = await modulePromise;
+    const render = module?.[exportName];
+    if (typeof render !== "function") {
+      throw new Error(`Route module does not export ${exportName}`);
+    }
+    return render(...args);
+  };
 }
 
 export function navigate(hash) {
@@ -15,6 +45,8 @@ export function navigate(hash) {
 export async function renderRoute(event) {
   if (typeof cleanup === "function") cleanup();
   cleanup = null;
+  const controller = routeLifecycle.next();
+  const currentRenderId = ++renderId;
   if (!event || event.type === "hashchange") {
     resetRouteScroll();
   }
@@ -32,7 +64,12 @@ export async function renderRoute(event) {
     if (!match) continue;
     try {
       updateTitle(route.title, match);
-      cleanup = await route.render(match);
+      const nextCleanup = await route.render(match, { signal: controller.signal });
+      if (currentRenderId !== renderId) {
+        if (typeof nextCleanup === "function") nextCleanup();
+        return;
+      }
+      cleanup = nextCleanup;
       if (app) {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
@@ -42,6 +79,7 @@ export async function renderRoute(event) {
         });
       }
     } catch (error) {
+      if (controller.signal.aborted || currentRenderId !== renderId) return;
       console.error("[Router Error]", error);
       if (app) {
         app.innerHTML = `

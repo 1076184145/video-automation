@@ -20,13 +20,20 @@ logs/
 logs-runtime/
 processing/
 input/recordings/
-input/downloads/
 output/
 subtitles/
 config/
 
 .workbuddy/
 docs/superpowers/
+docs/design/
+docs/reviews/
+review.md
+*-review.md
+docs/plans/
+plan.md
+plan-*.md
+*-plan.md
 *.tmp
 *.log
 temp.txt
