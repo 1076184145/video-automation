@@ -64,7 +64,7 @@ export function deriveLiveProgress(job) {
   const estimate = Number(job.stage_estimate_seconds);
   if (!Number.isFinite(estimate) || estimate <= 0) return;
   job.stage_progress = Math.min(95, Math.max(0, elapsed / estimate * 100));
-  job.stage_message = t("job.whisper_progress").replace("{elapsed}", String(Math.round(elapsed)));
+  job.stage_message = t("job.transcription_progress").replace("{elapsed}", String(Math.round(elapsed)));
 }
 
 export function updateLiveStatus(job) {

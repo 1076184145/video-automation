@@ -50,7 +50,7 @@ test("dashboard defaults to actionable work and collapses completed history", ()
   const html = renderDashboardJobsForTest(jobs);
 
   assert.match(html, /class="dashboard-actionable"/);
-  assert.match(html, /待处理/);
+  assert.match(html, /待你审核/);
   assert.match(html, /review\.mp4/);
   assert.match(html, /failed\.mp4/);
   assert.match(html, /<details class="dashboard-history">/);
@@ -133,4 +133,26 @@ test("dashboard leaves singleton batch metadata as a normal job card", () => {
 
   assert.doesNotMatch(html, /dashboard-batch/);
   assert.match(html, /review\.mp4/);
+});
+
+test("review inbox separates processing work and shows project context", () => {
+  const html = renderDashboardJobsForTest([
+    jobs[1],
+    {
+      ...jobs[1],
+      job_dir: "D:/jobs/processing-job",
+      source_path: "D:/videos/processing.mp4",
+      status: "transcribing",
+      project_id: "project-one",
+      stage_progress: 42,
+    },
+    jobs[0],
+  ], {
+    projects: [{ id: "project-one", name: "每周直播精选" }],
+  });
+
+  assert.match(html, /class="dashboard-processing"/);
+  assert.match(html, /processing\.mp4/);
+  assert.match(html, /每周直播精选/);
+  assert.match(html, /最近完成/);
 });

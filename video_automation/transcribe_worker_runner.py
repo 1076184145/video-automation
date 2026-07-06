@@ -21,6 +21,10 @@ def process_request(
 ) -> dict[str, Any]:
     response_path = Path(str(request["response_path"]))
     try:
+        if request.get("warmup"):
+            payload = {"status": "ok", "warmup": True}
+            write_json_atomic(response_path, payload)
+            return payload
         audio_path = Path(str(request["audio_path"]))
         job_dir = Path(str(request["job_dir"]))
         job_dir.mkdir(parents=True, exist_ok=True)

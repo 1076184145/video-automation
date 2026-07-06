@@ -1,9 +1,120 @@
 export const API = {
-  async getJobs() {
-    return requestJson("/jobs");
+  async getCapabilities() {
+    return requestJson("/api/v1/capabilities");
   },
-  async getJob(name) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}`);
+  async getProjects(options) {
+    return requestJson("/api/v1/projects", options);
+  },
+  async createProject(payload) {
+    return postJson("/api/v1/projects", payload);
+  },
+  async updateProject(id, payload) {
+    return postJson(`/api/v1/projects/${encodeURIComponent(id)}`, payload);
+  },
+  async deleteProject(id) {
+    return requestJson(`/api/v1/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  async getCreatorKits(options) {
+    return requestJson("/api/v1/creator-kits", options);
+  },
+  async createCreatorKit(payload) {
+    return postJson("/api/v1/creator-kits", payload);
+  },
+  async updateCreatorKit(id, payload) {
+    return postJson(`/api/v1/creator-kits/${encodeURIComponent(id)}`, payload);
+  },
+  async deleteCreatorKit(id) {
+    return requestJson(`/api/v1/creator-kits/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  async getRecipes(options) {
+    return requestJson("/api/v1/recipes", options);
+  },
+  async createRecipe(payload) {
+    return postJson("/api/v1/recipes", payload);
+  },
+  async updateRecipe(id, payload) {
+    return postJson(`/api/v1/recipes/${encodeURIComponent(id)}`, payload);
+  },
+  async deleteRecipe(id) {
+    return requestJson(`/api/v1/recipes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  async importRecipes(items) {
+    return postJson("/api/v1/recipes/import", { items });
+  },
+  async getQueue(options) {
+    return requestJson("/api/v1/queue", options);
+  },
+  async pauseQueue() {
+    return postJson("/api/v1/queue/pause", {});
+  },
+  async resumeQueue() {
+    return postJson("/api/v1/queue/resume", {});
+  },
+  async pauseQueueItem(id) {
+    return postJson(`/api/v1/queue/${encodeURIComponent(id)}/pause`, {});
+  },
+  async resumeQueueItem(id) {
+    return postJson(`/api/v1/queue/${encodeURIComponent(id)}/resume`, {});
+  },
+  async cancelQueueItem(id) {
+    return postJson(`/api/v1/queue/${encodeURIComponent(id)}/cancel`, {});
+  },
+  async retryQueueStage(id, stage) {
+    return postJson(`/api/v1/queue/${encodeURIComponent(id)}/retry-stage`, { stage });
+  },
+  async reorderQueue(ids) {
+    return postJson("/api/v1/queue/reorder", { ids });
+  },
+  async getPublishTargets(options) {
+    return requestJson("/api/v1/publish-targets", options);
+  },
+  async savePublishCredentials(provider, payload) {
+    return postJson(`/api/v1/publish-targets/${encodeURIComponent(provider)}/credentials`, payload);
+  },
+  async deletePublishCredentials(provider, accountId) {
+    return requestJson(`/api/v1/publish-targets/${encodeURIComponent(provider)}/credentials/${encodeURIComponent(accountId)}`, { method: "DELETE" });
+  },
+  async getPublishAttempts(options) {
+    return requestJson("/api/v1/publish-attempts", options);
+  },
+  async createPublishAttempt(payload) {
+    return postJson("/api/v1/publish-attempts", payload);
+  },
+  async startPublishAttempt(id) {
+    return postJson(`/api/v1/publish-attempts/${encodeURIComponent(id)}/start`, {});
+  },
+  async retryPublishAttempt(id) {
+    return postJson(`/api/v1/publish-attempts/${encodeURIComponent(id)}/retry`, {});
+  },
+  async syncPublishAttempt(id) {
+    return postJson(`/api/v1/publish-attempts/${encodeURIComponent(id)}/sync`, {});
+  },
+  async getPublishPackages(options) {
+    return requestJson("/publish/packages", options);
+  },
+  async getRevisions(jobName, options) {
+    return requestJson(`/api/v1/jobs/${encodeURIComponent(jobName)}/revisions`, options);
+  },
+  async getJobQuality(jobName, options) {
+    return requestJson(`/api/v1/jobs/${encodeURIComponent(jobName)}/quality`, options);
+  },
+  async getPreferences(options) {
+    return requestJson("/api/v1/preferences", options);
+  },
+  async exportPreferences(options) {
+    return requestJson("/api/v1/preferences/export", options);
+  },
+  async clearPreferences() {
+    return requestJson("/api/v1/preferences", { method: "DELETE" });
+  },
+  async getRevision(jobName, revisionId) {
+    return requestJson(`/api/v1/jobs/${encodeURIComponent(jobName)}/revisions/${encodeURIComponent(revisionId)}`);
+  },
+  async getJobs(options) {
+    return requestJson("/jobs", options);
+  },
+  async getJob(name, options) {
+    return requestJson(`/jobs/${encodeURIComponent(name)}`, options);
   },
   async getRecordings() {
     return requestJson("/recordings");
@@ -143,7 +254,7 @@ function uploadWithProgress(url, file, onProgress) {
         resolve(payload);
         return;
       }
-      reject(new Error(payload?.error || `${xhr.status} ${xhr.statusText}`));
+      reject(new Error(apiErrorMessage(payload, `${xhr.status} ${xhr.statusText}`)));
     };
     xhr.onerror = () => reject(new Error("Network error"));
     xhr.onabort = () => reject(new Error("Upload aborted"));
@@ -183,21 +294,37 @@ async function requestJson(url, options = {}) {
       cleanup(timeout, externalSignal, abortListener);
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
+        let payload = null;
         try {
-          const payload = await response.json();
-          if (payload.error) message = payload.error;
+          payload = await response.json();
+          message = apiErrorMessage(payload, message);
         } catch {}
-        throw new Error(message);
+        const requestError = new Error(message);
+        requestError.payload = payload;
+        requestError.status = response.status;
+        throw requestError;
       }
       return await response.json();
     } catch (error) {
       cleanup(timeout, externalSignal, abortListener);
       if (retries-- <= 0) {
-        throw new Error(error.name === "AbortError" ? "Request Timeout" : error.message);
+        const finalError = new Error(error.name === "AbortError" ? "Request Timeout" : error.message);
+        finalError.payload = error.payload;
+        finalError.status = error.status;
+        throw finalError;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
+}
+
+export function apiErrorMessage(payload, fallback) {
+  if (typeof payload?.error === "string" && payload.error.trim()) return payload.error;
+  if (payload?.error && typeof payload.error === "object") {
+    const message = String(payload.error.message || "").trim();
+    if (message) return message;
+  }
+  return fallback;
 }
 
 function cleanup(timeout, externalSignal, abortListener) {

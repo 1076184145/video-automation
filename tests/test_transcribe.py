@@ -12,6 +12,32 @@ from video_automation.transcribe_worker import TranscriptionTaskError, WorkerInf
 
 
 class TranscribeFallbackTests(unittest.TestCase):
+    def test_funasr_warmup_uses_persistent_worker_protocol(self) -> None:
+        settings = SimpleNamespace(
+            root=Path("D:/video-automation"),
+            whisper_backend="funasr-whisper",
+            funasr_persistent_worker=True,
+            funasr_model="paraformer-zh",
+            funasr_vad_model="fsmn-vad",
+            funasr_punc_model="ct-punc",
+            funasr_device="cuda:0",
+            funasr_hotwords="",
+            funasr_batch_size_s=300,
+            funasr_max_segment_ms=60000,
+            whisper_language="zh",
+            subtitle_replacements=(),
+            profanity_words=(),
+            subtitle_censor_replacement="[beep]",
+        )
+        with (
+            patch.object(transcribe, "_project_python", return_value=Path("python")),
+            patch.object(transcribe._FUNASR_PERSISTENT_WORKER, "run", return_value={"status": "ok"}) as run,
+        ):
+            self.assertTrue(transcribe.warm_transcription_backend(settings))  # type: ignore[arg-type]
+
+        self.assertTrue(run.call_args.kwargs["request"]["warmup"])
+        self.assertIn("processing", run.call_args.kwargs["request"]["job_dir"])
+
     def test_funasr_whisper_backend_falls_back_to_faster_whisper(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             job_dir = Path(temp_dir)

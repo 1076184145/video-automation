@@ -1,4 +1,6 @@
 import { API } from "./api.js";
+import { bindQueuePanel, renderQueuePanel } from "./automation.js";
+import { eventHub } from "./event-hub.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
@@ -8,13 +10,18 @@ let filter = "all";
 let search = "";
 let lastJobsKey = "";
 let searchTimer = null;
+let lastQueueKey = "";
+export const MAX_RENDERED_JOBS = 100;
 
-export async function renderDashboard() {
+export async function renderDashboard(_match, { signal } = {}) {
   const app = document.getElementById("app");
-  let events = null;
+  let eventUnsubscribers = [];
   let jobs = [];
+  let projects = [];
+  let queue = { paused: false, items: [] };
   lastJobsKey = "";
   app.innerHTML = pageShell();
+  const unbindQueue = bindQueuePanel(app, loadQueue);
   bindControls(() => updateJobs(jobs));
   const unbindDelete = bindCompletedJobDelete(async (button, name) => {
     if (!window.confirm(t("dashboard.delete_completed_confirm"))) return;
@@ -33,12 +40,29 @@ export async function renderDashboard() {
 
   async function load() {
     try {
-      jobs = await API.getJobs();
-      updateJobs(jobs);
+      const [nextJobs, projectPayload] = await Promise.all([
+        API.getJobs({ signal }),
+        API.getProjects({ signal }).catch(() => ({ items: projects })),
+      ]);
+      jobs = nextJobs;
+      projects = projectPayload.items || projects;
+      updateJobs(jobs, projects);
     } catch (error) {
       const target = document.getElementById("dashboard-jobs");
       target.innerHTML = `<div class="error">${errorHintHtml(error.message || t("common.error"))} <button class="button" id="retry">${t("common.retry")}</button></div>`;
       document.getElementById("retry")?.addEventListener("click", load);
+    }
+  }
+
+  async function loadQueue() {
+    try {
+      queue = await API.getQueue({ signal });
+      updateQueue(queue);
+    } catch (error) {
+      const target = document.getElementById("queue-panel");
+      if (target && !target.innerHTML.trim()) {
+        target.innerHTML = `<div class="error">${escapeHtml(error.message || t("common.error"))}</div>`;
+      }
     }
   }
 
@@ -52,35 +76,32 @@ export async function renderDashboard() {
 
   function startEvents() {
     if (document.visibilityState !== "visible") return;
-    if (!events) {
-      events = API.openEvents();
-      events.addEventListener("hello", (event) => {
-        const payload = parseEventPayload(event);
+    if (!eventUnsubscribers.length) {
+      eventUnsubscribers = [
+        eventHub.subscribe("hello", (payload) => {
         if (Array.isArray(payload.jobs)) {
           jobs = payload.jobs;
-          updateJobs(jobs);
+          updateJobs(jobs, projects);
         }
-      });
-      events.addEventListener("job", (event) => {
-        const job = parseEventPayload(event);
+        }),
+        eventHub.subscribe("job", (job) => {
         if (!job || !job.job_dir) return;
         jobs = mergeJob(jobs, job);
-        updateJobs(jobs);
-      });
-      events.onerror = () => {
-        // EventSource reconnects automatically; keep the object open.
-      };
+        updateJobs(jobs, projects);
+        }),
+      ];
     }
   }
 
   function stopEvents() {
-    if (events) events.close();
-    events = null;
+    eventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+    eventUnsubscribers = [];
   }
 
   const handleVisibility = () => {
     if (document.visibilityState === "visible") {
       load();
+      loadQueue();
       loadHealth();
       startEvents();
     } else {
@@ -90,22 +111,20 @@ export async function renderDashboard() {
   document.addEventListener("visibilitychange", handleVisibility);
 
   await load();
+  await loadQueue();
   loadHealth();
   startEvents();
+  const queueTimer = setInterval(() => {
+    if (document.visibilityState === "visible") loadQueue();
+  }, 2000);
   return () => {
     stopEvents();
     unbindDelete();
+    unbindQueue();
+    clearInterval(queueTimer);
     clearTimeout(searchTimer);
     document.removeEventListener("visibilitychange", handleVisibility);
   };
-}
-
-function parseEventPayload(event) {
-  try {
-    return JSON.parse(event.data || "{}");
-  } catch {
-    return {};
-  }
 }
 
 function mergeJob(jobs, nextJob) {
@@ -140,7 +159,7 @@ function pageShell() {
   return `
     <section class="page-head">
       <div>
-        <h1 class="page-title">${t("app.title")}</h1>
+        <h1 class="page-title">${t("nav.dashboard")}</h1>
         <p class="page-subtitle">${t("app.subtitle")}</p>
       </div>
       <div class="toolbar">
@@ -151,9 +170,23 @@ function pageShell() {
     <div class="pill-row">${["all", "processing", "review", "done", "failed"].map((item) => `
       <button class="pill ${filter === item ? "active" : ""}" data-filter="${item}">${t(`status.${item}`)}</button>
     `).join("")}</div>
+    <div id="queue-panel"></div>
     <div id="health-banner"></div>
     <div id="dashboard-jobs"><div class="grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div></div>
   `;
+}
+
+function updateQueue(queue) {
+  const target = document.getElementById("queue-panel");
+  if (!target) return;
+  const key = JSON.stringify(queue);
+  if (!shouldUpdateQueueForTest(lastQueueKey, key, Boolean(target.innerHTML.trim()))) return;
+  lastQueueKey = key;
+  target.innerHTML = renderQueuePanel(queue);
+}
+
+export function shouldUpdateQueueForTest(previousKey, nextKey, hasContent) {
+  return previousKey !== nextKey || !hasContent;
 }
 
 function bindControls(update) {
@@ -194,13 +227,13 @@ function updateFilterButtons() {
   });
 }
 
-function updateJobs(jobs) {
+function updateJobs(jobs, projects = []) {
   const target = document.getElementById("dashboard-jobs");
   if (!target) return;
-  const key = `${filter}|${search}|${jobs.map((job) => `${job.job_dir}|${job.batch_id || ""}|${job.status}|${job.updated_at}|${job.stage_progress ?? ""}`).join("\n")}`;
+  const key = `${filter}|${search}|${projects.map((project) => `${project.id}|${project.name}`).join("\n")}|${jobs.map((job) => `${job.job_dir}|${job.batch_id || ""}|${job.status}|${job.updated_at}|${job.stage_progress ?? ""}|${job.project_id || ""}`).join("\n")}`;
   if (key === lastJobsKey) return;
   lastJobsKey = key;
-  target.innerHTML = renderDashboardJobsForTest(jobs, { filter, search });
+  target.innerHTML = renderDashboardJobsForTest(jobs, { filter, search, projects });
 }
 
 function updateHealth(health) {
@@ -247,25 +280,27 @@ export function renderDashboardJobsForTest(jobs, state = {}) {
         <a class="button primary" href="#/new">+ ${t("dashboard.new_job")}</a>
       </div>`;
   }
+  const projectNames = new Map((state.projects || []).map((project) => [project.id, project.name]));
   if (currentFilter !== "all" || currentSearch) {
-    return `<div class="grid">${visible.map(renderJobCard).join("")}</div>`;
+    return `<div class="grid">${visible.map((job) => renderJobCard(job, projectNames)).join("")}</div>`;
   }
 
   const batchGroups = groupedBatches(visible);
-  const activeBatchIds = new Set(
-    [...batchGroups.entries()]
-      .filter(([, batchJobs]) => batchJobs.some((job) => statusGroup(job.status) !== "done"))
-      .map(([batchId]) => batchId)
-  );
+  const activeBatchIds = new Set([...batchGroups.entries()]
+    .filter(([, batchJobs]) => batchJobs.some((job) => statusGroup(job.status) !== "done"))
+    .map(([batchId]) => batchId));
   const actionable = visible
-    .filter((job) => statusGroup(job.status) !== "done" || activeBatchIds.has(job.batch_id))
+    .filter((job) => ["review", "failed"].includes(statusGroup(job.status)))
     .sort(compareActionableJobs);
+  const processing = visible
+    .filter((job) => statusGroup(job.status) === "processing")
+    .sort(compareJobs);
   const completed = visible
     .filter((job) => statusGroup(job.status) === "done" && !activeBatchIds.has(job.batch_id))
     .sort(compareJobs);
   const actionableCount = visible.filter((job) => statusGroup(job.status) !== "done").length;
   const actionableContent = actionableCount
-    ? renderJobCollection(actionable)
+    ? renderJobCollection(actionable, projectNames)
     : `
       <div class="dashboard-clear-state">
         <div>
@@ -284,8 +319,21 @@ export function renderDashboardJobsForTest(jobs, state = {}) {
           </span>
           <span class="dashboard-history-count">${completed.length}</span>
         </summary>
-        ${renderJobCollection(completed)}
+        ${renderJobCollection(completed, projectNames)}
       </details>`
+    : "";
+  const processingSection = processing.length
+    ? `
+      <section class="dashboard-processing">
+        <div class="section-heading">
+          <div>
+            <h2>${t("dashboard.processing_title")}</h2>
+            <p>${t("dashboard.processing_note")}</p>
+          </div>
+          <span class="badge optional">${processing.length}</span>
+        </div>
+        ${renderJobCollection(processing, projectNames)}
+      </section>`
     : "";
   return `
     <section class="dashboard-actionable">
@@ -298,6 +346,7 @@ export function renderDashboardJobsForTest(jobs, state = {}) {
       </div>
       ${actionableContent}
     </section>
+    ${processingSection}
     ${history}`;
 }
 
@@ -316,25 +365,27 @@ function groupedBatches(jobs) {
   return batches;
 }
 
-function renderJobCollection(jobs) {
-  const batches = groupedBatches(jobs);
+function renderJobCollection(jobs, projectNames = new Map()) {
+  const visibleJobs = jobs.slice(0, MAX_RENDERED_JOBS);
+  const batches = groupedBatches(visibleJobs);
   const renderedBatches = new Set();
   const entries = [];
-  jobs.forEach((job) => {
+  visibleJobs.forEach((job) => {
     const batchId = String(job.batch_id || "").trim();
     const batchJobs = batches.get(batchId);
     if (!batchJobs) {
-      entries.push(renderJobCard(job));
+      entries.push(renderJobCard(job, projectNames));
       return;
     }
     if (renderedBatches.has(batchId)) return;
     renderedBatches.add(batchId);
-    entries.push(renderBatch(batchId, batchJobs));
+    entries.push(renderBatch(batchId, batchJobs, projectNames));
   });
-  return `<div class="dashboard-job-groups">${entries.join("")}</div>`;
+  const remainder = jobs.length - visibleJobs.length;
+  return `<div class="dashboard-job-groups">${entries.join("")}</div>${remainder > 0 ? `<p class="muted dashboard-window-note">${t("dashboard.window_note").replace("{count}", String(remainder))}</p>` : ""}`;
 }
 
-function renderBatch(batchId, jobs) {
+function renderBatch(batchId, jobs, projectNames = new Map()) {
   const ordered = jobs.slice().sort((a, b) => {
     const indexA = Number(a.batch_index) || Number.MAX_SAFE_INTEGER;
     const indexB = Number(b.batch_index) || Number.MAX_SAFE_INTEGER;
@@ -362,17 +413,18 @@ function renderBatch(batchId, jobs) {
           <strong>${progress}%</strong>
         </span>
       </summary>
-      <div class="grid">${ordered.map(renderJobCard).join("")}</div>
+      <div class="grid">${ordered.map((job) => renderJobCard(job, projectNames)).join("")}</div>
     </details>`;
 }
 
-function renderJobCard(job) {
+function renderJobCard(job, projectNames = new Map()) {
   const group = statusGroup(job.status);
   const name = jobName(job);
   const sourceName = basename(job.source_path);
   const files = fileMap(job);
   const thumb = files.has("thumbnail.jpg") ? API.jobFileUrl(name, "thumbnail.jpg") : "";
   const progress = progressForJob(job);
+  const projectName = projectNames.get(job.project_id) || t("projects.unassigned");
   const actionKey = group === "review"
     ? "dashboard.action_review"
     : group === "failed"
@@ -400,6 +452,7 @@ function renderJobCard(job) {
         <div>
           <h2 class="job-title">${escapeHtml(sourceName || name)} <span class="badge ${group}">${t(statusLabelKey(job.status))}</span></h2>
           <div class="meta">
+            <div class="job-project">${escapeHtml(projectName)}</div>
             <div>${t("common.created")}: ${escapeHtml(formatDate(job.created_at))}</div>
           </div>
           ${group === "processing" ? `

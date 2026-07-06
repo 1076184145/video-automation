@@ -15,6 +15,7 @@ import {
 } from "./job-actions.js";
 import { renderLiveProgress, renderStage, updateLiveStatus } from "./job-status.js";
 import { renderTranscript } from "./transcript-editor.js";
+import { renderRevisionHistory } from "./revision-history.js";
 import {
   STAGES,
   basename,
@@ -110,6 +111,10 @@ export function renderJobDetailShell() {
           <h2>${t("job.performance")}</h2>
           <div id="section-stage-timings"></div>
         </section>
+        <section class="panel revision-panel">
+          <h2>${t("revisions.title")}</h2>
+          <div id="section-revisions"></div>
+        </section>
         <section class="panel pipeline-panel">
           <details class="debug-details">
             <summary>${t("job.pipeline_debug")}</summary>
@@ -136,6 +141,7 @@ export function normalizeJobDetailPayload(payload = {}) {
     cuts: objectOrEmpty(payload.cuts),
     transcript: objectOrEmpty(payload.transcript),
     stageTimings: objectOrEmpty(payload.stageTimings),
+    revisions: Array.isArray(payload.revisions) ? payload.revisions : [],
   };
 }
 
@@ -178,11 +184,12 @@ export function updateJobDetailView(
     </section>
   `);
 
-  safeHtml("section-review", job.status === "needs_review" ? renderReviewActions() : "");
+  safeHtml("section-review", job.status === "needs_review" ? renderReviewActions(payload.quality) : "");
   safeHtml("section-source-warning", renderSourceWarning(payload.corrupt));
   safeHtml("section-actions", renderJobActions());
   safeHtml("section-progress", renderLiveProgress(job));
   safeRenderHtml("section-stage-timings", () => renderStageTimings(payload.stageTimings));
+  safeRenderHtml("section-revisions", () => renderRevisionHistory(payload.revisions));
   safeHtml("section-pipeline", STAGES.map((stage) => renderStage(stage, job, files)).join(""));
 
   const preview = selectPreviewName(files);

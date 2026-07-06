@@ -107,6 +107,30 @@ class EnvConfigTests(unittest.TestCase):
 
         self.assertFalse(settings.high_quality_audio_enabled)
 
+    def test_bilibili_connector_endpoints_load_from_env_file_settings(self) -> None:
+        keys = (
+            "BILIBILI_API_BASE_URL",
+            "BILIBILI_VALIDATE_PATH",
+            "BILIBILI_CREATE_UPLOAD_PATH",
+            "BILIBILI_COMPLETE_UPLOAD_PATH",
+            "BILIBILI_PUBLISH_PATH",
+            "BILIBILI_QUERY_PATH",
+        )
+        self._remember_env(*keys)
+        os.environ.update({
+            "BILIBILI_API_BASE_URL": "https://sandbox.test",
+            "BILIBILI_VALIDATE_PATH": "/validate",
+            "BILIBILI_CREATE_UPLOAD_PATH": "/upload/init",
+            "BILIBILI_COMPLETE_UPLOAD_PATH": "/upload/complete",
+            "BILIBILI_PUBLISH_PATH": "/publish",
+            "BILIBILI_QUERY_PATH": "/query/{remote_id}",
+        })
+
+        settings = config.Settings.load()
+
+        self.assertEqual(settings.bilibili_api_base_url, "https://sandbox.test")
+        self.assertEqual(settings.bilibili_api_endpoints["query"], "/query/{remote_id}")
+
     def test_x264_render_settings_load_from_environment(self) -> None:
         self._remember_env("RENDER_X264_PRESET", "RENDER_X264_CRF")
         os.environ.update({

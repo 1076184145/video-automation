@@ -23,6 +23,9 @@ const { collectEditedTranscriptForTest, renderTranscript } = await import(
 
 test("renderTranscript creates editable transcript rows with escaped text", () => {
   const html = renderTranscript({
+    backend: "funasr",
+    model: "paraformer-zh",
+    device: "cuda:0",
     segments: [{ start: 1.25, end: 3.5, text: "<hello> & world" }],
   });
 
@@ -30,6 +33,9 @@ test("renderTranscript creates editable transcript rows with escaped text", () =
   assert.match(html, /data-start="1.25"/);
   assert.match(html, /data-end="3.5"/);
   assert.match(html, /&lt;hello&gt; &amp; world/);
+  assert.match(html, /FunASR/);
+  assert.match(html, /paraformer-zh/);
+  assert.match(html, /cuda:0/);
 });
 
 test("collectEditedTranscript returns trimmed text and numeric timings", () => {

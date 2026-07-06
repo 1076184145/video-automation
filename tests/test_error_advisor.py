@@ -24,8 +24,8 @@ class ErrorAdvisorTests(unittest.TestCase):
         self.assertEqual(advice["code"], "missing_ffmpeg")
         self.assertEqual(advice["actions"][0]["type"], "open_health")
 
-    def test_removed_download_parser_errors_use_generic_advice(self) -> None:
-        advice = advise_error("yt-dlp failed: HTTP Error 403: Forbidden")
+    def test_unmatched_http_errors_use_generic_advice(self) -> None:
+        advice = advise_error("HTTP Error 403: Forbidden")
         self.assertEqual(advice["code"], "generic")
         self.assertEqual(advice["actions"][0]["type"], "open_health")
 

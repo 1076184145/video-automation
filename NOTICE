@@ -3,22 +3,31 @@ Copyright (c) 2026 Video Automation contributors
 
 This project is distributed under the MIT License. See LICENSE for details.
 
-Third-party tools and services
-------------------------------
+Third-party software, fonts, and services
+-----------------------------------------
 
 Video Automation can call optional third-party command-line tools and services
 when configured by the user. These tools are not owned by this project and may
 be governed by their own licenses, terms of service, and usage policies.
 
-Common optional tools and services include:
+Common tools and packages include:
 
-- FFmpeg / FFprobe for media probing, decoding, and rendering.
-- yt-dlp if users choose to install or use it outside the current default UI.
-- faster-whisper, FunASR, Demucs, Pillow, and other optional Python packages.
+- FFmpeg / FFprobe for media probing, decoding, and rendering. FFmpeg is
+  generally licensed under LGPL-2.1-or-later; builds that enable GPL parts are
+  licensed under GPL-2.0-or-later. The license of the installed build applies.
+- openai-whisper, faster-whisper, FunASR, Demucs, and keyring under MIT-family
+  licenses.
+- watchdog under Apache-2.0, xxhash under BSD-2-Clause, Pillow under MIT-CMU,
+  and pywebview under BSD-3-Clause.
+- PyInstaller under GPL-2.0-or-later with its special exception for packaging
+  and distributing applications.
 - OpenAI-compatible APIs, OpenRouter, and Google Gemini APIs for optional AI
   cover, metadata, highlight, or subtitle translation features.
-- Inter and JetBrains Mono web fonts, whose license files are kept under
-  web/fonts/.
+- Inter and JetBrains Mono web fonts under SIL Open Font License 1.1. Their
+  license files are kept under web/fonts/.
+
+This summary is provided for convenience. The license text and metadata shipped
+with each installed or bundled version control if this summary differs.
 
 Users are responsible for ensuring they have the rights to process, record,
 transcribe, translate, publish, or redistribute any media they provide to the

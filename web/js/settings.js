@@ -124,9 +124,12 @@ export async function renderSettings(routeValue = "") {
     app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
   }, 150);
   try {
-    const payload = await API.getHealth();
+    const [payload, preferences] = await Promise.all([
+      API.getHealth(),
+      API.getPreferences().catch(() => ({ event_count: 0, clip_feedback: {}, subtitle_replacements: {}, platforms: {} })),
+    ]);
     clearTimeout(loadingTimer);
-    renderSettingsPage(payload, message);
+    renderSettingsPage(payload, message, preferences);
   } catch (error) {
     clearTimeout(loadingTimer);
     app.innerHTML = `<div class="error">${t("common.error")} ${escapeHtml(error.message)} <button class="button" id="retry-settings">${t("common.retry")}</button></div>`;
@@ -138,7 +141,7 @@ export function normalizeSettingsMessage(value) {
   return typeof value === "string" ? value : "";
 }
 
-function renderSettingsPage(payload, message = "") {
+function renderSettingsPage(payload, message = "", preferences = {}) {
   const settings = payload.settings || {};
   const checks = payload.checks || [];
   const recommendedUpdates = recommendedSettingsUpdates(editableGroups, settings, checks);
@@ -175,9 +178,61 @@ function renderSettingsPage(payload, message = "") {
         ${editableGroups.map((group, index) => renderEditableGroup(group, settings, checks, index)).join("")}
       </div>
     </form>
+    ${renderLocalPreferences(preferences)}
     ${renderSettingsSnapshot(settings, checks)}
   `;
   bindSettingsEditor();
+  bindLocalPreferences();
+}
+
+export function renderLocalPreferences(preferences = {}) {
+  const clips = preferences.clip_feedback || {};
+  const replacements = Object.keys(preferences.subtitle_replacements || {}).length;
+  const platforms = Object.entries(preferences.platforms || {});
+  return `
+    <section class="panel local-preferences">
+      <div class="panel-head">
+        <div>
+          <h2>${t("preferences.title")}</h2>
+          <p>${t("preferences.note")}</p>
+        </div>
+        <a class="button" href="#/health">${t("nav.health")}</a>
+      </div>
+      <div class="preference-stats">
+        <span>${t("preferences.events")}: <strong>${Number(preferences.event_count || 0)}</strong></span>
+        <span>${t("preferences.accepted")}: <strong>${Number(clips.accepted || 0)}</strong></span>
+        <span>${t("preferences.rejected")}: <strong>${Number(clips.rejected || 0)}</strong></span>
+        <span>${t("preferences.replacements")}: <strong>${replacements}</strong></span>
+      </div>
+      ${platforms.length ? `<p>${t("preferences.platforms")}: ${platforms.map(([name, count]) => `${escapeHtml(name)} (${Number(count)})`).join(" · ")}</p>` : ""}
+      <div class="toolbar">
+        <button class="button" type="button" data-preferences-action="export">${t("preferences.export")}</button>
+        <button class="button danger" type="button" data-preferences-action="clear">${t("preferences.clear")}</button>
+      </div>
+    </section>`;
+}
+
+function bindLocalPreferences() {
+  const panel = document.querySelector(".local-preferences");
+  if (!panel) return;
+  panel.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-preferences-action]");
+    if (!button) return;
+    if (button.dataset.preferencesAction === "clear") {
+      if (!window.confirm(t("preferences.clear_confirm"))) return;
+      await API.clearPreferences();
+      await renderSettings(t("preferences.cleared"));
+      return;
+    }
+    const payload = await API.exportPreferences();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "video-automation-preferences.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  });
 }
 
 export function renderEditableGroup(group, settings, checks, index = 0) {
@@ -216,7 +271,11 @@ function renderEditableField(field, settings, checks) {
     ? ` data-recommended="${escapeHtml(JSON.stringify(recommended))}"`
     : "";
   const common = `data-env="${escapeHtml(field.env)}" data-original="${escapeHtml(original)}"${field.secret ? " data-secret=\"1\"" : ""}${recommendedAttribute}`;
-  const label = `<span class="settings-edit-label"><span>${escapeHtml(settingEnvLabel(field.env))}</span><small>${escapeHtml(field.env)}</small></span>`;
+  const backend = String(settingValue(settings, ["whisper", "backend"]) || "");
+  const fieldLabel = field.env === "WHISPER_MODEL" && backend.startsWith("funasr")
+    ? t("settings.key.whisper_fallback_model")
+    : settingEnvLabel(field.env);
+  const label = `<span class="settings-edit-label"><span>${escapeHtml(fieldLabel)}</span><small>${escapeHtml(field.env)}</small></span>`;
   const recommendationHtml = renderRecommendation(recommendation);
   if (field.type === "checkbox") {
     return `<label class="settings-edit-field checkbox-field">
@@ -245,7 +304,7 @@ function renderEditableField(field, settings, checks) {
       : "";
   return `<label class="settings-edit-field">
     ${label}
-    <input ${common} type="${type}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"${field.min !== undefined ? ` min="${field.min}"` : ""}${field.max !== undefined ? ` max="${field.max}"` : ""}${field.step !== undefined ? ` step="${field.step}"` : ""}>
+    <input ${common} type="${type}"${field.secret ? ' autocomplete="new-password"' : ""} value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"${field.min !== undefined ? ` min="${field.min}"` : ""}${field.max !== undefined ? ` max="${field.max}"` : ""}${field.step !== undefined ? ` step="${field.step}"` : ""}>
     ${recommendationHtml}
   </label>`;
 }

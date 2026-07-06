@@ -1,4 +1,5 @@
 import { API } from "./api.js";
+import { legacyProfilesToRecipes } from "./automation.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { basename, escapeHtml, jobName } from "./utils.js";
@@ -16,6 +17,7 @@ const options = [
   ["skip_transcribe", "new.skip_transcribe", false]
 ];
 const CUSTOM_PROFILE_STORAGE_KEY = "videoAutomationCustomProfiles";
+const CUSTOM_PROFILE_BACKUP_KEY = "videoAutomationCustomProfiles.migratedBackup";
 const NEW_JOB_DISCLOSURE_STORAGE_KEY = "videoAutomationNewJobDisclosures";
 const BUILTIN_PROFILES = {
   fast: { source_integrity_scan: false, detect_silence: true, detect_freeze: false, detect_scenes: true, plan_crop: false, render_review: false, render_final: true, vertical: false, burn_subtitles: true },
@@ -32,12 +34,15 @@ const UPLOAD_TOTAL_LIMIT_BYTES = 20 * 1024 * 1024 * 1024;
 const BROWSER_UPLOAD_CONFIRM_BYTES = 512 * 1024 * 1024;
 let batchPaths = [];
 let sourcePathBatchMirror = false;
+let serverRecipes = [];
 
-export function renderNewJob() {
+export async function renderNewJob(_match, { signal } = {}) {
   batchPaths = [];
   sourcePathBatchMirror = false;
   const app = document.getElementById("app");
-  app.innerHTML = renderNewJobFormForTest(loadNewJobDisclosureState());
+  const library = await loadLibraryOptions(signal);
+  serverRecipes = library.recipes || [];
+  app.innerHTML = renderNewJobFormForTest(loadNewJobDisclosureState(), library);
   document.getElementById("new-job-form").addEventListener("submit", submit);
   document.getElementById("workflow-profile").addEventListener("change", applyProfile);
   document.getElementById("save-current-profile").addEventListener("click", saveCurrentProfile);
@@ -57,11 +62,13 @@ export function renderNewJob() {
   });
   document.getElementById("add-source-to-batch").addEventListener("click", addCurrentSourceToBatch);
   document.getElementById("whisper-language").addEventListener("change", updateWizardSummary);
+  document.getElementById("project-id")?.addEventListener("change", applyProjectDefaultKit);
   document.querySelectorAll(".options input").forEach((input) => input.addEventListener("change", updateWizardSummary));
   bindWizardRail();
   bindNewJobDisclosures();
   bindUploadDropzone();
   renderBatchList();
+  selectProjectFromHash();
   updateWizardSummary();
   loadRecordings();
   const handleVisibility = () => {
@@ -75,9 +82,12 @@ export function renderNewJob() {
   };
 }
 
-export function renderNewJobFormForTest(disclosures = {}) {
+export function renderNewJobFormForTest(disclosures = {}, library = {}) {
   const sourceToolsOpen = disclosures.sourceTools ? " open" : "";
   const processingOptionsOpen = disclosures.processingOptions ? " open" : "";
+  const projects = Array.isArray(library.projects) ? library.projects : [];
+  const kits = Array.isArray(library.kits) ? library.kits : [];
+  const recipes = Array.isArray(library.recipes) ? library.recipes : [];
   return `
     <section class="page-head">
       <div>
@@ -135,11 +145,27 @@ export function renderNewJobFormForTest(disclosures = {}) {
               <p>${t("new.wizard_goal_note")}</p>
             </div>
           </div>
+          <div class="form-row library-context-fields">
+            <div class="field">
+              <label for="project-id">${t("new.project")}</label>
+              <select id="project-id">
+                <option value="">${t("new.project_none")}</option>
+                ${projects.map((project) => `<option value="${escapeHtml(project.id)}" data-default-kit="${escapeHtml(project.default_kit_id || "")}">${escapeHtml(project.name)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label for="creator-kit-id">${t("new.creator_kit")}</label>
+              <select id="creator-kit-id">
+                <option value="">${t("new.creator_kit_auto")}</option>
+                ${kits.map((kit) => `<option value="${escapeHtml(kit.id)}">${escapeHtml(kit.name)} · ${escapeHtml(kit.aspect || "—")}</option>`).join("")}
+              </select>
+            </div>
+          </div>
           <div class="form-row">
             <div class="field">
               <label for="workflow-profile">${t("new.profile")}</label>
               <select id="workflow-profile">
-                ${renderProfileOptions()}
+                ${renderProfileOptions(recipes)}
               </select>
             </div>
             <div class="field">
@@ -633,7 +659,7 @@ function applyProfile(event) {
   updateWizardSummary();
 }
 
-function renderProfileOptions() {
+function renderProfileOptions(recipes = serverRecipes) {
   const customProfiles = loadCustomProfiles();
   return `
     <option value="">${t("new.profile_custom")}</option>
@@ -644,6 +670,9 @@ function renderProfileOptions() {
       <option value="bilibili">${t("new.profile_bilibili")}</option>
       <option value="youtube_shorts">${t("new.profile_youtube_shorts")}</option>
     </optgroup>
+    ${recipes.length ? `<optgroup label="${t("new.recipe_server_group")}">
+      ${recipes.map((recipe) => `<option value="recipe:${escapeHtml(recipe.id)}">${escapeHtml(recipe.name)}</option>`).join("")}
+    </optgroup>` : ""}
     ${customProfiles.length ? `<optgroup label="${t("new.profile_custom_group")}">
       ${customProfiles.map((profile) => `<option value="custom:${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`).join("")}
     </optgroup>` : ""}
@@ -655,6 +684,10 @@ function getProfilePayload(value) {
   if (value.startsWith("custom:")) {
     const id = value.slice("custom:".length);
     return loadCustomProfiles().find((profile) => profile.id === id)?.payload || null;
+  }
+  if (value.startsWith("recipe:")) {
+    const id = value.slice("recipe:".length);
+    return serverRecipes.find((recipe) => recipe.id === id)?.options || null;
   }
   return BUILTIN_PROFILES[value] || null;
 }
@@ -692,23 +725,43 @@ function refreshProfileSelect(selectedValue = "") {
   updateWizardSummary();
 }
 
-function saveCurrentProfile() {
+async function saveCurrentProfile() {
   const form = document.getElementById("new-job-form");
   if (!form) return;
   const name = window.prompt(t("new.profile_name_prompt"));
   if (!name?.trim()) return;
-  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const profiles = loadCustomProfiles();
-  profiles.push({ id, name: name.trim().slice(0, 40), payload: currentProfilePayload(form) });
-  storeCustomProfiles(profiles);
-  refreshProfileSelect(`custom:${id}`);
-  showToast(t("new.profile_saved"), "success");
+  const legacy = [{
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: name.trim().slice(0, 40),
+    payload: currentProfilePayload(form),
+  }];
+  try {
+    const recipe = await API.createRecipe(legacyProfilesToRecipes(legacy)[0]);
+    serverRecipes = [recipe, ...serverRecipes.filter((item) => item.id !== recipe.id)];
+    refreshProfileSelect(`recipe:${recipe.id}`);
+    showToast(t("new.profile_saved"), "success");
+  } catch (error) {
+    showToast(`${t("new.profile_save_failed")} ${error.message}`, "error");
+  }
 }
 
-function deleteCurrentProfile() {
+async function deleteCurrentProfile() {
   const select = document.getElementById("workflow-profile");
-  if (!select?.value?.startsWith("custom:")) return;
+  if (!select?.value?.startsWith("custom:") && !select?.value?.startsWith("recipe:")) return;
   if (!window.confirm(t("new.profile_delete_confirm"))) return;
+  if (select.value.startsWith("recipe:")) {
+    const id = select.value.slice("recipe:".length);
+    try {
+      await API.deleteRecipe(id);
+      serverRecipes = serverRecipes.filter((recipe) => recipe.id !== id);
+      refreshProfileSelect("");
+      applyProfile({ currentTarget: { value: "" } });
+      showToast(t("new.profile_deleted"), "success");
+    } catch (error) {
+      showToast(`${t("new.profile_delete_failed")} ${error.message}`, "error");
+    }
+    return;
+  }
   const id = select.value.slice("custom:".length);
   storeCustomProfiles(loadCustomProfiles().filter((profile) => profile.id !== id));
   refreshProfileSelect("");
@@ -757,11 +810,60 @@ async function submit(event) {
 function collectJobOptions(form) {
   const selectedProfile = document.getElementById("workflow-profile").value;
   const payload = {
-    profile: selectedProfile.startsWith("custom:") ? "" : selectedProfile,
-    whisper_language: document.getElementById("whisper-language").value
+    profile: selectedProfile.startsWith("custom:") || selectedProfile.startsWith("recipe:") ? "" : selectedProfile,
+    recipe_id: selectedProfile.startsWith("recipe:") ? selectedProfile.slice("recipe:".length) : "",
+    whisper_language: document.getElementById("whisper-language").value,
+    project_id: document.getElementById("project-id")?.value || "",
+    creator_kit_id: document.getElementById("creator-kit-id")?.value || ""
   };
   for (const [name] of options) payload[name] = Boolean(form.elements[name]?.checked);
   return payload;
+}
+
+async function loadLibraryOptions(signal) {
+  try {
+    const [projects, kits, recipesResponse] = await Promise.all([
+      API.getProjects({ signal }),
+      API.getCreatorKits({ signal }),
+      API.getRecipes({ signal }),
+    ]);
+    let recipes = recipesResponse.items || [];
+    const legacyProfiles = loadCustomProfiles();
+    if (legacyProfiles.length) {
+      try {
+        const imported = await API.importRecipes(legacyProfilesToRecipes(legacyProfiles));
+        const byId = new Map([...recipes, ...(imported.items || [])].map((recipe) => [recipe.id, recipe]));
+        recipes = [...byId.values()];
+        const raw = localStorage.getItem(CUSTOM_PROFILE_STORAGE_KEY);
+        if (raw) localStorage.setItem(CUSTOM_PROFILE_BACKUP_KEY, raw);
+        localStorage.removeItem(CUSTOM_PROFILE_STORAGE_KEY);
+      } catch {
+        // Keep the browser profiles intact; the next visit retries migration.
+      }
+    }
+    return { projects: projects.items || [], kits: kits.items || [], recipes };
+  } catch {
+    return { projects: [], kits: [], recipes: [] };
+  }
+}
+
+function applyProjectDefaultKit() {
+  const projectSelect = document.getElementById("project-id");
+  const kitSelect = document.getElementById("creator-kit-id");
+  const defaultKit = projectSelect?.selectedOptions?.[0]?.dataset.defaultKit || "";
+  if (kitSelect && defaultKit && Array.from(kitSelect.options).some((option) => option.value === defaultKit)) {
+    kitSelect.value = defaultKit;
+  }
+  updateWizardSummary();
+}
+
+function selectProjectFromHash() {
+  const query = String(location.hash || "").split("?", 2)[1] || "";
+  const projectId = new URLSearchParams(query).get("project") || "";
+  const select = document.getElementById("project-id");
+  if (!select || !Array.from(select.options).some((option) => option.value === projectId)) return;
+  select.value = projectId;
+  applyProjectDefaultKit();
 }
 
 function cleanSourcePath(value) {

@@ -10,9 +10,9 @@
   "plan_uvr": false,
   "skip_transcribe": false,
   "files": [
-    "D:\\recordings\\example.mp4",
+    "/path/to/your/example.mp4",
     {
-      "path": "D:\\recordings\\quick-test.mp4",
+      "path": "/path/to/your/quick-test.mp4",
       "skip_transcribe": true,
       "plan_crop": true,
       "plan_uvr": true,

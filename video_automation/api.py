@@ -8,13 +8,12 @@ import subprocess
 import threading
 import uuid
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-mimetypes.add_type("font/woff2", ".woff2")
 from .config import Settings
 from .covers import cover_manifest, generate_cover_candidates, mark_cover_generation_started, normalize_cover_options, select_cover
 from .crop import generate_vertical_crop_plan
@@ -24,6 +23,19 @@ from .hooks import generate_uvr_plan
 from .highlight_cut import generate_highlight_cut
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .jobs import Job, create_job, list_jobs, load_job, normalize_source_path
+from .library_api import (
+    attach_job_context,
+    automation_repository_for,
+    dispatch_library_request,
+    job_library_fields,
+    job_library_fields_map,
+    library_database_path,
+    queue_repository_for,
+    record_job_revision,
+    evaluate_job_quality,
+    preference_repository_for,
+    structured_error,
+)
 from .llm_tools import generate_highlights, generate_metadata, save_metadata
 from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio_outputs, generate_thumbnail, generate_waveform, probe_media
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
@@ -35,8 +47,12 @@ from .resources import job_gpu_status_callbacks
 from .segments import generate_platform_segments
 from .subtitle_translation import translate_subtitles, translated_clipped_ass_name, translated_final_video_name
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
-from .transcribe import transcribe_audio
+from .task_queue import QueueService
+from .recovery import backup_database, ensure_database_ready, ensure_job_capacity
+from .transcribe import transcribe_audio, warm_transcription_backend
 from .worker import _high_quality_audio_path, clear_health_cache, health_payload, process_job
+
+mimetypes.add_type("font/woff2", ".woff2")
 
 CHUNK_SIZE = 1024 * 1024
 MAX_JSON_BODY_SIZE = 2 * 1024 * 1024
@@ -135,19 +151,52 @@ EDITABLE_ENV_KEYS = {
 }
 
 
+class AutomationHTTPServer(ThreadingHTTPServer):
+    def __init__(self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler], queue_service: QueueService):
+        self.queue_service = queue_service
+        super().__init__(server_address, handler)
+
+    def server_close(self) -> None:
+        self.queue_service.stop()
+        super().server_close()
+
+
 def create_server(settings: Settings) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((settings.api_host, settings.api_port), _handler_class(settings))
+    database_path = library_database_path(settings)
+    ensure_database_ready(database_path)
+    handler = _handler_class(settings)
+    if database_path.is_file():
+        backup_database(database_path, keep=5)
+    queue_service = getattr(handler, "queue_service")
+    return AutomationHTTPServer((settings.api_host, settings.api_port), handler, queue_service)
 
 
 def serve(settings: Settings) -> None:
     server = create_server(settings)
+    _start_transcription_warmup(settings)
     print(f"Video Automation API listening on http://{settings.api_host}:{settings.api_port}", flush=True)
     server.serve_forever()
+
+
+def _start_transcription_warmup(settings: Settings) -> None:
+    if settings.whisper_backend not in {"funasr", "funasr-whisper", "funasr-faster-whisper"}:
+        return
+    if not settings.funasr_persistent_worker:
+        return
+    threading.Thread(target=warm_transcription_backend, args=(settings,), daemon=True).start()
 
 
 def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
     process_semaphore = threading.Semaphore(max(1, settings.api_parallel_jobs))
     allowed_origins = _allowed_api_origins(settings)
+    queue_repository = queue_repository_for(settings)
+    stale_before = (datetime.now() - timedelta(seconds=30)).isoformat(timespec="seconds")
+    queue_repository.recover_interrupted(stale_before)
+    queue_service = QueueService(
+        queue_repository,
+        lambda item: _execute_queue_item(settings, item),
+    )
+    queue_service.start(workers=max(1, settings.api_parallel_jobs))
 
     class Handler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:  # noqa: N802
@@ -163,6 +212,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not self._require_allowed_origin():
                 return
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/v1/"):
+                response = dispatch_library_request(settings, "GET", unquote(parsed.path))
+                if response is not None:
+                    status, payload = response
+                    self._json(payload, status=status)
+                    return
             if parsed.path == "/":
                 self._send_static_file("index.html")
                 return
@@ -182,7 +237,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self._send_events(parsed.query)
                 return
             if parsed.path == "/jobs":
-                self._json([self._job_payload(job) for job in list_jobs(settings)])
+                jobs = list_jobs(settings)
+                library_fields = job_library_fields_map(settings, [job.job_dir.name for job in jobs])
+                self._json([
+                    self._job_payload(job, library_fields=library_fields.get(job.job_dir.name))
+                    for job in jobs
+                ])
                 return
             if parsed.path.startswith("/jobs/"):
                 parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
@@ -196,6 +256,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     return
                 payload = job.to_dict()
                 payload["files"] = _job_files(job.job_dir)
+                payload.update(job_library_fields(settings, job.job_dir.name))
                 self._json(payload)
                 return
             self._json({"error": "not found"}, status=404)
@@ -205,6 +266,15 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not self._require_allowed_origin():
                 return
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/v1/"):
+                payload = self._read_json()
+                if payload is None:
+                    return
+                response = dispatch_library_request(settings, "POST", unquote(parsed.path), payload)
+                if response is not None:
+                    status, body = response
+                    self._json(body, status=status)
+                    return
             if parsed.path == "/health/install-tools":
                 self._install_health_tools()
                 return
@@ -293,6 +363,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             settings = Settings.load()
             allowed_origins = _allowed_api_origins(settings)
             clear_health_cache()
+            _start_transcription_warmup(settings)
             publish_event("settings", {"changed": sorted(changed)})
             response = health_payload(settings)
             response["changed"] = sorted(changed)
@@ -353,11 +424,14 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if payload is None:
                 return
             try:
-                job, status = self._submit_process_payload(payload, process_semaphore)
+                job, status, queue_item = self._submit_process_payload(payload, process_semaphore)
             except ValueError as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
-            self._json(job.to_dict(), status=status)
+            response = self._job_payload(job)
+            if queue_item:
+                response["queue"] = queue_item
+            self._json(response, status=status)
 
         def _process_batch(self, process_semaphore: threading.Semaphore) -> None:
             payload = self._read_json()
@@ -391,11 +465,15 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 item_payload["batch_index"] = batch_index
                 item_payload["batch_size"] = batch_size
                 try:
-                    job, status = self._submit_process_payload(item_payload, process_semaphore)
+                    job, status, queue_item = self._submit_process_payload(item_payload, process_semaphore)
                 except ValueError as exc:
                     self._json({"error": str(exc)}, status=400)
                     return
-                jobs.append({**job.to_dict(), "http_status": status})
+                jobs.append({
+                    **self._job_payload(job),
+                    "http_status": status,
+                    "queue": queue_item,
+                })
             self._json({
                 "batch_id": batch_id,
                 "jobs": jobs,
@@ -403,9 +481,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 "parallel_jobs": settings.api_parallel_jobs,
             }, status=202)
 
-        def _submit_process_payload(self, payload: dict[str, Any], process_semaphore: threading.Semaphore) -> tuple[Job, int]:
+        def _submit_process_payload(
+            self,
+            payload: dict[str, Any],
+            process_semaphore: threading.Semaphore,
+        ) -> tuple[Job, int, dict[str, Any] | None]:
             source = payload.get("path") or payload.get("source_path")
-            profile = str(payload.get("profile") or "").strip()
             if not source:
                 raise ValueError("missing path")
             try:
@@ -419,44 +500,31 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 )
             except OSError as exc:
                 raise ValueError(str(exc)) from exc
+            attach_job_context(settings, job, payload)
             if job.status in {"needs_review", "done", "failed"} and not bool(payload.get("force", False)):
-                return job, 200
+                return job, 200, queue_repository.get_by_job(job.job_dir.name)
             if job.status != "pending" and not bool(payload.get("force", False)):
-                return job, 202
-            job_settings = apply_profile_settings(settings, profile)
-            if "source_integrity_scan" in payload:
-                job_settings = replace(
-                    job_settings,
-                    source_integrity_scan_enabled=bool(payload.get("source_integrity_scan", False)),
-                )
-            options = apply_profile_flags({
-                "force": bool(payload.get("force", False)),
-                "detect_silence_enabled": bool(payload.get("detect_silence", False)),
-                "detect_freeze_enabled": bool(payload.get("detect_freeze", False)),
-                "detect_scenes_enabled": bool(payload.get("detect_scenes", False)),
-                "render_review_enabled": bool(payload.get("render_review", False)),
-                "render_final_enabled": bool(payload.get("render_final", False)),
-                "vertical_enabled": bool(payload.get("vertical", False)),
-                "burn_subtitles_enabled": bool(payload.get("burn_subtitles", False)),
-                "plan_crop_enabled": bool(payload.get("plan_crop", False)),
-                "plan_uvr_enabled": bool(payload.get("plan_uvr", False)),
-                "skip_transcribe": bool(payload.get("skip_transcribe", False)),
-                "progress_enabled": False,
-                "whisper_language": str(payload.get("whisper_language") or "").strip() or None,
-            }, profile)
+                return job, 202, queue_repository.get_by_job(job.job_dir.name)
             job.set_status("queued")
-            thread = threading.Thread(
-                target=_run_process_job,
-                args=(process_semaphore, job_settings, job, options),
-                daemon=True,
+            queued_payload = dict(payload)
+            queued_payload["path"] = str(job.source_path)
+            queue_item = queue_repository.enqueue(
+                job.job_dir.name,
+                queued_payload,
+                priority=int(payload.get("priority") or 0),
             )
-            thread.start()
-            return job, 202
+            return job, 202, queue_item
 
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._require_allowed_origin():
                 return
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/v1/"):
+                response = dispatch_library_request(settings, "DELETE", unquote(parsed.path))
+                if response is not None:
+                    status, payload = response
+                    self._json(payload, status=status)
+                    return
             parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
             if len(parts) == 2 and parts[0] == "jobs":
                 self._delete_job(parts[1])
@@ -476,6 +544,19 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return
             if job.status != "needs_review":
                 self._json({"error": f"job is not waiting for review: {job.status}"}, status=409)
+                return
+            quality = evaluate_job_quality(settings, job_name)
+            if quality["blocking"]:
+                self._json(
+                    structured_error(
+                        "quality_gate_failed",
+                        "Quality checks must be resolved before approval",
+                        retryable=False,
+                        action="open_review_quality",
+                        details=quality,
+                    ),
+                    status=409,
+                )
                 return
             job.set_status("done")
             payload = job.to_dict()
@@ -498,10 +579,17 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 _remove_render_outputs(job.job_dir)
                 generate_render_preview(settings, job.job_dir, job.source_path, force=True)
                 job.set_status("needs_review")
+                revision = record_job_revision(
+                    settings,
+                    job.job_dir.name,
+                    "cuts",
+                    cuts,
+                    summary="Saved clip decisions",
+                )
             except Exception as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
-            self._json({"job": self._job_payload(job), "cuts": cuts})
+            self._json({"job": self._job_payload(job), "cuts": cuts, "revision": revision})
 
         def _update_job_transcript(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
@@ -513,6 +601,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             payload = self._read_json()
             if payload is None:
                 return
+            previous_transcript = read_json_file(job.job_dir / "transcript.json") or {}
             try:
                 transcript = _update_transcript_from_editor(job.job_dir, payload.get("segments", []))
                 cuts_path = job.job_dir / "cuts.json"
@@ -526,10 +615,23 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 _remove_render_outputs(job.job_dir)
                 generate_render_preview(settings, job.job_dir, job.source_path, force=True)
                 job.set_status("needs_review")
+                revision = record_job_revision(
+                    settings,
+                    job.job_dir.name,
+                    "transcript",
+                    transcript,
+                    summary="Saved transcript edits",
+                )
+                _record_transcript_preferences(
+                    preference_repository_for(settings),
+                    job.job_dir.name,
+                    previous_transcript,
+                    transcript,
+                )
             except Exception as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
-            self._json({"job": self._job_payload(job), "transcript": transcript})
+            self._json({"job": self._job_payload(job), "transcript": transcript, "revision": revision})
 
         def _save_clip_feedback(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
@@ -540,6 +642,15 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 feedback = _save_clip_feedback(job.job_dir, payload)
+                preference_repository_for(settings).record(
+                    "clip_feedback",
+                    {
+                        "action": str(payload.get("action") or ""),
+                        "clip_key": str(payload.get("clip_key") or "")[:120],
+                        "reason": str(payload.get("reason") or "")[:200],
+                    },
+                    job_name=job.job_dir.name,
+                )
             except ValueError as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
@@ -973,10 +1084,11 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return None
             return job
 
-        def _job_payload(self, job: Job) -> dict[str, Any]:
+        def _job_payload(self, job: Job, *, library_fields: dict[str, Any] | None = None) -> dict[str, Any]:
             payload = job.to_dict()
             payload["files"] = _job_files(job.job_dir)
             payload["feedback"] = _job_feedback(job.job_dir)
+            payload.update(library_fields or job_library_fields(settings, job.job_dir.name))
             return payload
 
         def _begin_enhancement(self, job: Job) -> str | None:
@@ -1141,6 +1253,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             self._json({"error": "origin not allowed"}, status=403)
             return False
 
+    Handler.queue_service = queue_service
     return Handler
 
 
@@ -1417,6 +1530,32 @@ def _save_clip_feedback(job_dir: Path, payload: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _record_transcript_preferences(
+    repository: Any,
+    job_name: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> int:
+    """Record explicit text edits only; timing changes are not preference signals."""
+    before_segments = before.get("segments") if isinstance(before.get("segments"), list) else []
+    after_segments = after.get("segments") if isinstance(after.get("segments"), list) else []
+    recorded = 0
+    for previous, current in zip(before_segments, after_segments):
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            continue
+        previous_text = str(previous.get("text") or "").strip()
+        current_text = str(current.get("text") or "").strip()
+        if not previous_text or not current_text or previous_text == current_text:
+            continue
+        repository.record(
+            "subtitle_correction",
+            {"before": previous_text[:500], "after": current_text[:500]},
+            job_name=job_name,
+        )
+        recorded += 1
+    return recorded
+
+
 def _bounded_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit]
@@ -1543,6 +1682,72 @@ def _run_cover_generation(settings: Settings, job_dir: Path, key: str, options: 
         with COVER_GENERATIONS_LOCK:
             COVER_GENERATIONS.discard(key)
         _publish_job_dir_event(job_dir)
+
+
+def _execute_queue_item(settings: Settings, item: dict[str, Any]) -> None:
+    job_name = str(item.get("job_name") or "")
+    job = load_job(Path(settings.jobs_dir) / job_name / "job.json")
+    if job is None:
+        raise RuntimeError(f"queued job not found: {job_name}")
+    ensure_job_capacity(settings, job.source_path)
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    job_settings, options = _queued_process_config(settings, payload)
+    retry_stage = str(item.get("retry_stage") or "").strip()
+    if retry_stage:
+        if retry_stage not in RERUN_STATUS:
+            raise RuntimeError(f"unsupported retry stage: {retry_stage}")
+        _run_single_stage(job_settings, job, retry_stage, options)
+    else:
+        options["control_callback"] = lambda: _queue_control_action(settings, str(item.get("id") or ""))
+        process_job(job_settings, job, **options)
+    if job.status == "failed":
+        raise RuntimeError(job.error or "job failed")
+
+
+def _queue_control_action(settings: Settings, queue_id: str) -> str | None:
+    current = queue_repository_for(settings).get(queue_id)
+    if not current:
+        return "canceled"
+    if current.get("cancel_requested"):
+        return "canceled"
+    if current.get("pause_requested"):
+        return "paused"
+    return None
+
+
+def _queued_process_config(settings: Settings, payload: dict[str, Any]) -> tuple[Settings, dict[str, Any]]:
+    effective = dict(payload)
+    recipe_id = str(payload.get("recipe_id") or "").strip()
+    if recipe_id:
+        recipe = automation_repository_for(settings).get_recipe(recipe_id)
+        if recipe is None:
+            raise RuntimeError(f"recipe not found: {recipe_id}")
+        effective = {**recipe.get("options", {}), **effective}
+        effective["recipe_stages"] = recipe.get("stages", [])
+    profile = str(effective.get("profile") or "").strip()
+    job_settings = apply_profile_settings(settings, profile)
+    if "source_integrity_scan" in effective:
+        job_settings = replace(
+            job_settings,
+            source_integrity_scan_enabled=bool(effective.get("source_integrity_scan", False)),
+        )
+    options = apply_profile_flags({
+        "force": bool(effective.get("force", False)),
+        "detect_silence_enabled": bool(effective.get("detect_silence", False)),
+        "detect_freeze_enabled": bool(effective.get("detect_freeze", False)),
+        "detect_scenes_enabled": bool(effective.get("detect_scenes", False)),
+        "render_review_enabled": bool(effective.get("render_review", False)),
+        "render_final_enabled": bool(effective.get("render_final", False)),
+        "vertical_enabled": bool(effective.get("vertical", False)),
+        "burn_subtitles_enabled": bool(effective.get("burn_subtitles", False)),
+        "plan_crop_enabled": bool(effective.get("plan_crop", False)),
+        "plan_uvr_enabled": bool(effective.get("plan_uvr", False)),
+        "skip_transcribe": bool(effective.get("skip_transcribe", False)),
+        "progress_enabled": False,
+        "whisper_language": str(effective.get("whisper_language") or "").strip() or None,
+        "selected_stages": effective.get("recipe_stages") if isinstance(effective.get("recipe_stages"), list) else None,
+    }, profile)
+    return job_settings, options
 
 
 def _run_process_job(process_semaphore: threading.Semaphore, settings: Settings, job: Job, options: dict[str, Any]) -> None:

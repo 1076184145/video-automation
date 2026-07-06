@@ -14,7 +14,7 @@ The app starts a local API server and opens the Web control panel in a desktop W
 
 ## First-run tool check
 
-If the Health page reports missing `ffmpeg`, `ffprobe`, or `yt-dlp`, click **Auto-fix Dependencies** in the Health page. The app will run the bundled installer script in the background and show progress in the UI.
+If the Health page reports missing `ffmpeg` or `ffprobe`, click **Auto-fix Dependencies** in the Health page. The app will run the bundled installer script in the background and show progress in the UI.
 
 You can also check tool resolution manually:
 
@@ -32,9 +32,8 @@ This installs:
 
 - `ffmpeg.exe`
 - `ffprobe.exe`
-- `yt-dlp.exe`
 
-Optional tools such as `audiowaveform.exe` and `olived-resolver.exe` can also be placed in `tools\bin`.
+The optional `audiowaveform.exe` tool can also be placed in `tools\bin`.
 
 ## Configuration
 

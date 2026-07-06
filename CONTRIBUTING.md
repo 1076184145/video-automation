@@ -38,6 +38,9 @@ http://127.0.0.1:8765/#/
 - Update `README.md` and `README.zh-CN.md` when user-facing behavior changes.
 - Add or update tests for core pipeline logic when practical.
 - Confirm that no private paths, keys, or generated media files are included.
+- Identify the upstream license of every new dependency. Do not add a
+  strong-copyleft dependency unless the repository's licensing and distribution
+  impact has been reviewed and explicitly accepted.
 
 ## Reporting Bugs
 

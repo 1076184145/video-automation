@@ -1,6 +1,7 @@
 import { API } from "./api.js";
 import { formatClipTimeInput, parseClipTime } from "./clip-time.js";
 import { t } from "./i18n.js";
+import { clearReviewDraft, createDraftSaver } from "./review-drafts.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatTime } from "./utils.js";
 export function renderClips(cuts, feedback) {
@@ -68,8 +69,10 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
   let draggedRow = null;
   let lastSelectedIndex = -1;
   let inputSnapshot = null;
+  const draftSaver = createDraftSaver(jobName, "cuts", () => collectEditedClips(root));
   const history = createClipHistory(root, () => {
     setEditing(true);
+    draftSaver.schedule();
     setClipMessage(t("job.undo_redo_changed"));
   });
   const handler = async (e) => {
@@ -110,6 +113,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
       const rows = Array.from(body.querySelectorAll("[data-clip-row]"));
       const lastEnd = parseClipTime(rows.at(-1)?.querySelector('[data-field="end"]')?.value || "0");
       body.insertAdjacentHTML("beforeend", renderClipRow({ start: lastEnd, end: lastEnd + 5, duration: 5, reason: "manual edit" }, rows.length));
+      draftSaver.schedule();
     } else if (e.target.id === "clear-clip-selection") {
       setClipSelection(root, false);
       lastSelectedIndex = -1;
@@ -123,6 +127,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
         if (checkbox) checkbox.checked = keep;
       });
       setEditing(true);
+      draftSaver.schedule();
       setClipMessage(t(keep ? "job.batch_keep_done" : "job.batch_drop_done"));
     } else if (e.target.id === "batch-delete-clips") {
       const rows = selectedClipRows(root);
@@ -132,6 +137,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
       rows.forEach((row) => row.remove());
       refreshClipRowNumbers(root);
       setEditing(true);
+      draftSaver.schedule();
       setClipMessage(t("job.batch_delete_done").replace("{count}", String(rows.length)));
     } else if (e.target.id === "save-cuts") {
       const button = e.target;
@@ -139,6 +145,8 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
       try {
         const clips = collectEditedClips(root);
         await API.updateCuts(jobName, clips);
+        draftSaver.cancel();
+        clearReviewDraft(jobName, "cuts");
         await API.rerunStage(jobName, "render_review");
         setClipMessage(t("job.save_cuts_preview"));
         showToast(t("job.save_cuts_preview"), "success");
@@ -154,6 +162,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
       setEditing(true);
       e.target.closest("[data-clip-row]")?.remove();
       refreshClipRowNumbers(root);
+      draftSaver.schedule();
     }
   };
   const dragStart = (event) => {
@@ -183,6 +192,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     draggedRow = null;
     refreshClipRowNumbers(root);
     setEditing(true);
+    draftSaver.schedule();
     setClipMessage(t("job.clips_reordered"));
   };
   const drop = (event) => event.preventDefault();
@@ -209,6 +219,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
       target.dataset.historyCaptured = "1";
     }
     setEditing(true);
+    draftSaver.schedule();
   };
   const focusOut = (event) => {
     const target = event.target?.closest?.("[data-field]");
@@ -239,6 +250,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     root.removeEventListener("dragover", dragOver);
     root.removeEventListener("drop", drop);
     root.removeEventListener("dragend", dragEnd);
+    draftSaver.dispose();
   };
 }
 
