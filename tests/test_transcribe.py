@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +88,23 @@ class TranscribeFallbackTests(unittest.TestCase):
             transcribe._run_funasr_subprocess(settings, Path("audio.wav"), Path("job"))  # type: ignore[arg-type]
 
         one_shot.assert_called_once()
+
+    def test_funasr_timeout_does_not_start_a_fresh_one_shot_budget(self) -> None:
+        settings = SimpleNamespace(funasr_persistent_worker=True)
+
+        def exhaust_budget(*_args: object, **_kwargs: object) -> None:
+            time.sleep(0.02)
+            raise WorkerInfrastructureError("timed out")
+
+        with (
+            patch.object(transcribe, "_transcribe_timeout", return_value=0.01),
+            patch.object(transcribe, "_run_funasr_persistent", side_effect=exhaust_budget),
+            patch.object(transcribe, "_run_funasr_one_shot_subprocess") as one_shot,
+        ):
+            with self.assertRaisesRegex(WorkerInfrastructureError, "budget exhausted"):
+                transcribe._run_funasr_subprocess(settings, Path("audio.wav"), Path("job"))  # type: ignore[arg-type]
+
+        one_shot.assert_not_called()
 
     def test_funasr_task_failure_is_not_retried_in_one_shot_runner(self) -> None:
         settings = SimpleNamespace(funasr_persistent_worker=True)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
 import json
 import os
 import shutil
 import socket
+import ssl
 import textwrap
 import time
 import urllib.error
@@ -33,6 +35,9 @@ STYLE_PROMPTS = {
 SUPPORTED_COVER_PROVIDERS = {"openai", "openai-compatible", "openrouter", "google"}
 MAX_REMOTE_COVER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_REMOTE_COVER_REDIRECTS = 3
+MAX_REMOTE_COVER_TOTAL_SECONDS = 60.0
+MAX_COVER_IMAGE_PIXELS = 40_000_000
+REMOTE_IMAGE_READ_CHUNK = 64 * 1024
 
 
 def normalize_cover_options(settings: Settings, payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -402,48 +407,136 @@ def _decode_image_data(raw: str) -> bytes:
     return base64.b64decode(value)
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float):
+        super().__init__(host, port, timeout=timeout)
+        self._validated_address = address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
 
 
-def _fetch_remote_image(url: str) -> bytes:
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self._validated_address = address
+
+    def connect(self) -> None:
+        sock = socket.create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _remote_image_connection(parsed, address: str, timeout: float):  # type: ignore[no-untyped-def]
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    connection_type = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
+    return connection_type(parsed.hostname, port, address, timeout)
+
+
+def _fetch_remote_image(
+    url: str,
+    *,
+    resolve=None,
+    connection_factory=None,
+    clock=None,
+) -> bytes:
     current = url
-    opener = urllib.request.build_opener(_NoRedirectHandler)
+    resolver = resolve or socket.getaddrinfo
+    make_connection = connection_factory or _remote_image_connection
+    monotonic = clock or time.monotonic
+    deadline = monotonic() + MAX_REMOTE_COVER_TOTAL_SECONDS
     for _ in range(MAX_REMOTE_COVER_REDIRECTS + 1):
-        _validate_remote_image_url(current)
-        request = urllib.request.Request(current, headers={"User-Agent": "VideoAutomation/1.0"})
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise RuntimeError("remote cover image exceeded the total deadline")
+        parsed, addresses = _resolve_remote_image_url(current, resolver)
+        connection = make_connection(parsed, addresses[0], remaining)
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
         try:
-            with opener.open(request, timeout=60) as response:
-                length = response.headers.get("Content-Length")
-                if length and int(length) > MAX_REMOTE_COVER_IMAGE_BYTES:
-                    raise RuntimeError("remote cover image is too large")
-                data = response.read(MAX_REMOTE_COVER_IMAGE_BYTES + 1)
-                if len(data) > MAX_REMOTE_COVER_IMAGE_BYTES:
-                    raise RuntimeError("remote cover image is too large")
-                return data
-        except urllib.error.HTTPError as exc:
-            if exc.code not in {301, 302, 303, 307, 308}:
-                raise
-            location = exc.headers.get("Location")
-            if not location:
-                raise RuntimeError("remote cover image redirect had no Location") from exc
-            current = urljoin(current, location)
+            connection.request("GET", target, headers={"User-Agent": "VideoAutomation/1.0"})
+            response = connection.getresponse()
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                if not location:
+                    raise RuntimeError("remote cover image redirect had no Location")
+                current = urljoin(current, location)
+                continue
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"remote cover image returned HTTP {response.status}")
+            length = response.headers.get("Content-Length")
+            try:
+                declared_length = int(length) if length else None
+            except ValueError as exc:
+                raise RuntimeError("remote cover image returned an invalid Content-Length") from exc
+            if declared_length is not None and declared_length > MAX_REMOTE_COVER_IMAGE_BYTES:
+                raise RuntimeError("remote cover image is too large")
+            data = bytearray()
+            while len(data) <= MAX_REMOTE_COVER_IMAGE_BYTES:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("remote cover image exceeded the total deadline")
+                sock = getattr(connection, "sock", None)
+                if sock is not None:
+                    sock.settimeout(max(0.1, min(5.0, remaining)))
+                chunk = response.read(
+                    min(REMOTE_IMAGE_READ_CHUNK, MAX_REMOTE_COVER_IMAGE_BYTES + 1 - len(data))
+                )
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if len(data) > MAX_REMOTE_COVER_IMAGE_BYTES:
+                raise RuntimeError("remote cover image is too large")
+            return bytes(data)
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError("remote cover image request failed") from exc
+        finally:
+            connection.close()
     raise RuntimeError("remote cover image had too many redirects")
 
 
-def _validate_remote_image_url(url: str) -> None:
+def _resolve_remote_image_url(url: str, resolve):  # type: ignore[no-untyped-def]
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
         raise RuntimeError("remote cover image URL must be http or https")
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
-    except OSError as exc:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        resolved = resolve(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, ValueError) as exc:
         raise RuntimeError("remote cover image host could not be resolved") from exc
-    for *_, sockaddr in addresses:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+    addresses = []
+    for *_, sockaddr in resolved:
+        address = str(sockaddr[0])
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
             raise RuntimeError("remote cover image URL resolves to a private or local address")
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise RuntimeError("remote cover image host could not be resolved")
+    return parsed, addresses
+
+
+def _validate_remote_image_url(url: str) -> None:
+    _resolve_remote_image_url(url, socket.getaddrinfo)
+
+
+def _validate_cover_image_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0 or width * height > MAX_COVER_IMAGE_PIXELS:
+        raise RuntimeError("cover image exceeds the decoded pixel limit")
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -459,6 +552,7 @@ def _postprocess_cover(raw: bytes, output_path: Path, *, size: tuple[int, int], 
         raise RuntimeError("cover generation requires Pillow; install requirements-optional.txt") from exc
 
     with Image.open(BytesIO(raw)) as source:
+        _validate_cover_image_dimensions(source.width, source.height)
         image = _cover_resize(source.convert("RGB"), size)
     if title:
         draw = ImageDraw.Draw(image, "RGBA")

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -481,24 +482,44 @@ def _run_faster_whisper_subprocess(settings: Settings, audio_path: Path, job_dir
 
 
 def _run_funasr_subprocess(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+    deadline = time.monotonic() + _transcribe_timeout(settings, audio_path)
     if getattr(settings, "funasr_persistent_worker", True):
         try:
-            _run_funasr_persistent(settings, audio_path, job_dir)
+            _run_funasr_persistent(
+                settings,
+                audio_path,
+                job_dir,
+                timeout_seconds=max(0.01, deadline - time.monotonic()),
+            )
             return
-        except WorkerInfrastructureError:
-            _run_funasr_one_shot_subprocess(settings, audio_path, job_dir)
+        except WorkerInfrastructureError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkerInfrastructureError("FunASR transcription time budget exhausted") from exc
+            _run_funasr_one_shot_subprocess(settings, audio_path, job_dir, timeout_seconds=remaining)
             return
-    _run_funasr_one_shot_subprocess(settings, audio_path, job_dir)
+    _run_funasr_one_shot_subprocess(
+        settings,
+        audio_path,
+        job_dir,
+        timeout_seconds=max(0.01, deadline - time.monotonic()),
+    )
 
 
-def _run_funasr_persistent(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+def _run_funasr_persistent(
+    settings: Settings,
+    audio_path: Path,
+    job_dir: Path,
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
     _run_funasr_worker_request(
         settings,
         request={
             "audio_path": str(audio_path),
             "job_dir": str(job_dir),
         },
-        timeout_seconds=_transcribe_timeout(settings, audio_path),
+        timeout_seconds=timeout_seconds if timeout_seconds is not None else _transcribe_timeout(settings, audio_path),
     )
 
 
@@ -565,7 +586,13 @@ def _funasr_worker_signature(settings: Settings) -> tuple[Any, ...]:
     )
 
 
-def _run_funasr_one_shot_subprocess(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+def _run_funasr_one_shot_subprocess(
+    settings: Settings,
+    audio_path: Path,
+    job_dir: Path,
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
     python_executable = _project_python(settings)
     command = [
         str(python_executable),
@@ -590,7 +617,7 @@ def _run_funasr_one_shot_subprocess(settings: Settings, audio_path: Path, job_di
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=_transcribe_timeout(settings, audio_path),
+        timeout=timeout_seconds if timeout_seconds is not None else _transcribe_timeout(settings, audio_path),
     )
     if result.returncode == 0:
         return
@@ -657,7 +684,9 @@ def _ensure_funasr_cuda_ready(settings: Settings) -> None:
 
 def _transcribe_timeout(settings: Settings, audio_path: Path) -> int:
     duration = _wav_duration_seconds(audio_path)
-    return max(settings.whisper_timeout_min_seconds, int(duration * settings.whisper_timeout_multiplier))
+    minimum = int(getattr(settings, "whisper_timeout_min_seconds", 300))
+    multiplier = float(getattr(settings, "whisper_timeout_multiplier", 10.0))
+    return max(minimum, int(duration * multiplier))
 
 
 def _wav_duration_seconds(audio_path: Path) -> float:

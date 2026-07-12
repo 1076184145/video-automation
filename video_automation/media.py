@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import wave
 from array import array
 from collections.abc import Iterable
@@ -20,6 +21,8 @@ from . import native_waveform
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".mov", ".flv", ".avi", ".m4v", ".webm", ".mp3", ".m4a", ".wav"}
 NATIVE_WAVEFORM_MAX_BYTES = 512 * 1024 * 1024
+MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_VISUAL_EVENTS = 10_000
 logger = logging.getLogger(__name__)
 SILENCE_START_RE = re.compile(r"silence_start:\s*([\d.]+)")
 SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)")
@@ -39,7 +42,30 @@ DECODE_ERROR_PATTERNS = (
 
 
 def run_command(args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        try:
+            result = subprocess.run(
+                args,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            exc.stdout = _read_bounded_output(stdout_file)
+            exc.stderr = _read_bounded_output(stderr_file)
+            raise
+        return subprocess.CompletedProcess(
+            args,
+            result.returncode,
+            _read_bounded_output(stdout_file),
+            _read_bounded_output(stderr_file),
+        )
+
+
+def _read_bounded_output(handle) -> str:  # type: ignore[no-untyped-def]
+    handle.flush()
+    handle.seek(0)
+    return handle.read(MAX_COMMAND_OUTPUT_BYTES).decode("utf-8", errors="replace")
 
 
 def quick_fingerprint(path: Path, sample_size: int = 4 * 1024 * 1024) -> dict[str, Any]:
@@ -817,6 +843,8 @@ def parse_scene_output(text: str) -> list[dict[str, float]]:
         time_value = round(float(match.group(1)), 3)
         if time_value in seen:
             continue
+        if len(scenes) >= MAX_VISUAL_EVENTS:
+            raise RuntimeError(f"visual event limit exceeded ({MAX_VISUAL_EVENTS})")
         seen.add(time_value)
         scenes.append({"time": time_value, "reason": "scene_change"})
     return scenes

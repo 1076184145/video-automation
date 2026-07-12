@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +21,8 @@ TERMINAL_STATUSES = {"needs_review", "done", "failed"}
 READY_STATUSES = {"needs_review", "done"}
 
 WINDOWS_ABSOLUTE_IN_QUOTES_RE = re.compile(r"""["']([A-Za-z]:[\\/][^"']+)["']""")
+MAX_PERSISTED_ERROR_BYTES = 16 * 1024
+ERROR_TRUNCATION_MARKER = "\n...[error truncated]"
 
 
 def utc_stamp() -> str:
@@ -122,9 +125,19 @@ class Job:
 
     def fail(self, error: str) -> None:
         self.status = "failed"
-        self.error = error
-        self.error_advice = advise_error(error)
+        bounded_error = _bounded_error(error)
+        self.error = bounded_error
+        self.error_advice = advise_error(bounded_error)
         self.save()
+
+
+def _bounded_error(error: str) -> str:
+    encoded = str(error).encode("utf-8", errors="replace")
+    if len(encoded) <= MAX_PERSISTED_ERROR_BYTES:
+        return encoded.decode("utf-8", errors="replace")
+    marker = ERROR_TRUNCATION_MARKER.encode("utf-8")
+    prefix = encoded[: MAX_PERSISTED_ERROR_BYTES - len(marker)].decode("utf-8", errors="ignore")
+    return prefix + ERROR_TRUNCATION_MARKER
 
 
 def configure_job_logger(job: Job) -> logging.Logger:
@@ -229,7 +242,7 @@ def create_job(
         existing = find_existing_job(settings, resolved)
         if existing:
             return existing
-    job_dir = settings.jobs_dir / f"{utc_stamp()}-{safe_stem(resolved)}"
+    job_dir = settings.jobs_dir / f"{utc_stamp()}-{safe_stem(resolved)}-{uuid.uuid4().hex}"
     job = Job(
         source_path=resolved,
         job_dir=job_dir,

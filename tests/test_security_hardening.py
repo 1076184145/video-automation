@@ -53,6 +53,86 @@ class SecurityHardeningTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     covers._validate_remote_image_url(url)
 
+    def test_remote_cover_image_connects_to_the_validated_address(self) -> None:
+        resolver_calls = []
+        connection_calls = []
+
+        def resolve(host, port, *, type):
+            resolver_calls.append((host, port, type))
+            return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+        class Response:
+            status = 200
+            headers = {"Content-Length": "4"}
+
+            def __init__(self):
+                self._data = b"data"
+
+            def read(self, _size):
+                data, self._data = self._data, b""
+                return data
+
+        class Connection:
+            def request(self, method, target, *, headers):
+                connection_calls.append((method, target, headers))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        def connection_factory(parsed, address, timeout):
+            connection_calls.append((parsed.hostname, address, timeout))
+            return Connection()
+
+        data = covers._fetch_remote_image(
+            "https://example.test/image.png?size=cover",
+            resolve=resolve,
+            connection_factory=connection_factory,
+        )
+
+        self.assertEqual(data, b"data")
+        self.assertEqual(len(resolver_calls), 1)
+        self.assertEqual(connection_calls[0][1], "93.184.216.34")
+        self.assertEqual(connection_calls[1][1], "/image.png?size=cover")
+
+    def test_remote_cover_image_enforces_total_deadline(self) -> None:
+        class Response:
+            status = 200
+            headers = {}
+
+            def read(self, _size):
+                return b"x"
+
+        class Connection:
+            sock = None
+
+            def request(self, _method, _target, *, headers):
+                return headers
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        ticks = iter([0.0, 0.0, 61.0])
+        with self.assertRaisesRegex(RuntimeError, "deadline"):
+            covers._fetch_remote_image(
+                "https://example.test/image.png",
+                resolve=lambda *_args, **_kwargs: [
+                    (2, 1, 6, "", ("93.184.216.34", 443)),
+                ],
+                connection_factory=lambda *_args: Connection(),
+                clock=lambda: next(ticks),
+            )
+
+    def test_cover_image_pixel_budget_rejects_oversized_dimensions(self) -> None:
+        covers._validate_cover_image_dimensions(4096, 4096)
+        with self.assertRaisesRegex(RuntimeError, "pixel limit"):
+            covers._validate_cover_image_dimensions(10_000, 10_000)
+
     def test_translation_workload_has_global_limits(self) -> None:
         with self.assertRaises(RuntimeError):
             _validate_translation_workload([{"text": "x"} for _ in range(1201)])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Any
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
 from .plans import PLATFORM_PRESETS
+
+
+MAX_PLATFORM_SEGMENTS = 1000
 
 
 def generate_platform_segments(
@@ -87,7 +91,7 @@ def _max_seconds(value: Any, duration: float) -> float:
         seconds = float(value)
     except (TypeError, ValueError):
         return duration
-    return seconds if seconds > 0 else duration
+    return seconds if math.isfinite(seconds) and seconds > 0 else duration
 
 
 def _clip_boundaries(job_dir: Path, duration: float) -> list[float]:
@@ -110,11 +114,17 @@ def _clip_boundaries(job_dir: Path, duration: float) -> list[float]:
 
 
 def _segment_ranges(duration: float, max_seconds: float, boundaries: list[float]) -> list[tuple[float, float]]:
+    if not math.isfinite(duration) or not math.isfinite(max_seconds):
+        raise RuntimeError("segment duration and limit must be finite")
+    if duration <= 0 or max_seconds <= 0:
+        raise RuntimeError("segment duration and limit must be positive")
     if duration <= max_seconds + 0.5:
         return [(0.0, duration)]
     ranges = []
     start = 0.0
     while start < duration - 0.5:
+        if len(ranges) >= MAX_PLATFORM_SEGMENTS:
+            raise RuntimeError("segment plan would create too many segments")
         target = min(duration, start + max_seconds)
         if target >= duration - 0.5:
             end = duration
@@ -144,9 +154,12 @@ def _probe_duration(settings: Settings, source: Path) -> float:
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {result.stderr.strip()}")
     try:
-        return float(result.stdout.strip())
+        duration = float(result.stdout.strip())
     except ValueError as exc:
         raise RuntimeError("ffprobe returned an invalid duration") from exc
+    if not math.isfinite(duration):
+        raise RuntimeError("ffprobe returned an invalid duration")
+    return duration
 
 
 def _copy_segment(settings: Settings, source: Path, output: Path, start: float, duration: float) -> None:

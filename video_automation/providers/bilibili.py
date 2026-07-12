@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from ..credentials import CredentialStore
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    if scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+        raise ValueError("Bilibili URL must be an HTTP(S) URL without embedded credentials")
+    return scheme, hostname, parsed.port or (443 if scheme == "https" else 80)
 
 
 class BilibiliHttpTransport:
@@ -21,6 +37,7 @@ class BilibiliHttpTransport:
         endpoints: dict[str, str],
         *,
         request=None,
+        resolve=None,
         timeout: float = 30.0,
     ):
         self.base_url = str(base_url or "").rstrip("/") + "/"
@@ -28,7 +45,10 @@ class BilibiliHttpTransport:
         missing = sorted(self.REQUIRED_ENDPOINTS - self.endpoints.keys())
         if not self.base_url.strip("/") or missing:
             raise ValueError(f"Bilibili transport configuration is incomplete: {', '.join(missing)}")
+        self.base_origin = _origin(self.base_url)
         self.request = request or self._request_json
+        self.resolve = resolve or socket.getaddrinfo
+        self.opener = build_opener(_NoRedirectHandler)
         self.timeout = max(1.0, float(timeout))
 
     def validate(self, token: str, client_id: str) -> dict[str, Any]:
@@ -62,15 +82,13 @@ class BilibiliHttpTransport:
         if not raw_upload_url:
             raise RuntimeError("Bilibili upload URL is missing")
         upload_url = urljoin(self.base_url, raw_upload_url)
-        base_origin = urlsplit(self.base_url)
-        upload_origin = urlsplit(upload_url)
-        same_origin = (
-            base_origin.scheme.lower(),
-            base_origin.netloc.lower(),
-        ) == (
-            upload_origin.scheme.lower(),
-            upload_origin.netloc.lower(),
-        )
+        try:
+            upload_origin = _origin(upload_url)
+        except ValueError as exc:
+            raise RuntimeError("Bilibili upload URL must be HTTP(S)") from exc
+        same_origin = self.base_origin == upload_origin
+        if not same_origin:
+            self._validate_public_upload_url(upload_url)
         headers = self._headers(token, include_authorization=same_origin)
         headers["Content-Type"] = "application/octet-stream"
         headers["Content-Range"] = f"bytes {offset}-{offset + len(chunk) - 1}/{total_bytes}"
@@ -103,8 +121,32 @@ class BilibiliHttpTransport:
         self, method: str, path: str, token: str, payload: dict[str, Any] | None
     ) -> dict[str, Any]:
         url = path if path.startswith(("http://", "https://")) else urljoin(self.base_url, path.lstrip("/"))
+        try:
+            endpoint_origin = _origin(url)
+        except ValueError as exc:
+            raise RuntimeError("Bilibili endpoint must be HTTP(S)") from exc
+        if endpoint_origin != self.base_origin:
+            raise RuntimeError("Bilibili control endpoint must remain on the configured origin")
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         return self.request(method, url, self._headers(token), body)
+
+    def _validate_public_upload_url(self, url: str) -> None:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise RuntimeError("cross-origin Bilibili upload URL must use HTTPS")
+        try:
+            addresses = self.resolve(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise RuntimeError("Bilibili upload URL could not be resolved") from exc
+        if not addresses:
+            raise RuntimeError("Bilibili upload URL could not be resolved")
+        for *_, sockaddr in addresses:
+            try:
+                address = ipaddress.ip_address(sockaddr[0])
+            except ValueError as exc:
+                raise RuntimeError("Bilibili upload URL returned an invalid address") from exc
+            if not address.is_global:
+                raise RuntimeError("cross-origin Bilibili upload URL must resolve to a public address")
 
     @staticmethod
     def _headers(token: str, *, include_authorization: bool = True) -> dict[str, str]:
@@ -121,7 +163,7 @@ class BilibiliHttpTransport:
     ) -> dict[str, Any]:
         request = Request(url, data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=self.timeout) as response:
                 raw = response.read()
         except HTTPError as exc:
             raise RuntimeError(f"Bilibili API returned HTTP {exc.code}") from exc

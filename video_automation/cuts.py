@@ -398,11 +398,27 @@ def _summarize_segments(transcript_payload: dict[str, Any]) -> list[dict[str, An
         return []
     summarized = []
     for segment in segments[:200]:
+        if not isinstance(segment, dict):
+            continue
+        words = segment.get("words") if isinstance(segment.get("words"), list) else []
         summarized.append({
             "start": segment.get("start"),
             "end": segment.get("end"),
-            "text": str(segment.get("text", "")).strip(),
-            "words": segment.get("words") if isinstance(segment.get("words"), list) else [],
+            "text": _truncate_text(str(segment.get("text", "")).strip(), 4096),
+            "words": _summarize_words(words),
+        })
+    return summarized
+
+
+def _summarize_words(words: list[Any]) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for word in words[:200]:
+        if not isinstance(word, dict):
+            continue
+        summarized.append({
+            "start": word.get("start"),
+            "end": word.get("end"),
+            "word": _truncate_text(str(word.get("word", "")).strip(), 128),
         })
     return summarized
 
@@ -602,7 +618,9 @@ def _segments_for_clip(clip: dict[str, Any], transcript_segments: list[dict[str,
 def _truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "..."
+    if limit <= 3:
+        return "." * max(0, limit)
+    return text[: limit - 3].rstrip() + "..."
 
 
 def _render_markdown(payload: dict[str, Any]) -> str:
