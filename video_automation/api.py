@@ -199,6 +199,11 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
     queue_service.start(workers=max(1, settings.api_parallel_jobs))
 
     class Handler(BaseHTTPRequestHandler):
+        def end_headers(self) -> None:
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
+            super().end_headers()
+
         def do_OPTIONS(self) -> None:  # noqa: N802
             if not self._require_allowed_origin():
                 return

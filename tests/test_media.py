@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 import wave
@@ -20,6 +21,21 @@ from video_automation.media import (
 
 
 class MediaParserTests(unittest.TestCase):
+    def test_run_command_bounds_captured_output_before_returning(self) -> None:
+        with patch.object(media, "MAX_COMMAND_OUTPUT_BYTES", 1024):
+            result = media.run_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.write('o' * 2048); sys.stderr.write('e' * 2048)",
+                ],
+                timeout=5,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), 1024)
+        self.assertLessEqual(len(result.stderr.encode("utf-8")), 1024)
+
     def test_parse_silence_output_pairs_start_and_end(self) -> None:
         text = """
         [silencedetect @ 000] silence_start: 1.234
@@ -54,6 +70,12 @@ class MediaParserTests(unittest.TestCase):
                 {"time": 18.9, "reason": "scene_change"},
             ],
         )
+
+    def test_parse_scene_output_rejects_excessive_event_count(self) -> None:
+        text = "\n".join(f"showinfo pts_time:{index}.0" for index in range(4))
+        with patch.object(media, "MAX_VISUAL_EVENTS", 3):
+            with self.assertRaisesRegex(RuntimeError, "visual event limit exceeded"):
+                parse_scene_output(text)
 
 
 class AudioExtractionTests(unittest.TestCase):

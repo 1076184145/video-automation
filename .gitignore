@@ -3,6 +3,15 @@
 !.env.example
 *.local
 
+# Local credentials and private key material
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+.secrets/
+
 __pycache__/
 *.py[cod]
 *$py.class

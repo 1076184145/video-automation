@@ -10,6 +10,7 @@ from typing import Any, Callable
 from video_automation.transcribe_worker import (
     PersistentTranscriptionWorker,
     TranscriptionTaskError,
+    WorkerInfrastructureError,
 )
 from video_automation.transcribe_worker_runner import process_request
 
@@ -60,6 +61,26 @@ def _write_response(request: dict[str, Any], payload: dict[str, Any]) -> None:
 
 
 class PersistentTranscriptionWorkerTests(unittest.TestCase):
+    def test_restart_attempts_share_one_timeout_budget(self) -> None:
+        processes: list[_FakeProcess] = []
+
+        def factory(*_args: object, **_kwargs: object) -> _FakeProcess:
+            process = _FakeProcess(lambda _process, _request: None)
+            processes.append(process)
+            return process
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = PersistentTranscriptionWorker(process_factory=factory, poll_interval=0.01)
+            with self.assertRaisesRegex(WorkerInfrastructureError, "timed out"):
+                worker.run(
+                    command=["python"],
+                    signature=("model-a",),
+                    request={"audio_path": "audio.wav", "job_dir": temp_dir},
+                    timeout_seconds=0.05,
+                )
+
+        self.assertEqual(len(processes), 1)
+
     def test_reuses_one_process_for_matching_configuration(self) -> None:
         processes: list[_FakeProcess] = []
 

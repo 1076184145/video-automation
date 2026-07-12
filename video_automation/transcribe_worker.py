@@ -42,14 +42,18 @@ class PersistentTranscriptionWorker:
         env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
+            deadline = time.monotonic() + max(0.01, float(timeout_seconds))
             last_error: WorkerInfrastructureError | None = None
             for _attempt in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
                     return self._run_once(
                         command=command,
                         signature=signature,
                         request=request,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=remaining,
                         cwd=cwd,
                         env=env,
                     )

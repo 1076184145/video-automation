@@ -93,7 +93,9 @@ def _start_server(settings: Settings) -> tuple[ThreadingHTTPServer | None, bool]
         server = create_server(settings)
     except OSError as exc:
         if exc.errno in {errno.EADDRINUSE, 10048}:
-            return None, False
+            raise RuntimeError(
+                f"API port {settings.api_port} is already in use; refusing to open an unverified local service"
+            ) from exc
         raise
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
     thread.start()

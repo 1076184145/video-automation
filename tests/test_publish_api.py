@@ -14,7 +14,12 @@ class PublishApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
-        self.settings = SimpleNamespace(root=root, jobs_dir=root / "processing" / "jobs")
+        self.settings = SimpleNamespace(
+            root=root,
+            jobs_dir=root / "processing" / "jobs",
+            publish_enabled=True,
+            publish_providers=("bilibili",),
+        )
         self.job_dir = self.settings.jobs_dir / "job-one"
         self.job_dir.mkdir(parents=True)
         (self.job_dir / "final.mp4").write_bytes(b"video-bytes")
@@ -72,6 +77,54 @@ class PublishApiTests(unittest.TestCase):
         self.assertEqual(targets["items"][0]["id"], "bilibili")
         self.assertTrue(targets["items"][0]["manual_fallback"])
         self.assertNotIn("access_token", str(targets))
+
+    def test_disabled_publish_module_blocks_all_external_attempt_actions(self) -> None:
+        self.settings.publish_enabled = False
+        status, created = dispatch_library_request(
+            self.settings,
+            "POST",
+            "/api/v1/publish-attempts",
+            {"job_id": "job-one", "provider": "bilibili"},
+        )
+        self.assertEqual(status, 201)
+
+        for action in ("start", "retry", "sync"):
+            with self.subTest(action=action):
+                status, blocked = dispatch_library_request(
+                    self.settings,
+                    "POST",
+                    f"/api/v1/publish-attempts/{created['id']}/{action}",
+                    {},
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(blocked["error"]["code"], "publish_disabled")
+
+        status, unchanged = dispatch_library_request(
+            self.settings, "GET", f"/api/v1/publish-attempts/{created['id']}"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(unchanged["status"], "draft")
+
+    def test_publish_provider_allowlist_blocks_external_attempt_actions(self) -> None:
+        self.settings.publish_providers = ("other-provider",)
+        status, created = dispatch_library_request(
+            self.settings,
+            "POST",
+            "/api/v1/publish-attempts",
+            {"job_id": "job-one", "provider": "bilibili"},
+        )
+        self.assertEqual(status, 201)
+
+        status, blocked = dispatch_library_request(
+            self.settings,
+            "POST",
+            f"/api/v1/publish-attempts/{created['id']}/start",
+            {},
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(blocked["error"]["code"], "publish_provider_not_allowed")
+        self.assertEqual(blocked["error"]["details"]["provider"], "bilibili")
 
     def test_approved_app_can_enable_configured_bilibili_or_sandbox_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

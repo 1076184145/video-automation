@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import re
+import queue
 import subprocess
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
 
 ProgressCallback = Callable[[float], None]
 FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+MAX_CAPTURED_STDERR_CHARS = 256 * 1024
+STDERR_QUEUE_LINES = 128
 
 
 @dataclass(frozen=True)
@@ -23,7 +28,7 @@ def run_ffmpeg_with_progress(
     *,
     duration_seconds: float,
     progress_callback: ProgressCallback | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> CommandResult:
     started_at = time.monotonic()
     process = subprocess.Popen(
@@ -34,15 +39,53 @@ def run_ffmpeg_with_progress(
         encoding="utf-8",
         errors="replace",
     )
-    stderr_parts: list[str] = []
+    stderr_parts: deque[str] = deque()
+    stderr_chars = 0
+    lines: queue.Queue[str | object] = queue.Queue(maxsize=STDERR_QUEUE_LINES)
+    sentinel = object()
+    stop_reader = threading.Event()
+
+    def enqueue(value: str | object) -> bool:
+        while not stop_reader.is_set():
+            try:
+                lines.put(value, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        try:
+            for line in process.stderr:
+                if not enqueue(line):
+                    return
+        finally:
+            enqueue(sentinel)
+
+    reader = threading.Thread(target=read_stderr, daemon=True)
+    reader.start()
     last_percent = -1
     try:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_parts.append(line)
-            if timeout is not None and time.monotonic() - started_at > timeout:
-                process.kill()
+        while True:
+            remaining = None if timeout is None else timeout - (time.monotonic() - started_at)
+            if remaining is not None and remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
+            wait_seconds = 0.1 if remaining is None else max(0.001, min(0.1, remaining))
+            try:
+                item = lines.get(timeout=wait_seconds)
+            except queue.Empty:
+                if process.poll() is not None and not reader.is_alive():
+                    break
+                continue
+            if item is sentinel:
+                break
+            line = str(item)
+            stderr_parts.append(line)
+            stderr_chars += len(line)
+            while stderr_parts and stderr_chars > MAX_CAPTURED_STDERR_CHARS:
+                removed = stderr_parts.popleft()
+                stderr_chars -= len(removed)
             percent = progress_percent_from_line(line, duration_seconds)
             if percent is None or progress_callback is None:
                 continue
@@ -51,16 +94,25 @@ def run_ffmpeg_with_progress(
                 continue
             last_percent = integer_percent
             progress_callback(round(percent, 2))
-        _, stderr_tail = process.communicate(timeout=5)
-        if stderr_tail:
-            stderr_parts.append(stderr_tail)
+        process.wait(timeout=5)
     except Exception:
+        stop_reader.set()
         process.kill()
-        process.communicate()
+        process.wait()
+        reader.join(timeout=1)
+        if process.stderr is not None:
+            process.stderr.close()
         raise
+    stop_reader.set()
+    reader.join(timeout=1)
+    if process.stderr is not None:
+        process.stderr.close()
     if progress_callback is not None and process.returncode == 0:
         progress_callback(100.0)
-    return CommandResult(process.returncode or 0, "", "".join(stderr_parts))
+    stderr = "".join(stderr_parts)
+    if len(stderr) > MAX_CAPTURED_STDERR_CHARS:
+        stderr = stderr[-MAX_CAPTURED_STDERR_CHARS:]
+    return CommandResult(process.returncode or 0, "", stderr)
 
 
 def progress_percent_from_line(line: str, duration_seconds: float) -> float | None:

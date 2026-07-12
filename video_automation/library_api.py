@@ -148,6 +148,35 @@ def structured_error(
     return {"error": error}
 
 
+def _publish_connector_policy_error(
+    settings: Any, provider: str
+) -> dict[str, Any] | None:
+    if not bool(getattr(settings, "publish_enabled", False)):
+        return structured_error(
+            "publish_disabled",
+            "Publishing connectors are disabled",
+            action="open_settings",
+        )
+
+    configured = getattr(settings, "publish_providers", ())
+    if isinstance(configured, str):
+        configured = configured.replace("\n", ",").replace("，", ",").split(",")
+    allowed = {
+        str(item).strip().casefold()
+        for item in configured
+        if str(item).strip()
+    }
+    provider_id = str(provider or "").strip().casefold()
+    if provider_id not in allowed:
+        return structured_error(
+            "publish_provider_not_allowed",
+            "Publish provider is not enabled",
+            action="open_settings",
+            details={"provider": str(provider or "").strip()},
+        )
+    return None
+
+
 def attach_job_context(settings: Any, job: Any, payload: dict[str, Any]) -> dict[str, Any]:
     repository = repository_for(settings)
     job_name = Path(job.job_dir).name
@@ -438,6 +467,10 @@ def _dispatch_publish_attempts(
         return 200, attempt
     if method != "POST":
         return 405, structured_error("method_not_allowed", "Method not allowed")
+    if action in {"start", "retry", "sync"}:
+        policy_error = _publish_connector_policy_error(settings, attempt["provider"])
+        if policy_error is not None:
+            return 403, policy_error
     service = publish_service_for(settings)
     if action in {"start", "retry"}:
         return 200, service.run_attempt(attempt_id)

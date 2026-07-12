@@ -6,6 +6,7 @@ from unittest.mock import patch
 from video_automation.cuts import (
     _attach_transcript_to_clips,
     _clips_from_invalid_segments,
+    _summarize_segments,
     _validate_editor_clips,
     build_invalid_segments,
 )
@@ -57,6 +58,18 @@ class CutPlanningTests(unittest.TestCase):
         }]
         enriched = _attach_transcript_to_clips(clips, segments)
         self.assertEqual(enriched[0]["transcript_text"], "inside")
+
+    def test_transcript_summary_bounds_text_and_word_payloads(self) -> None:
+        payload = _summarize_segments({"segments": [{
+            "start": 0,
+            "end": 1,
+            "text": "x" * 5000,
+            "words": [{"start": 0, "end": 1, "word": "y" * 200} for _ in range(300)],
+        }]})
+
+        self.assertLessEqual(len(payload[0]["text"]), 4096)
+        self.assertEqual(len(payload[0]["words"]), 200)
+        self.assertLessEqual(len(payload[0]["words"][0]["word"]), 128)
 
     def test_validate_editor_clips_clamps_and_sorts(self) -> None:
         clips = _validate_editor_clips(

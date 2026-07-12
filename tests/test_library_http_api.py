@@ -24,12 +24,25 @@ class LibraryHttpApiTests(unittest.TestCase):
                 api_parallel_jobs=1,
                 api_allowed_origins=(),
             )
+            web_root = root / "web"
+            web_root.mkdir()
+            (web_root / "index.html").write_text("<!doctype html><title>App</title>", encoding="utf-8")
             server = create_server(settings)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             host, port = server.server_address
             connection = http.client.HTTPConnection(host, port, timeout=5)
             try:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    response.getheader("Content-Security-Policy"),
+                    "frame-ancestors 'none'",
+                )
+                self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
+
                 connection.request("GET", "/api/v1/capabilities")
                 response = connection.getresponse()
                 capabilities = json.loads(response.read().decode("utf-8"))
