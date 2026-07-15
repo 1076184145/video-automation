@@ -207,6 +207,9 @@ export const API = {
   async deleteJob(name) {
     return requestJson(`/jobs/${encodeURIComponent(name)}`, { method: "DELETE" });
   },
+  async cancelJob(name) {
+    return postJson(`/jobs/${encodeURIComponent(name)}/cancel`, {});
+  },
   async getHealth(options) {
     return requestJson("/health", options);
   },

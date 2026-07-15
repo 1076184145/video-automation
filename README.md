@@ -84,6 +84,7 @@ Included in the local workflow:
 
 - Single and batch video import
 - Job progress, restart recovery, and a persistent task queue
+- Stage-aware progress, durable retries, and cooperative cancel/delete controls
 - Speech transcription with Whisper-compatible local backends
 - Silence, freeze, scene, and damaged-frame checks
 - Suggested cuts, transcript editing, and subtitle generation
@@ -130,6 +131,10 @@ Open **Health** and use **Auto-fix Dependencies**. Source users can run:
 **The first job is slow**
 
 Speech models may download and initialize on first use. Later jobs reuse local model files and can start faster.
+
+**A running job does not stop immediately after I click Cancel**
+
+Cancellation is cooperative: the job first changes to **Canceling** while the active transcription or render subprocess is terminated and its resources are released. If the app was interrupted, restart it and use the recovery or delete action shown for the stale job.
 
 **CUDA or GPU processing fails**
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 globalThis.localStorage = {
@@ -41,6 +42,13 @@ test("renderClips creates editable rows and applies feedback state", () => {
   assert.match(html, /data-clip-key="0\.000-6\.500"/);
   assert.match(html, /active accepted/);
   assert.match(html, /字幕 &lt;x&gt;/);
+});
+
+test("narrow clip editor wraps controls and avoids a sticky action overlay", () => {
+  const css = readFileSync(new URL("../web/css/style.css", import.meta.url), "utf8");
+  assert.match(css, /\.clip-toolbar\s*\{[^}]*flex-wrap:\s*wrap/s);
+  assert.match(css, /container:\s*clip-editor\s*\/\s*inline-size/);
+  assert.match(css, /@container\s+clip-editor\s*\(min-width:\s*760px\)/);
 });
 
 test("collectEditedClips returns backend-ready clips with subtitle overrides", () => {

@@ -10,7 +10,7 @@ import { bindTranscriptEditor } from "./transcript-editor.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { bindDownloadActions, bindJobActions, bindReviewActions } from "./job-actions.js";
-import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile } from "./job-detail-data.js";
+import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile, shouldApplyLiveJobEvent } from "./job-detail-data.js";
 import { renderJobDetailShell, updateJobDetailView } from "./job-detail-view.js";
 import { deriveLiveProgress, updateLiveStatus } from "./job-status.js";
 import { restoreNativeVideoControls } from "./preview-player.js";
@@ -26,7 +26,11 @@ export async function renderJobDetail(match, { signal } = {}) {
   let eventUnsubscribers = [];
   let renderedKey = "";
   let lastStatus = "";
+  let lastRuntimeStale = false;
+  let lastRuntimeActive = false;
+  let lastStateVersion = 0;
   let resizeTimer = null;
+  let reconciliationTimer = null;
   let timelineData = null;
   let timelineCurrentTime = 0;
   let timelineFrame = 0;
@@ -64,7 +68,7 @@ export async function renderJobDetail(match, { signal } = {}) {
   app.addEventListener("change", markEditing, true);
 
   function startEvents() {
-    if (document.visibilityState !== "visible" || isTerminal(lastStatus) || eventUnsubscribers.length) return;
+    if (document.visibilityState !== "visible" || (isTerminal(lastStatus) && !lastRuntimeActive) || eventUnsubscribers.length) return;
     eventUnsubscribers = [
       eventHub.subscribe("hello", (payload) => {
       const current = (payload.jobs || []).find((job) => isJobEventForName(job, name));
@@ -85,10 +89,16 @@ export async function renderJobDetail(match, { signal } = {}) {
   }
 
   function handleLiveJobEvent(job) {
+    const eventVersion = Number(job?.state_version || 0);
+    if (eventVersion > 0 && lastStateVersion > eventVersion) return;
+    lastStateVersion = Math.max(lastStateVersion, eventVersion);
+    if (!shouldApplyLiveJobEvent(lastRuntimeStale)) {
+      load();
+      return;
+    }
     lastStatus = job.status || lastStatus;
     if (isTerminal(lastStatus)) {
       load(true);
-      stopEvents();
       return;
     }
     deriveLiveProgress(job);
@@ -345,6 +355,9 @@ export async function renderJobDetail(match, { signal } = {}) {
       const job = await API.getJob(name, { signal });
       if (disposed) return null;
       lastStatus = job.status;
+      lastStateVersion = Math.max(lastStateVersion, Number(job.state_version || 0));
+      lastRuntimeStale = Boolean(job.runtime?.stale);
+      lastRuntimeActive = Boolean(job.runtime?.active);
       const files = fileMap(job);
       const jobState = await loadJobFile(name, files, "job.json");
       if (disposed) return null;
@@ -450,7 +463,7 @@ export async function renderJobDetail(match, { signal } = {}) {
         drawTimeline(canvas);
       }
 
-      if (isTerminal(job.status)) stopEvents();
+      if (isTerminal(job.status) && !lastRuntimeActive) stopEvents();
       else startEvents();
       return { job, payload };
     } catch (error) {
@@ -479,13 +492,17 @@ export async function renderJobDetail(match, { signal } = {}) {
   }
 
   await load();
-  if (!eventUnsubscribers.length && !isTerminal(lastStatus)) {
+  if (!eventUnsubscribers.length && (!isTerminal(lastStatus) || lastRuntimeActive)) {
     startEvents();
   }
+  reconciliationTimer = setInterval(() => {
+    if (document.visibilityState === "visible" && (!isTerminal(lastStatus) || lastRuntimeStale || lastRuntimeActive)) load();
+  }, 10000);
   return () => {
     disposed = true;
     stopEvents();
     clearTimeout(resizeTimer);
+    clearInterval(reconciliationTimer);
     if (timelineFrame) cancelAnimationFrame(timelineFrame);
     actionCleanups.forEach((cleanup) => cleanup());
     window.removeEventListener("resize", handleResize);

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -57,8 +59,51 @@ class QueueRepositoryTests(unittest.TestCase):
         self.assertEqual(restored["status"], "pending")
         self.assertIsNone(restored["worker_pid"])
 
+    def test_cancel_keeps_running_item_owned_until_worker_acknowledges(self) -> None:
+        item = self.repository.enqueue("job-running", {})
+        self.repository.claim_next(worker_pid=77)
+
+        canceled = self.repository.cancel(item["id"])
+
+        self.assertEqual(canceled["status"], "running")
+        self.assertTrue(canceled["cancel_requested"])
+        self.assertEqual(canceled["worker_pid"], 77)
+        self.assertIsNone(canceled["completed_at"])
+
 
 class QueueServiceTests(unittest.TestCase):
+    def test_running_cancel_is_two_phase_and_acknowledged_by_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = QueueRepository(Path(tmp) / "library.sqlite3")
+            item = repository.enqueue("job-two-phase", {})
+            started = threading.Event()
+
+            def execute(claimed):
+                started.set()
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    if repository.get(claimed["id"])["cancel_requested"]:
+                        raise QueueControlRequested("canceled")
+                    time.sleep(0.01)
+                self.fail("worker did not observe cancellation")
+
+            service = QueueService(repository, execute, heartbeat_interval=0.02)
+            thread = threading.Thread(target=service.run_once)
+            thread.start()
+            self.assertTrue(started.wait(1))
+
+            requested = repository.cancel(item["id"])
+            self.assertEqual(requested["status"], "running")
+            self.assertTrue(requested["cancel_requested"])
+            self.assertIsNotNone(requested["worker_pid"])
+
+            thread.join(timeout=3)
+            self.assertFalse(thread.is_alive())
+            acknowledged = repository.get(item["id"])
+            self.assertEqual(acknowledged["status"], "canceled")
+            self.assertIsNone(acknowledged["worker_pid"])
+            self.assertIsNotNone(acknowledged["completed_at"])
+
     def test_run_once_records_success_and_failure_without_losing_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repository = QueueRepository(Path(tmp) / "library.sqlite3")

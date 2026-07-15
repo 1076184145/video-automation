@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from collections.abc import Callable
@@ -15,6 +17,7 @@ from .config import Settings
 from .io_utils import read_json_file, valid_json_file, write_json_atomic, write_text_atomic
 from .profanity import apply_replacements, censor_text, censor_transcript_payload
 from .resources import GPU_EXECUTION_GATE, transcription_uses_gpu
+from .task_queue import QueueControlRequested
 from .transcribe_worker import (
     PersistentTranscriptionWorker,
     TranscriptionTaskError,
@@ -23,6 +26,7 @@ from .transcribe_worker import (
 
 
 _FUNASR_PERSISTENT_WORKER = PersistentTranscriptionWorker()
+MAX_TRANSCRIPTION_PROCESS_OUTPUT_BYTES = 256 * 1024
 
 
 def transcribe_audio(
@@ -33,40 +37,66 @@ def transcribe_audio(
     force: bool = False,
     resource_wait_callback: Callable[[], None] | None = None,
     resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> None:
     txt_path = job_dir / "transcript.txt"
     srt_path = job_dir / "transcript.srt"
     json_path = job_dir / "transcript.json"
     if txt_path.exists() and srt_path.exists() and valid_json_file(json_path) and not force:
         return
+    _write_transcription_settings_snapshot(settings, job_dir)
     with GPU_EXECUTION_GATE.slot(
         enabled=transcription_uses_gpu(settings),
         on_wait=resource_wait_callback,
         on_acquired=resource_acquired_callback,
+        control_callback=control_callback,
+        max_wait_seconds=_transcribe_timeout(settings, audio_path),
+        owner=f"transcription:{job_dir.name}",
     ):
-        _transcribe_audio_unlocked(settings, audio_path, job_dir, force=force)
+        _transcribe_audio_unlocked(
+            settings,
+            audio_path,
+            job_dir,
+            force=force,
+            control_callback=control_callback,
+        )
 
 
-def _transcribe_audio_unlocked(settings: Settings, audio_path: Path, job_dir: Path, *, force: bool = False) -> None:
+def _transcribe_audio_unlocked(
+    settings: Settings,
+    audio_path: Path,
+    job_dir: Path,
+    *,
+    force: bool = False,
+    control_callback: Callable[[], str | None] | None = None,
+) -> None:
     txt_path = job_dir / "transcript.txt"
     srt_path = job_dir / "transcript.srt"
     json_path = job_dir / "transcript.json"
     if txt_path.exists() and srt_path.exists() and valid_json_file(json_path) and not force:
         return
     if settings.whisper_backend in {"funasr-whisper", "funasr-faster-whisper"}:
-        _run_funasr_with_whisper_fallback(settings, audio_path, job_dir, txt_path, srt_path, json_path)
+        _run_funasr_with_whisper_fallback(
+            settings,
+            audio_path,
+            job_dir,
+            txt_path,
+            srt_path,
+            json_path,
+            control_callback=control_callback,
+        )
         return
     if settings.whisper_backend == "faster-whisper":
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_faster_whisper(settings, audio_path, txt_path, srt_path, json_path)
         else:
-            _run_faster_whisper_subprocess(settings, audio_path, job_dir)
+            _run_faster_whisper_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
         return
     if settings.whisper_backend == "funasr":
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_funasr(settings, audio_path, txt_path, srt_path, json_path)
         else:
-            _run_funasr_subprocess(settings, audio_path, job_dir)
+            _run_funasr_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
         return
     if settings.whisper_backend == "whisperx":
         raise RuntimeError("WHISPER_BACKEND=whisperx is reserved for a later phase; use faster-whisper for now")
@@ -123,14 +153,18 @@ def _run_funasr_with_whisper_fallback(
     txt_path: Path,
     srt_path: Path,
     json_path: Path,
+    *,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> None:
     primary_error = ""
     try:
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_funasr(settings, audio_path, txt_path, srt_path, json_path)
         else:
-            _run_funasr_subprocess(settings, audio_path, job_dir)
+            _run_funasr_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
         return
+    except QueueControlRequested:
+        raise
     except Exception as exc:
         primary_error = str(exc)
         _remove_partial_transcripts(job_dir)
@@ -139,9 +173,11 @@ def _run_funasr_with_whisper_fallback(
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_faster_whisper(settings, audio_path, txt_path, srt_path, json_path)
         else:
-            _run_faster_whisper_subprocess(settings, audio_path, job_dir)
+            _run_faster_whisper_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
         _annotate_funasr_fallback(json_path, primary_error)
         return
+    except QueueControlRequested:
+        raise
     except Exception as exc:
         fallback_error = str(exc)
         raise RuntimeError(
@@ -441,7 +477,13 @@ def _segment_words(segment: Any, settings: Settings) -> list[dict[str, Any]]:
     return words
 
 
-def _run_faster_whisper_subprocess(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+def _run_faster_whisper_subprocess(
+    settings: Settings,
+    audio_path: Path,
+    job_dir: Path,
+    *,
+    control_callback: Callable[[], str | None] | None = None,
+) -> None:
     python_executable = _project_python(settings)
     model_attempts = _model_attempts(settings)
     failures = []
@@ -461,27 +503,37 @@ def _run_faster_whisper_subprocess(settings: Settings, audio_path: Path, job_dir
         ]
         if settings.whisper_language:
             command.extend(["--language", settings.whisper_language])
-        env = os.environ.copy()
-        env["VIDEO_AUTOMATION_TRANSCRIBE_CHILD"] = "1"
-        result = subprocess.run(
+        env = _transcription_child_env(settings)
+        result = _run_transcription_process(
             command,
             cwd=str(settings.root),
             env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=_transcribe_timeout(settings, audio_path),
+            control_callback=control_callback,
         )
-        if result.returncode == 0:
+        if _transcript_outputs_complete(job_dir):
             return
-        detail = (result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}")[-1200:]
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or (
+                "transcription process exited without complete output files"
+                if result.returncode == 0
+                else f"exit code {result.returncode}"
+            )
+        )[-1200:]
         failures.append(f"{model}: {detail}")
         _remove_partial_transcripts(job_dir)
     raise RuntimeError("faster-whisper subprocess failed after model fallbacks: " + " | ".join(failures))
 
 
-def _run_funasr_subprocess(settings: Settings, audio_path: Path, job_dir: Path) -> None:
+def _run_funasr_subprocess(
+    settings: Settings,
+    audio_path: Path,
+    job_dir: Path,
+    *,
+    control_callback: Callable[[], str | None] | None = None,
+) -> None:
     deadline = time.monotonic() + _transcribe_timeout(settings, audio_path)
     if getattr(settings, "funasr_persistent_worker", True):
         try:
@@ -490,19 +542,27 @@ def _run_funasr_subprocess(settings: Settings, audio_path: Path, job_dir: Path) 
                 audio_path,
                 job_dir,
                 timeout_seconds=max(0.01, deadline - time.monotonic()),
+                control_callback=control_callback,
             )
             return
         except WorkerInfrastructureError as exc:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise WorkerInfrastructureError("FunASR transcription time budget exhausted") from exc
-            _run_funasr_one_shot_subprocess(settings, audio_path, job_dir, timeout_seconds=remaining)
+            _run_funasr_one_shot_subprocess(
+                settings,
+                audio_path,
+                job_dir,
+                timeout_seconds=remaining,
+                control_callback=control_callback,
+            )
             return
     _run_funasr_one_shot_subprocess(
         settings,
         audio_path,
         job_dir,
         timeout_seconds=max(0.01, deadline - time.monotonic()),
+        control_callback=control_callback,
     )
 
 
@@ -512,6 +572,7 @@ def _run_funasr_persistent(
     job_dir: Path,
     *,
     timeout_seconds: float | None = None,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> None:
     _run_funasr_worker_request(
         settings,
@@ -520,6 +581,7 @@ def _run_funasr_persistent(
             "job_dir": str(job_dir),
         },
         timeout_seconds=timeout_seconds if timeout_seconds is not None else _transcribe_timeout(settings, audio_path),
+        control_callback=control_callback,
     )
 
 
@@ -544,6 +606,7 @@ def _run_funasr_worker_request(
     *,
     request: dict[str, Any],
     timeout_seconds: float,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> None:
     python_executable = _project_python(settings)
     command = [
@@ -551,8 +614,7 @@ def _run_funasr_worker_request(
         "-m",
         "video_automation.transcribe_worker_runner",
     ]
-    env = os.environ.copy()
-    env["VIDEO_AUTOMATION_TRANSCRIBE_CHILD"] = "1"
+    env = _transcription_child_env(settings)
     try:
         _FUNASR_PERSISTENT_WORKER.run(
             command=command,
@@ -561,6 +623,7 @@ def _run_funasr_worker_request(
             timeout_seconds=timeout_seconds,
             cwd=settings.root,
             env=env,
+            control_callback=control_callback,
         )
     except TranscriptionTaskError:
         job_dir = request.get("job_dir")
@@ -586,12 +649,101 @@ def _funasr_worker_signature(settings: Settings) -> tuple[Any, ...]:
     )
 
 
+def _transcription_child_env(settings: Settings) -> dict[str, str]:
+    """Freeze task-scoped transcription settings for isolated child processes."""
+    env = os.environ.copy()
+    mappings: tuple[tuple[str, str, Callable[[Any], str]], ...] = (
+        ("WHISPER_BACKEND", "whisper_backend", str),
+        ("WHISPER_MODEL", "whisper_model", str),
+        ("WHISPER_LANGUAGE", "whisper_language", str),
+        ("WHISPER_INITIAL_PROMPT", "whisper_initial_prompt", str),
+        ("WHISPER_WORD_TIMESTAMPS", "whisper_word_timestamps", lambda value: "true" if value else "false"),
+        ("WHISPER_VAD_FILTER", "whisper_vad_filter", lambda value: "true" if value else "false"),
+        ("FASTER_WHISPER_DEVICE", "faster_whisper_device", str),
+        ("FASTER_WHISPER_COMPUTE_TYPE", "faster_whisper_compute_type", str),
+        ("FASTER_WHISPER_BATCH_SIZE", "faster_whisper_batch_size", str),
+        ("FUNASR_MODEL", "funasr_model", str),
+        ("FUNASR_VAD_MODEL", "funasr_vad_model", str),
+        ("FUNASR_PUNC_MODEL", "funasr_punc_model", str),
+        ("FUNASR_DEVICE", "funasr_device", str),
+        ("FUNASR_HOTWORDS", "funasr_hotwords", str),
+        ("FUNASR_BATCH_SIZE_S", "funasr_batch_size_s", str),
+        ("FUNASR_MAX_SEGMENT_MS", "funasr_max_segment_ms", str),
+        ("SUBTITLE_CENSOR_REPLACEMENT", "subtitle_censor_replacement", str),
+        ("PROFANITY_WORDS", "profanity_words", lambda value: ",".join(value)),
+        (
+            "SUBTITLE_REPLACEMENTS",
+            "subtitle_replacements",
+            lambda value: ",".join(f"{source}=>{target}" for source, target in value),
+        ),
+    )
+    for env_name, attribute, serialize in mappings:
+        if hasattr(settings, attribute):
+            env[env_name] = serialize(getattr(settings, attribute))
+    return env
+
+
+def _write_transcription_settings_snapshot(settings: Settings, job_dir: Path) -> dict[str, Any]:
+    """Persist the non-secret settings revision used by this transcription stage."""
+    field_names = (
+        "whisper_backend",
+        "whisper_model",
+        "whisper_model_fallbacks",
+        "whisper_language",
+        "whisper_initial_prompt",
+        "whisper_timeout_min_seconds",
+        "whisper_timeout_multiplier",
+        "whisper_word_timestamps",
+        "whisper_vad_filter",
+        "faster_whisper_device",
+        "faster_whisper_compute_type",
+        "faster_whisper_batch_size",
+        "funasr_model",
+        "funasr_vad_model",
+        "funasr_punc_model",
+        "funasr_device",
+        "funasr_hotwords",
+        "funasr_batch_size_s",
+        "funasr_max_segment_ms",
+        "transcribe_audio_filter",
+        "profanity_words",
+        "subtitle_replacements",
+        "subtitle_censor_replacement",
+    )
+    values = {
+        name: _json_safe_setting(getattr(settings, name))
+        for name in field_names
+        if hasattr(settings, name)
+    }
+    canonical = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = {
+        "schema_version": 1,
+        "revision": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "settings": values,
+    }
+    write_json_atomic(job_dir / "transcription_settings.json", payload)
+    return payload
+
+
+def _json_safe_setting(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe_setting(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_setting(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _run_funasr_one_shot_subprocess(
     settings: Settings,
     audio_path: Path,
     job_dir: Path,
     *,
     timeout_seconds: float | None = None,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> None:
     python_executable = _project_python(settings)
     command = [
@@ -607,21 +759,25 @@ def _run_funasr_one_shot_subprocess(
     ]
     if settings.whisper_language:
         command.extend(["--language", settings.whisper_language])
-    env = os.environ.copy()
-    env["VIDEO_AUTOMATION_TRANSCRIBE_CHILD"] = "1"
-    result = subprocess.run(
+    env = _transcription_child_env(settings)
+    result = _run_transcription_process(
         command,
         cwd=str(settings.root),
         env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         timeout=timeout_seconds if timeout_seconds is not None else _transcribe_timeout(settings, audio_path),
+        control_callback=control_callback,
     )
-    if result.returncode == 0:
+    if _transcript_outputs_complete(job_dir):
         return
-    detail = (result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}")[-1200:]
+    detail = (
+        result.stderr.strip()
+        or result.stdout.strip()
+        or (
+            "transcription process exited without complete output files"
+            if result.returncode == 0
+            else f"exit code {result.returncode}"
+        )
+    )[-1200:]
     _remove_partial_transcripts(job_dir)
     raise RuntimeError(f"funasr subprocess failed: {detail}")
 
@@ -636,6 +792,43 @@ def _model_attempts(settings: Settings) -> list[str]:
     return unique
 
 
+def _run_transcription_process(
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    timeout: float,
+    control_callback: Callable[[], str | None] | None,
+) -> subprocess.CompletedProcess[str]:
+    deadline = time.monotonic() + max(0.01, float(timeout))
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout_file, stderr=stderr_file)
+        try:
+            while process.poll() is None:
+                action = control_callback() if control_callback else None
+                if action in {"paused", "canceled"}:
+                    raise QueueControlRequested(action)
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.1)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode or 0,
+            _read_transcription_output(stdout_file),
+            _read_transcription_output(stderr_file),
+        )
+
+
+def _read_transcription_output(handle: Any) -> str:
+    handle.flush()
+    handle.seek(0)
+    return handle.read(MAX_TRANSCRIPTION_PROCESS_OUTPUT_BYTES).decode("utf-8", errors="replace")
+
+
 def _remove_partial_transcripts(job_dir: Path) -> None:
     for name in ("transcript.txt", "transcript.srt", "transcript.json"):
         try:
@@ -644,6 +837,18 @@ def _remove_partial_transcripts(job_dir: Path) -> None:
             pass
         except OSError:
             pass
+
+
+def _transcript_outputs_complete(job_dir: Path) -> bool:
+    txt_path = job_dir / "transcript.txt"
+    srt_path = job_dir / "transcript.srt"
+    payload = read_json_file(job_dir / "transcript.json")
+    return (
+        txt_path.is_file()
+        and srt_path.is_file()
+        and isinstance(payload, dict)
+        and isinstance(payload.get("segments"), list)
+    )
 
 
 def _project_python(settings: Settings) -> Path:

@@ -76,7 +76,13 @@ test("renderStageTimings shows the slowest completed stages first", () => {
   const html = renderStageTimings({
     stages: [
       { stage: "probe", status: "complete", duration_seconds: 1.2 },
-      { stage: "transcribe", status: "complete", duration_seconds: 92.4 },
+      {
+        stage: "transcribe",
+        status: "complete",
+        duration_seconds: 92.4,
+        resource_wait_seconds: 12,
+        execution_seconds: 80.4,
+      },
       { stage: "detect_freeze", status: "skipped", reason: "disabled" },
       { stage: "render_final", status: "complete", duration_seconds: 31.1 },
     ],
@@ -86,6 +92,8 @@ test("renderStageTimings shows the slowest completed stages first", () => {
   assert.match(html, /Render Final/);
   assert.doesNotMatch(html, /Detect Freeze/);
   assert.ok(html.indexOf("Transcribe") < html.indexOf("Render Final"));
+  assert.match(html, /Resource wait 0:12/);
+  assert.match(html, /Execution 1:20/);
 });
 
 test("renderStageTimings escapes unknown stage labels", () => {

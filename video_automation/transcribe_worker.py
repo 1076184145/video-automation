@@ -9,6 +9,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from .task_queue import QueueControlRequested
+
 
 class WorkerInfrastructureError(RuntimeError):
     pass
@@ -40,6 +42,7 @@ class PersistentTranscriptionWorker:
         timeout_seconds: float,
         cwd: Path | str | None = None,
         env: dict[str, str] | None = None,
+        control_callback: Callable[[], str | None] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             deadline = time.monotonic() + max(0.01, float(timeout_seconds))
@@ -56,7 +59,11 @@ class PersistentTranscriptionWorker:
                         timeout_seconds=remaining,
                         cwd=cwd,
                         env=env,
+                        control_callback=control_callback,
                     )
+                except QueueControlRequested:
+                    self._stop_unlocked()
+                    raise
                 except WorkerInfrastructureError as exc:
                     last_error = exc
                     self._stop_unlocked()
@@ -76,6 +83,7 @@ class PersistentTranscriptionWorker:
         timeout_seconds: float,
         cwd: Path | str | None,
         env: dict[str, str] | None,
+        control_callback: Callable[[], str | None] | None,
     ) -> dict[str, Any]:
         process = self._ensure_process(command, signature, cwd=cwd, env=env)
         job_dir = Path(str(request["job_dir"]))
@@ -97,6 +105,9 @@ class PersistentTranscriptionWorker:
         deadline = time.monotonic() + max(0.01, float(timeout_seconds))
         try:
             while time.monotonic() < deadline:
+                action = control_callback() if control_callback else None
+                if action in {"paused", "canceled"}:
+                    raise QueueControlRequested(action)
                 if response_path.exists():
                     try:
                         response = json.loads(response_path.read_text(encoding="utf-8"))

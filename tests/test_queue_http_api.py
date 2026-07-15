@@ -10,7 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from video_automation.api import create_server
+from video_automation.api import _execute_queue_item, create_server
+from video_automation.library_api import queue_repository_for
+from video_automation.task_queue import QueueService
 
 
 class QueueHttpApiTests(unittest.TestCase):
@@ -33,7 +35,7 @@ class QueueHttpApiTests(unittest.TestCase):
                 job.set_status("done")
 
             with patch("video_automation.api.process_job", side_effect=finish_job):
-                server = create_server(settings)
+                server = create_server(settings, start_queue_worker=False)
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 host, port = server.server_address
@@ -51,6 +53,12 @@ class QueueHttpApiTests(unittest.TestCase):
                     self.assertEqual(response.status, 202)
                     self.assertTrue(submitted["queue"]["id"].startswith("queue_"))
                     self.assertEqual(submitted["queue"]["priority"], 7)
+
+                    service = QueueService(
+                        queue_repository_for(settings),
+                        lambda item: _execute_queue_item(settings, item),
+                    )
+                    self.assertTrue(service.run_once())
 
                     deadline = time.time() + 3
                     queue_payload = {}
