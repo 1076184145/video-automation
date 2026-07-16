@@ -10,8 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from video_automation import render, transcribe
+from video_automation.task_queue import QueueControlRequested
 from video_automation.resources import (
     ExecutionGate,
+    ResourceWaitTimeout,
     job_gpu_status_callbacks,
     rendering_uses_gpu,
     transcription_uses_gpu,
@@ -166,6 +168,49 @@ class ExecutionGateTests(unittest.TestCase):
         releaser.join(timeout=2)
         self.assertEqual(callbacks, ["waiting", "acquired", "running"])
 
+    def test_waiting_slot_honors_queue_cancellation(self) -> None:
+        gate = ExecutionGate(1)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_slot() -> None:
+            with gate.slot(owner="holder"):
+                entered.set()
+                release.wait(timeout=2)
+
+        holder = threading.Thread(target=hold_slot)
+        holder.start()
+        self.assertTrue(entered.wait(timeout=2))
+        started = time.monotonic()
+        with self.assertRaisesRegex(QueueControlRequested, "canceled"):
+            with gate.slot(control_callback=lambda: "canceled", owner="waiter"):
+                self.fail("canceled waiter must not acquire the slot")
+        self.assertLess(time.monotonic() - started, 0.5)
+        release.set()
+        holder.join(timeout=2)
+
+    def test_waiting_slot_has_bounded_timeout_and_diagnostics(self) -> None:
+        gate = ExecutionGate(1)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_slot() -> None:
+            with gate.slot(owner="holder"):
+                entered.set()
+                release.wait(timeout=2)
+
+        holder = threading.Thread(target=hold_slot)
+        holder.start()
+        self.assertTrue(entered.wait(timeout=2))
+        snapshot = gate.snapshot()
+        self.assertEqual(snapshot["in_use"], 1)
+        self.assertEqual(snapshot["holders"][0]["owner"], "holder")
+        with self.assertRaises(ResourceWaitTimeout):
+            with gate.slot(max_wait_seconds=0.05, poll_interval_seconds=0.01, owner="waiter"):
+                self.fail("timed out waiter must not acquire the slot")
+        release.set()
+        holder.join(timeout=2)
+
 
 class CoreResourceIntegrationTests(unittest.TestCase):
     def test_cuda_transcription_enters_gpu_gate_and_forwards_callbacks(self) -> None:
@@ -196,6 +241,7 @@ class CoreResourceIntegrationTests(unittest.TestCase):
         self.assertEqual(len(gate.calls), 1)
         self.assertIs(gate.calls[0]["on_wait"], waiting)
         self.assertIs(gate.calls[0]["on_acquired"], acquired)
+        self.assertIs(gate.calls[0]["control_callback"], None)
         self.assertTrue(gate.calls[0]["enabled"])
 
     def test_cpu_transcription_uses_disabled_gpu_slot(self) -> None:
@@ -235,11 +281,14 @@ class CoreResourceIntegrationTests(unittest.TestCase):
                 patch.object(render, "generate_render_preview", return_value=preview),
                 patch.object(render, "run_ffmpeg_with_progress", return_value=result),
                 patch.object(render, "_run_ffmpeg_with_resource_gate", return_value=result, create=True) as gated_runner,
-                patch.object(render, "_refresh_web_preview"),
+                patch.object(render, "_refresh_web_preview") as refresh_web_preview,
             ):
-                render.render_review_video(settings, root, root / "source.mp4", force=True)  # type: ignore[arg-type]
+                render.render_review_video(
+                    settings, root, root / "source.mp4", force=True, refresh_web_preview=False
+                )  # type: ignore[arg-type]
 
         gated_runner.assert_called_once()
+        refresh_web_preview.assert_not_called()
 
 
 class JobResourceStatusTests(unittest.TestCase):

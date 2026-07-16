@@ -9,7 +9,12 @@ import {
 
 export function renderStage(stage, job, files) {
   const complete = stageComplete(stage, job, files);
-  const current = !complete && ((job.current_stage || stageForStatus(job.status)) === stage);
+  const activeStages = Array.isArray(job.active_stages)
+    ? job.active_stages.map((item) => String(item?.stage || ""))
+    : [];
+  const current = !complete && (
+    activeStages.includes(stage) || (job.current_stage || stageForStatus(job.status)) === stage
+  );
   const failed = job.status === "failed";
   return `<div class="stage ${failed ? "failed" : current ? "current" : complete ? "done" : ""}" title="${stage}">
     <div class="stage-dot">${failed ? "!" : complete ? "✓" : ""}</div>
@@ -40,22 +45,38 @@ function stageComplete(stage, job, files) {
 
 export function renderLiveProgress(job) {
   if (["review", "done", "failed"].includes(statusGroup(job.status))) return "";
-  const percent = typeof job.stage_progress === "number" ? Math.round(job.stage_progress) : null;
-  const message = job.stage_message || (job.current_stage ? `${job.current_stage} / ${job.status}` : job.status);
-  const started = job.stage_started_at ? `${t("job.stage_started")}: ${escapeHtml(formatDate(job.stage_started_at))}` : "";
+  const runtime = job.runtime && typeof job.runtime === "object" ? job.runtime : {};
+  const canceling = Boolean(runtime.queue?.cancel_requested);
+  const percent = runtime.stale || canceling || typeof job.stage_progress !== "number" ? null : Math.round(job.stage_progress);
+  const message = canceling
+    ? t("queue.canceling")
+    : runtime.stale
+    ? t("job.stale_task_message")
+    : job.stage_message || (job.current_stage ? `${job.current_stage} / ${job.status}` : job.status);
+  const started = !runtime.stale && job.stage_started_at ? `${t("job.stage_started")}: ${escapeHtml(formatDate(job.stage_started_at))}` : "";
+  const runtimeActions = runtime.can_cancel || runtime.can_delete
+    ? `
+      <div class="live-progress-actions">
+        ${runtime.stale ? `<span class="notice warning">${t("job.stale_task_detected")}</span>` : ""}
+        ${runtime.can_cancel ? `<button class="button danger" id="cancel-job" type="button">${t("job.cancel_job")}</button>` : ""}
+        ${runtime.can_delete ? `<button class="button danger" id="delete-stale-job" type="button">${t("job.delete_job")}</button>` : ""}
+      </div>`
+    : "";
   return `
     <div class="live-progress-head">
       <div>
         <h2>${t("job.current_progress")}</h2>
         <p id="stage-progress-text" class="page-subtitle">${escapeHtml(message)}${started ? ` · ${started}` : ""}</p>
       </div>
-      <span id="stage-progress-percent" class="badge ${statusGroup(job.status)}">${percent === null ? t(statusLabelKey(job.status)) : `${percent}%`}</span>
+      <span id="stage-progress-percent" class="badge ${runtime.stale ? "failed" : statusGroup(job.status)}">${runtime.stale ? t("job.stale_task_label") : canceling ? t("queue.canceling") : percent === null ? t(statusLabelKey(job.status)) : `${percent}%`}</span>
     </div>
-    <div class="progress stage-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent ?? 0}" aria-label="${t("job.current_progress")}"><span id="stage-progress-fill" style="width: ${percent === null ? 0 : percent}%"></span></div>
+    ${runtime.stale ? "" : `<div class="progress stage-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent ?? 0}" aria-label="${t("job.current_progress")}"><span id="stage-progress-fill" style="width: ${percent === null ? 0 : percent}%"></span></div>`}
+    ${runtimeActions}
   `;
 }
 
 export function deriveLiveProgress(job) {
+  if (job.runtime?.stale) return;
   if (typeof job.stage_progress === "number" && job.stage_progress >= 100) return;
   if (job.current_stage !== "transcribe" || !job.stage_started_at || !job.stage_estimate_seconds) return;
   const started = Date.parse(job.stage_started_at);
@@ -68,13 +89,25 @@ export function deriveLiveProgress(job) {
 }
 
 export function updateLiveStatus(job) {
+  const runtime = job.runtime && typeof job.runtime === "object" ? job.runtime : {};
+  const canceling = Boolean(runtime.queue?.cancel_requested);
   const badge = document.querySelector(".page-head .badge");
   if (badge) {
-    badge.className = `badge ${statusGroup(job.status)}`;
-    badge.textContent = t(statusLabelKey(job.status));
+    badge.className = `badge ${runtime.stale ? "failed" : statusGroup(job.status)}`;
+    badge.textContent = runtime.stale ? t("job.stale_task_label") : canceling ? t("queue.canceling") : t(statusLabelKey(job.status));
   }
-  const percent = typeof job.stage_progress === "number" ? Math.round(job.stage_progress) : null;
-  const message = job.stage_message || (job.current_stage ? `${job.current_stage} / ${job.status}` : job.status);
+  if (runtime.stale) {
+    const text = document.getElementById("stage-progress-text");
+    if (text) text.textContent = t("job.stale_task_message");
+    const percentBadge = document.getElementById("stage-progress-percent");
+    if (percentBadge) {
+      percentBadge.className = "badge failed";
+      percentBadge.textContent = t("job.stale_task_label");
+    }
+    return;
+  }
+  const percent = canceling || typeof job.stage_progress !== "number" ? null : Math.round(job.stage_progress);
+  const message = canceling ? t("queue.canceling") : job.stage_message || (job.current_stage ? `${job.current_stage} / ${job.status}` : job.status);
   const started = job.stage_started_at ? `${t("job.stage_started")}: ${formatDate(job.stage_started_at)}` : "";
   const text = document.getElementById("stage-progress-text");
   if (text) {
@@ -83,7 +116,7 @@ export function updateLiveStatus(job) {
   const percentBadge = document.getElementById("stage-progress-percent");
   if (percentBadge) {
     percentBadge.className = `badge ${statusGroup(job.status)}`;
-    percentBadge.textContent = percent === null ? t(statusLabelKey(job.status)) : `${percent}%`;
+    percentBadge.textContent = canceling ? t("queue.canceling") : percent === null ? t(statusLabelKey(job.status)) : `${percent}%`;
   }
   const fill = document.getElementById("stage-progress-fill");
   if (fill && percent !== null) {

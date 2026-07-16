@@ -1111,6 +1111,8 @@ kbd {
 .live-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .live-progress:empty { display: none; }
 .live-progress-head h2 { margin-bottom: 8px; font-weight: 700; }
+.live-progress-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.live-progress-actions .notice { flex: 1 1 280px; margin: 0; }
 .stage-progress { height: 10px; }
 
 /* Inputs & Form Elements */
@@ -1214,6 +1216,8 @@ kbd {
   background: var(--bg-surface);
 }
 .stage-timing-row strong { color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.stage-timing-values { display: grid; justify-items: end; gap: 2px; text-align: right; }
+.stage-timing-breakdown { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .pipeline { display: flex; flex-wrap: nowrap; gap: 12px; overflow-x: auto; padding-bottom: 12px; scroll-behavior: smooth; }
 .pipeline::-webkit-scrollbar { height: 6px; }
 .pipeline::-webkit-scrollbar-track { background: var(--bg-surface); border-radius: 10px; }
@@ -1379,6 +1383,7 @@ canvas.timeline.is-panning { cursor: grabbing; }
 .clip-editor-wrapper {
   max-height: min(72vh, 760px);
   overflow: auto;
+  container: clip-editor / inline-size;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-panel);
@@ -1392,8 +1397,7 @@ canvas.timeline.is-panning { cursor: grabbing; }
   background: var(--bg-panel);
   box-shadow: 0 1px 0 var(--border), 0 8px 18px hsla(0,0%,0%,0.18);
 }
-.clip-editor th:last-child, .clip-editor td:last-child { position: sticky; right: 0; background: var(--bg-panel); box-shadow: -8px 0 16px hsla(0,0%,0%,0.2); }
-.clip-editor th:last-child { z-index: 12; }
+.clip-editor th:last-child, .clip-editor td:last-child { background: var(--bg-panel); }
 .clip-editor .time-input { width: 112px; font-family: var(--font); text-align: center; }
 .clip-editor .reason-input { width: 180px; }
 .clip-actions { display: inline-flex; gap: 8px; align-items: center; }
@@ -1406,7 +1410,18 @@ canvas.timeline.is-panning { cursor: grabbing; }
   resize: vertical;
   line-height: 1.5;
 }
-.clip-toolbar { margin-bottom: 16px; display: flex; gap: 12px; }
+.clip-toolbar { margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.clip-toolbar .button { flex: 0 0 auto; white-space: nowrap; }
+.clip-toolbar #clip-editor-message { flex: 1 0 100%; }
+
+@container clip-editor (min-width: 760px) {
+  .clip-editor th:last-child, .clip-editor td:last-child {
+    position: sticky;
+    right: 0;
+    box-shadow: -8px 0 16px hsla(0,0%,0%,0.2);
+  }
+  .clip-editor th:last-child { z-index: 12; }
+}
 
 /* Custom Checkbox */
 .check input[type="checkbox"], .clip-editor input[type="checkbox"] {

@@ -268,6 +268,15 @@ export function renderStageTimings(stageTimings) {
   const totalHtml = Number.isFinite(total) && total > 0
     ? `<span>${t("job.performance_total")}: <strong>${formatTime(total)}</strong></span>`
     : "";
+  const timingBreakdown = (item) => {
+    const wait = Number(item.resource_wait_seconds);
+    const execution = Number(item.execution_seconds);
+    if (!Number.isFinite(wait) && !Number.isFinite(execution)) return "";
+    const parts = [];
+    if (Number.isFinite(wait)) parts.push(`${t("job.performance_wait")} ${formatTime(wait)}`);
+    if (Number.isFinite(execution)) parts.push(`${t("job.performance_execution")} ${formatTime(execution)}`);
+    return `<small class="stage-timing-breakdown">${parts.join(" · ")}</small>`;
+  };
   return `
     <div class="stage-timings">
       <div class="stage-timings-head">
@@ -278,7 +287,10 @@ export function renderStageTimings(stageTimings) {
         ${rows.map((item) => `
           <div class="stage-timing-row">
             <span>${escapeHtml(t(`stage.${item.stage}`))}</span>
-            <strong>${formatTime(item.duration_seconds)}</strong>
+            <span class="stage-timing-values">
+              <strong>${formatTime(item.duration_seconds)}</strong>
+              ${timingBreakdown(item)}
+            </span>
           </div>
         `).join("")}
       </div>

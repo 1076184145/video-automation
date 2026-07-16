@@ -56,13 +56,14 @@ export function renderQueuePanel(queue = {}) {
 
 function renderQueueItem(item, index, total) {
   const status = String(item.status || "pending");
+  const canceling = status === "running" && Boolean(item.cancel_requested);
   return `
     <article class="queue-row" data-queue-id="${escapeHtml(item.id)}">
       <div class="queue-position">${index + 1}</div>
       <div class="queue-row-main">
         <strong>${escapeHtml(item.job_name || item.id)}</strong>
         <div class="queue-row-meta">
-          <span class="badge ${queueStatusGroup(status)}">${t(`queue.status_${status}`)}</span>
+          <span class="badge ${queueStatusGroup(status)}">${t(canceling ? "queue.canceling" : `queue.status_${status}`)}</span>
           <span>${t("queue.priority")} ${Number(item.priority || 0)}</span>
           ${item.updated_at ? `<span>${escapeHtml(formatDate(item.updated_at))}</span>` : ""}
         </div>
@@ -78,7 +79,9 @@ function renderQueueItem(item, index, total) {
             ${["probe", "extract_audio", "transcribe", "detect_silence", "plan_cuts", "style_subtitles", "render_final"].map((stage) => `<option value="${stage}">${t(`stage.${stage}`)}</option>`).join("")}
           </select>
           <button class="button compact-button" type="button" data-queue-action="retry-stage">${t("queue.retry")}</button>` : ""}
-        ${["pending", "paused", "running", "failed"].includes(status) ? `<button class="button compact-button danger" type="button" data-queue-action="cancel">${t("common.cancel")}</button>` : ""}
+        ${canceling
+          ? `<button class="button compact-button danger" type="button" disabled>${t("queue.canceling")}</button>`
+          : (["pending", "paused", "running", "failed"].includes(status) ? `<button class="button compact-button danger" type="button" data-queue-action="cancel">${t("common.cancel")}</button>` : "")}
       </div>
     </article>`;
 }

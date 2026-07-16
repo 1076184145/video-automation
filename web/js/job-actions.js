@@ -1,6 +1,6 @@
 import { API } from "./api.js";
 import { errorHintHtml } from "./error-hints.js";
-import { t } from "./i18n.js";
+import { localizedErrorMessage, t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { STAGES, escapeHtml, formatTime } from "./utils.js";
 export function renderSourceWarning(corrupt) {
@@ -60,7 +60,21 @@ export function bindJobActions(root, jobName, reload) {
       await runErrorAdviceAction(adviceButton, jobName, reload);
       return;
     }
-    if (e.target.id === "rerun-stage-button") {
+    if (e.target.id === "cancel-job") {
+      const button = e.target;
+      if (!window.confirm(t("job.cancel_job_confirm"))) return;
+      setButtonLoading(button, true, t("common.loading"));
+      try {
+        await API.cancelJob(jobName);
+        showToast(t("job.cancel_job_success"), "success");
+        await reload();
+      } catch (error) {
+        setActionMessage(`${t("job.cancel_job_failed")} ${escapeHtml(error.message)}`, true);
+        showToast(`${t("job.cancel_job_failed")} ${error.message}`, "error");
+      } finally {
+        setButtonLoading(button, false);
+      }
+    } else if (e.target.id === "rerun-stage-button") {
       const button = e.target;
       const stage = document.getElementById("rerun-stage")?.value;
       if (!stage || !window.confirm(`${t("job.rerun_confirm")} ${t(`stage.${stage}`)}`)) return;
@@ -76,7 +90,7 @@ export function bindJobActions(root, jobName, reload) {
       } finally {
         setButtonLoading(button, false);
       }
-    } else if (e.target.id === "delete-job") {
+    } else if (["delete-job", "delete-stale-job"].includes(e.target.id)) {
       if (!window.confirm(t("job.delete_job_confirm"))) return;
       try {
         await API.deleteJob(jobName);
@@ -228,7 +242,12 @@ export function renderQualityGate(quality) {
   const item = (entry) => {
     const context = [entry.expected && `${t("quality.expected")}: ${entry.expected}`, entry.actual && `${t("quality.actual")}: ${entry.actual}`]
       .filter(Boolean).join(" · ");
-    return `<li><strong>${escapeHtml(entry.message || entry.code || "")}</strong>${context ? `<span>${escapeHtml(context)}</span>` : ""}</li>`;
+    const messageKey = entry.code ? `quality.check.${entry.code}` : "";
+    const localizedMessage = messageKey ? t(messageKey) : "";
+    const message = localizedMessage && localizedMessage !== messageKey
+      ? localizedMessage
+      : entry.message || entry.code || "";
+    return `<li><strong>${escapeHtml(message)}</strong>${context ? `<span>${escapeHtml(context)}</span>` : ""}</li>`;
   };
   return `
     <div class="quality-gate ${blocking.length ? "blocked" : "advisory"}" ${blocking.length ? 'role="alert"' : 'role="status"'}>
@@ -263,9 +282,9 @@ export function bindReviewActions(root, jobName, reload) {
         await reload();
       } catch (error) {
         const box = document.getElementById("approve-error");
-        const details = error.payload?.error?.details;
-        if (box) box.innerHTML = `<div class="error">${t("job.approve_failed")}${escapeHtml(error.message)}</div>${renderQualityGate(details)}`;
-        showToast(`${t("job.approve_failed")}${error.message}`, "error");
+        const message = localizedErrorMessage(error);
+        if (box) box.innerHTML = `<div class="error">${t("job.approve_failed")}${escapeHtml(message)}</div>`;
+        showToast(`${t("job.approve_failed")}${message}`, "error");
         setButtonLoading(button, false);
       }
     }

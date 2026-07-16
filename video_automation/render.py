@@ -8,7 +8,7 @@ from typing import Any
 from .config import Settings
 from .crop import generate_vertical_crop_plan
 from .highlight_cut import generate_highlight_cut
-from .progress import ProgressCallback, run_ffmpeg_with_progress
+from .progress import ControlCallback, ProgressCallback, run_ffmpeg_with_progress
 from .resources import GPU_EXECUTION_GATE, rendering_uses_gpu
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .subtitles import generate_clipped_ass_subtitles
@@ -58,11 +58,14 @@ def render_review_video(
     progress_callback: ProgressCallback | None = None,
     resource_wait_callback: Callable[[], None] | None = None,
     resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
+    refresh_web_preview: bool = True,
 ) -> Path:
     preview = generate_render_preview(settings, job_dir, source_path, force=force)
     output_path = Path(preview["output_path"])
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
-        _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
+        if refresh_web_preview:
+            _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
     result = _run_ffmpeg_with_resource_gate(
         settings,
@@ -72,10 +75,12 @@ def render_review_video(
         timeout=3600,
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
+        control_callback=control_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg review render failed: {result.stderr.strip()}")
-    _refresh_web_preview(settings, job_dir, source_path=output_path, force=force)
+    if refresh_web_preview:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=force)
     return output_path
 
 
@@ -92,6 +97,8 @@ def render_final_video(
     progress_callback: ProgressCallback | None = None,
     resource_wait_callback: Callable[[], None] | None = None,
     resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
+    refresh_web_preview: bool = True,
 ) -> Path:
     output_path = (job_dir / output_filename).resolve()
     try:
@@ -99,7 +106,8 @@ def render_final_video(
     except ValueError as exc:
         raise RuntimeError("final render output must stay inside the job directory") from exc
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
-        _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
+        if refresh_web_preview:
+            _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
 
     cuts = _read_json(job_dir / "cuts.json")
@@ -149,10 +157,12 @@ def render_final_video(
         timeout=3600,
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
+        control_callback=control_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg final render failed: {result.stderr.strip()}")
-    _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
+    if refresh_web_preview:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
 
 
@@ -203,6 +213,7 @@ def render_highlight_video(
     progress_callback: ProgressCallback | None = None,
     resource_wait_callback: Callable[[], None] | None = None,
     resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
 ) -> Path:
     preview = generate_highlight_render_preview(settings, job_dir, source_path, force=force)
     output_path = Path(preview["output_path"])
@@ -217,6 +228,7 @@ def render_highlight_video(
         timeout=3600,
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
+        control_callback=control_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg highlight render failed: {result.stderr.strip()}")
@@ -232,6 +244,10 @@ def render_web_preview(
     *,
     source_path: Path | None = None,
     force: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
 ) -> Path | None:
     if not settings.web_preview_enabled:
         return None
@@ -262,9 +278,15 @@ def render_web_preview(
     result = _run_ffmpeg_with_resource_gate(
         settings,
         command,
-        duration_seconds=_duration_from_manifest(job_dir),
-        progress_callback=None,
+        duration_seconds=(
+            _clips_duration(_kept_clips(_read_json(job_dir / "cuts.json")))
+            or _duration_from_manifest(job_dir)
+        ),
+        progress_callback=progress_callback,
         timeout=3600,
+        resource_wait_callback=resource_wait_callback,
+        resource_acquired_callback=resource_acquired_callback,
+        control_callback=control_callback,
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg web preview render failed: {result.stderr.strip()}")
@@ -282,16 +304,21 @@ def _run_ffmpeg_with_resource_gate(
     timeout: int,
     resource_wait_callback: Callable[[], None] | None = None,
     resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
 ):
     with GPU_EXECUTION_GATE.slot(
         enabled=rendering_uses_gpu(settings),
         on_wait=resource_wait_callback,
         on_acquired=resource_acquired_callback,
+        control_callback=control_callback,
+        max_wait_seconds=timeout,
+        owner="ffmpeg-render",
     ):
         return run_ffmpeg_with_progress(
             command,
             duration_seconds=duration_seconds,
             progress_callback=progress_callback,
+            control_callback=control_callback,
             timeout=timeout,
         )
 

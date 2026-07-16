@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,10 @@ from typing import Any
 from .automation import AutomationRepository
 from .credentials import SystemCredentialStore
 from .library import LibraryRepository
+from .jobs import load_job
 from .providers.bilibili import BilibiliHttpTransport, BilibiliProvider
 from .preferences import PreferenceRepository
+from .pipeline_spec import pipeline_stage_contract
 from .publish_center import PublishRepository, PublishService
 from .quality_gate import evaluate_quality_gate
 from .task_queue import QueueRepository
@@ -62,6 +65,36 @@ def queue_repository_for(settings: Any) -> QueueRepository:
             repository = QueueRepository(database_path)
             _QUEUE_REPOSITORIES[database_path] = repository
     return repository
+
+
+def delete_job_records(settings: Any, job_name: str) -> None:
+    """Delete every database projection for a job in one transaction."""
+    database_path = library_database_path(settings)
+    if not database_path.exists():
+        return
+    connection = sqlite3.connect(database_path, timeout=10)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        existing = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        statements = (
+            ("stage_runs", "DELETE FROM stage_runs WHERE job_name = ?"),
+            ("pipeline_runs", "DELETE FROM pipeline_runs WHERE job_name = ?"),
+            ("task_queue", "DELETE FROM task_queue WHERE job_name = ?"),
+            ("revisions", "DELETE FROM revisions WHERE job_name = ?"),
+            ("publish_attempts", "DELETE FROM publish_attempts WHERE job_name = ?"),
+            ("preference_events", "DELETE FROM preference_events WHERE job_name = ?"),
+            ("job_index", "DELETE FROM job_index WHERE job_name = ?"),
+        )
+        with connection:
+            for table, statement in statements:
+                if table in existing:
+                    connection.execute(statement, (str(job_name),))
+    finally:
+        connection.close()
 
 
 class _UnavailableBilibiliTransport:
@@ -274,6 +307,7 @@ def dispatch_library_request(
         return 200, {
             "version": 1,
             "local_first": True,
+            "pipeline_stages": pipeline_stage_contract(),
             "features": {
                 "projects": True,
                 "creator_kits": True,
@@ -299,7 +333,7 @@ def dispatch_library_request(
             return _dispatch_recipes(automation_repository_for(settings), method, resource_id, payload)
         if resource == "queue":
             action = parts[4] if len(parts) >= 5 else ""
-            return _dispatch_queue(queue_repository_for(settings), method, resource_id, action, payload)
+            return _dispatch_queue(settings, queue_repository_for(settings), method, resource_id, action, payload)
         if resource == "publish-targets":
             return _dispatch_publish_targets(settings, method, resource_id, parts, payload)
         if resource == "publish-attempts":
@@ -480,6 +514,7 @@ def _dispatch_publish_attempts(
 
 
 def _dispatch_queue(
+    settings: Any,
     repository: QueueRepository,
     method: str,
     queue_id: str,
@@ -508,19 +543,48 @@ def _dispatch_queue(
     if method == "GET" and not action:
         return 200, item
     if method == "DELETE" and not action:
-        return 200, repository.cancel(queue_id) or item
+        updated = repository.cancel(queue_id) or item
+        _project_queue_control(settings, updated)
+        return 200, updated
     if method != "POST":
         return 405, structured_error("method_not_allowed", "Method not allowed")
     if action == "pause":
-        return 200, repository.pause(queue_id) or item
+        updated = repository.pause(queue_id) or item
+        _project_queue_control(settings, updated)
+        return 200, updated
     if action == "resume":
-        return 200, repository.resume(queue_id) or item
+        updated = repository.resume(queue_id) or item
+        _project_queue_control(settings, updated)
+        return 200, updated
     if action == "cancel":
-        return 200, repository.cancel(queue_id) or item
+        updated = repository.cancel(queue_id) or item
+        _project_queue_control(settings, updated)
+        return 200, updated
     if action == "retry-stage":
+        if item.get("status") not in {"failed", "completed", "canceled"}:
+            raise ValueError("stage retry requires a terminal queue item")
         retried = repository.retry_stage(queue_id, str(payload.get("stage") or ""))
+        if retried:
+            _project_queue_control(settings, retried)
         return 200, retried or item
     return 404, structured_error("not_found", "Queue action not found")
+
+
+def _project_queue_control(settings: Any, item: dict[str, Any]) -> None:
+    """Update job.json only when queue ownership has reached a stable boundary."""
+    job_name = str(item.get("job_name") or "")
+    if not job_name:
+        return
+    job = load_job(Path(settings.jobs_dir) / job_name / "job.json")
+    if job is None:
+        return
+    status = str(item.get("status") or "")
+    if status == "canceled":
+        job.cancel()
+    elif status == "paused":
+        job.set_status("paused")
+    elif status == "pending" and job.status in {"paused", "failed", "canceled", "needs_review", "done"}:
+        job.set_status("queued")
 
 
 def _dispatch_recipes(

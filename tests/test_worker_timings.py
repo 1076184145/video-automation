@@ -45,6 +45,36 @@ class StageTimingTests(unittest.TestCase):
             self.assertIsInstance(payload["total_duration_seconds"], float)
             self.assertGreaterEqual(payload["total_duration_seconds"], payload["stages"][0]["duration_seconds"])
 
+    def test_run_pipeline_persists_resource_wait_and_execution_breakdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job = SimpleNamespace(
+                job_dir=root / "job",
+                source_path=root / "source.mp4",
+                status="pending",
+                start_stage=lambda *_args, **_kwargs: None,
+                complete_stage=lambda: None,
+            )
+            context = {}
+
+            def run_stage(stage_context):
+                stage_context.setdefault("_stage_metrics", {})["transcribe"] = {
+                    "resource_wait_seconds": 1.25,
+                    "execution_seconds": 2.5,
+                }
+
+            run_pipeline(
+                ProgressReporter(False),
+                job,
+                [PipelineStage("transcribe", "transcribing", True, run_stage)],
+                context,
+            )
+
+            payload = json.loads((job.job_dir / "stage_timings.json").read_text(encoding="utf-8"))
+            timing = payload["stages"][0]
+            self.assertEqual(timing["resource_wait_seconds"], 1.25)
+            self.assertEqual(timing["execution_seconds"], 2.5)
+
     def test_pipeline_honors_queue_control_before_starting_next_stage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

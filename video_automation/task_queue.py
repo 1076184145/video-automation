@@ -294,7 +294,10 @@ class QueueRepository:
         with self._connect() as connection:
             if current["status"] == "running":
                 connection.execute(
-                    "UPDATE task_queue SET cancel_requested = 1, updated_at = ? WHERE id = ?",
+                    """
+                    UPDATE task_queue SET cancel_requested = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
                     (_now(), queue_id),
                 )
             elif current["status"] in {"pending", "paused", "failed"}:
@@ -307,22 +310,34 @@ class QueueRepository:
                 )
         return self.get(queue_id)
 
-    def retry_stage(self, queue_id: str, stage: str) -> dict[str, Any] | None:
+    def retry_stage(
+        self,
+        queue_id: str,
+        stage: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         current = self.get(queue_id)
         if current is None:
             return None
+        if current["status"] in {"running", "paused"}:
+            raise ValueError("cannot retry a stage while the queue item is active")
         normalized_stage = str(stage or "").strip()
         if not normalized_stage:
             raise ValueError("stage is required")
+        payload_json = None
+        if payload is not None:
+            payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE task_queue SET status = 'pending', retry_stage = ?, attempt = attempt + 1,
                     worker_pid = NULL, heartbeat_at = NULL, error = NULL, pause_requested = 0,
-                    cancel_requested = 0, updated_at = ?, started_at = NULL, completed_at = NULL
+                    cancel_requested = 0, payload_json = COALESCE(?, payload_json),
+                    updated_at = ?, started_at = NULL, completed_at = NULL
                 WHERE id = ?
                 """,
-                (normalized_stage[:80], _now(), queue_id),
+                (normalized_stage[:80], payload_json, _now(), queue_id),
             )
         return self.get(queue_id)
 

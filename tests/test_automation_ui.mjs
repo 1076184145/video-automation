@@ -44,6 +44,21 @@ test("queue panel exposes global and per-item recovery controls", () => {
   assert.match(html, /GPU memory exhausted/);
 });
 
+test("running queue item shows canceling feedback after cancellation is requested", () => {
+  const html = renderQueuePanel({
+    paused: false,
+    items: [{
+      id: "queue-running",
+      job_name: "job-running",
+      status: "running",
+      cancel_requested: true,
+    }],
+  });
+
+  assert.match(html, /正在取消/);
+  assert.doesNotMatch(html, /data-queue-action="cancel"/);
+});
+
 test("legacy browser profiles convert to idempotent server recipes", () => {
   const recipes = legacyProfilesToRecipes([
     {
@@ -76,6 +91,7 @@ test("API client exposes recipe and smart queue controls", () => {
     "getRecipes", "createRecipe", "deleteRecipe", "importRecipes",
     "getQueue", "pauseQueue", "resumeQueue", "pauseQueueItem",
     "resumeQueueItem", "cancelQueueItem", "retryQueueStage", "reorderQueue",
+    "cancelJob",
   ]) {
     assert.equal(typeof API[method], "function", method);
   }

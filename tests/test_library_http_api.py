@@ -13,6 +13,29 @@ from video_automation.api import create_server
 
 
 class LibraryHttpApiTests(unittest.TestCase):
+    def test_server_rejects_second_live_instance_on_same_port(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = SimpleNamespace(
+                root=root,
+                jobs_dir=root / "processing" / "jobs",
+                api_host="127.0.0.1",
+                api_port=0,
+                api_parallel_jobs=1,
+                api_allowed_origins=(),
+            )
+            web_dir = root / "web"
+            web_dir.mkdir()
+            (web_dir / "index.html").write_text("ok", encoding="utf-8")
+            first = create_server(settings, start_queue_worker=False)  # type: ignore[arg-type]
+            try:
+                occupied = SimpleNamespace(**vars(settings))
+                occupied.api_port = first.server_address[1]
+                with self.assertRaises(OSError):
+                    create_server(occupied, start_queue_worker=False)  # type: ignore[arg-type]
+            finally:
+                first.server_close()
+
     def test_versioned_library_routes_are_served_by_the_existing_http_server(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -27,7 +50,7 @@ class LibraryHttpApiTests(unittest.TestCase):
             web_root = root / "web"
             web_root.mkdir()
             (web_root / "index.html").write_text("<!doctype html><title>App</title>", encoding="utf-8")
-            server = create_server(settings)
+            server = create_server(settings, start_queue_worker=False)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             host, port = server.server_address
@@ -97,7 +120,7 @@ class LibraryHttpApiTests(unittest.TestCase):
                 patch("video_automation.api.generate_render_preview"),
                 patch("video_automation.api._remove_render_outputs"),
             ):
-                server = create_server(settings)
+                server = create_server(settings, start_queue_worker=False)
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 host, port = server.server_address

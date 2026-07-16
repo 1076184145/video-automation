@@ -12,7 +12,8 @@ export const STAGES = [
   "plan_uvr",
   "plan_render",
   "render_review",
-  "render_final"
+  "render_final",
+  "render_web_preview"
 ];
 
 export const STATUS_TO_STAGE = Object.freeze({
@@ -29,7 +30,8 @@ export const STATUS_TO_STAGE = Object.freeze({
   planning_uvr: "plan_uvr",
   planning_render: "plan_render",
   rendering_review: "render_review",
-  rendering_final: "render_final"
+  rendering_final: "render_final",
+  rendering_web_preview: "render_web_preview"
 });
 
 export function escapeHtml(value) {
@@ -49,13 +51,14 @@ export function jobName(job) {
 }
 
 export function statusGroup(status) {
-  if (status === "failed") return "failed";
+  if (status === "failed" || status === "canceled") return "failed";
   if (status === "done") return "done";
   if (status === "needs_review") return "review";
   return "processing";
 }
 
 export function statusLabelKey(status) {
+  if (status === "canceled") return "status.canceled";
   return `status.${statusGroup(status)}`;
 }
 
@@ -78,13 +81,13 @@ export function formatDate(value) {
 
 export function progressForStatus(status) {
   if (status === "done" || status === "needs_review") return 100;
-  if (status === "failed") return 100;
+  if (status === "failed" || status === "canceled") return 100;
   const index = STAGES.indexOf(stageForStatus(status));
   return index >= 0 ? Math.round(((index + 1) / STAGES.length) * 100) : 18;
 }
 
 export function progressForJob(job) {
-  if (job?.status === "done" || job?.status === "needs_review" || job?.status === "failed") return 100;
+  if (["done", "needs_review", "failed", "canceled"].includes(job?.status)) return 100;
   const stage = job?.current_stage || stageForStatus(job?.status);
   const index = STAGES.indexOf(stage);
   return index >= 0 ? Math.round(((index + 1) / STAGES.length) * 100) : 0;
@@ -101,5 +104,5 @@ export function fileMap(job) {
 }
 
 export function isTerminal(status) {
-  return ["done", "needs_review", "failed"].includes(status);
+  return ["done", "needs_review", "failed", "canceled"].includes(status);
 }

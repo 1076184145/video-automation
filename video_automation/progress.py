@@ -9,8 +9,11 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
+from .task_queue import QueueControlRequested
+
 
 ProgressCallback = Callable[[float], None]
+ControlCallback = Callable[[], str | None]
 FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 MAX_CAPTURED_STDERR_CHARS = 256 * 1024
 STDERR_QUEUE_LINES = 128
@@ -28,6 +31,7 @@ def run_ffmpeg_with_progress(
     *,
     duration_seconds: float,
     progress_callback: ProgressCallback | None = None,
+    control_callback: ControlCallback | None = None,
     timeout: float | None = None,
 ) -> CommandResult:
     started_at = time.monotonic()
@@ -68,6 +72,9 @@ def run_ffmpeg_with_progress(
     last_percent = -1
     try:
         while True:
+            action = control_callback() if control_callback else None
+            if action in {"paused", "canceled"}:
+                raise QueueControlRequested(action)
             remaining = None if timeout is None else timeout - (time.monotonic() - started_at)
             if remaining is not None and remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)

@@ -15,10 +15,26 @@ from .config import Settings
 from .error_advisor import advise_error
 from .events import publish_event
 from .io_utils import write_json_atomic
+from .pipeline_spec import PIPELINE_STAGE_SPECS
 
 
-TERMINAL_STATUSES = {"needs_review", "done", "failed"}
-READY_STATUSES = {"needs_review", "done"}
+TERMINAL_STATUSES = {"needs_review", "done", "failed", "canceled"}
+READY_STATUSES = {"needs_review", "done", "canceled"}
+PIPELINE_STATUSES = {spec.status for spec in PIPELINE_STAGE_SPECS.values()}
+_ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"queued", "failed", "canceled"},
+    "queued": {"paused", "failed", "canceled", "needs_review", "done"},
+    "paused": {"queued", "failed", "canceled"},
+    "needs_review": {"queued", "done", "failed", "canceled"},
+    "done": {"queued", "needs_review", "failed", "canceled"},
+    "failed": {"queued", "needs_review", "canceled"},
+    "canceled": {"queued", "needs_review"},
+    "canceling": {"canceled", "failed"},
+}
+
+
+class InvalidJobTransition(RuntimeError):
+    pass
 
 WINDOWS_ABSOLUTE_IN_QUOTES_RE = re.compile(r"""["']([A-Za-z]:[\\/][^"']+)["']""")
 MAX_PERSISTED_ERROR_BYTES = 16 * 1024
@@ -57,6 +73,7 @@ class Job:
     stage_message: str | None = None
     stage_started_at: str | None = None
     stage_estimate_seconds: float | None = None
+    state_version: int = 0
     _save_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     @property
@@ -84,11 +101,13 @@ class Job:
             "stage_message": self.stage_message,
             "stage_started_at": self.stage_started_at,
             "stage_estimate_seconds": self.stage_estimate_seconds,
+            "state_version": self.state_version,
         }
 
     def save(self) -> None:
         with self._save_lock:
             self.updated_at = datetime.now().isoformat(timespec="seconds")
+            self.state_version = max(0, int(self.state_version)) + 1
             self.job_dir.mkdir(parents=True, exist_ok=True)
             payload = self.to_dict()
             write_json_atomic(self.state_path, payload)
@@ -98,12 +117,29 @@ class Job:
             logging.getLogger(__name__).debug("failed to publish job event", exc_info=True)
 
     def set_status(self, status: str) -> None:
+        self._validate_transition(status)
         self.status = status
         self.error = None
         self.error_advice = None
         self.save()
 
+    def _validate_transition(self, status: str) -> None:
+        target = str(status)
+        if target == self.status:
+            return
+        if self.status in PIPELINE_STATUSES:
+            if target in PIPELINE_STATUSES | {"paused", "failed", "canceled", "needs_review", "done"}:
+                return
+            raise InvalidJobTransition(f"invalid job transition: {self.status} -> {target}")
+        allowed = _ALLOWED_STATUS_TRANSITIONS.get(self.status)
+        if allowed is not None and target not in allowed:
+            raise InvalidJobTransition(f"invalid job transition: {self.status} -> {target}")
+
     def start_stage(self, status: str, stage: str, *, message: str | None = None) -> None:
+        if status not in PIPELINE_STATUSES:
+            raise InvalidJobTransition(f"unknown pipeline status: {status}")
+        if self.status not in {"pending", "queued", "paused"} | PIPELINE_STATUSES:
+            raise InvalidJobTransition(f"cannot start stage {stage} while job is {self.status}")
         self.status = status
         self.error = None
         self.error_advice = None
@@ -123,7 +159,29 @@ class Job:
         self.stage_progress = 100.0
         self.save()
 
+    def request_cancel(self) -> None:
+        """Project a cooperative cancellation request without claiming completion."""
+        if self.status not in {"queued", "paused"} | PIPELINE_STATUSES:
+            raise InvalidJobTransition(f"cannot request cancellation while job is {self.status}")
+        self.status = "canceling"
+        self.error = None
+        self.error_advice = None
+        self.stage_message = "Cancellation requested; waiting for the worker to stop."
+        self.save()
+
+    def cancel(self, message: str = "Canceled by user") -> None:
+        """Mark cancellation complete after no worker owns the job anymore."""
+        if self.status != "canceling":
+            self._validate_transition("canceled")
+        self.status = "canceled"
+        self.error = None
+        self.error_advice = None
+        self.stage_progress = None
+        self.stage_message = message
+        self.save()
+
     def fail(self, error: str) -> None:
+        self._validate_transition("failed")
         self.status = "failed"
         bounded_error = _bounded_error(error)
         self.error = bounded_error
@@ -142,7 +200,12 @@ def _bounded_error(error: str) -> str:
 
 def configure_job_logger(job: Job) -> logging.Logger:
     logger = logging.getLogger(f"video_automation.job.{job.job_dir.name}")
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except OSError:
+            pass
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     stream = logging.StreamHandler()
@@ -153,6 +216,20 @@ def configure_job_logger(job: Job) -> logging.Logger:
     logger.addHandler(file_handler)
     logger.propagate = False
     return logger
+
+
+def close_job_logger(logger: logging.Logger) -> None:
+    """Release per-job file handles so completed jobs can be deleted on Windows."""
+    handlers = list(getattr(logger, "handlers", ()) or ())
+    for handler in handlers:
+        remove_handler = getattr(logger, "removeHandler", None)
+        if callable(remove_handler):
+            remove_handler(handler)
+        try:
+            handler.flush()
+            handler.close()
+        except OSError:
+            pass
 
 
 def find_existing_job(settings: Settings, source_path: Path) -> Job | None:
@@ -184,6 +261,7 @@ def find_existing_job(settings: Settings, source_path: Path) -> Job | None:
                 stage_message=data.get("stage_message"),
                 stage_started_at=data.get("stage_started_at"),
                 stage_estimate_seconds=data.get("stage_estimate_seconds"),
+                state_version=int(data.get("state_version") or 0),
             )
     return None
 
@@ -212,6 +290,7 @@ def load_job(state_path: Path) -> Job | None:
             stage_message=data.get("stage_message"),
             stage_started_at=data.get("stage_started_at"),
             stage_estimate_seconds=data.get("stage_estimate_seconds"),
+            state_version=int(data.get("state_version") or 0),
         )
     except (TypeError, KeyError):
         return None

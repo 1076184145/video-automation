@@ -2,29 +2,30 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import re
 import shutil
 import subprocess
 import threading
 import uuid
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Settings
 from .covers import cover_manifest, generate_cover_candidates, mark_cover_generation_started, normalize_cover_options, select_cover
-from .crop import generate_vertical_crop_plan
-from .cuts import generate_cuts, update_cuts_from_editor
-from .events import current_event_id, publish_event, wait_for_events
+from .cuts import update_cuts_from_editor
+from .events import configure_event_store, current_event_id, publish_event, wait_for_events
 from .hooks import generate_uvr_plan
 from .highlight_cut import generate_highlight_cut
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .jobs import Job, create_job, list_jobs, load_job, normalize_source_path
 from .library_api import (
     attach_job_context,
+    delete_job_records,
     automation_repository_for,
     dispatch_library_request,
     job_library_fields,
@@ -37,47 +38,31 @@ from .library_api import (
     structured_error,
 )
 from .llm_tools import generate_highlights, generate_metadata, save_metadata
-from .media import MEDIA_EXTENSIONS, detect_decode_errors, detect_freeze, detect_scenes, detect_silence, extract_audio_outputs, generate_thumbnail, generate_waveform, probe_media
-from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
+from .media import MEDIA_EXTENSIONS
+from .pipeline_spec import PIPELINE_STAGE_SPECS
 from .publish import generate_publish_package
 from .profiles import apply_profile_flags, apply_profile_settings
 from .project_exports import generate_project_exports
-from .render import generate_render_preview, render_final_video, render_highlight_video, render_review_video
-from .resources import job_gpu_status_callbacks
+from .render import generate_render_preview, render_final_video, render_highlight_video
 from .segments import generate_platform_segments
 from .subtitle_translation import translate_subtitles, translated_clipped_ass_name, translated_final_video_name
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
-from .task_queue import QueueService
+from .queue_worker import QueueWorkerProcess
+from .routing import CORE_ROUTER
+from .runtime_config import apply_runtime_settings_snapshot, snapshot_runtime_settings
+from .stage_runs import StageRunRepository
+from .task_queue import QueueControlRequested
 from .recovery import backup_database, ensure_database_ready, ensure_job_capacity
-from .transcribe import transcribe_audio, warm_transcription_backend
-from .worker import _high_quality_audio_path, clear_health_cache, health_payload, process_job
+from .transcribe import warm_transcription_backend
+from .worker import clear_health_cache, health_payload, process_job
 
 mimetypes.add_type("font/woff2", ".woff2")
 
 CHUNK_SIZE = 1024 * 1024
 MAX_JSON_BODY_SIZE = 2 * 1024 * 1024
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
-TERMINAL_STATUSES = {"needs_review", "done", "failed"}
-RERUN_STATUS = {
-    "probe": "probing",
-    "detect_corruption": "detecting_corruption",
-    "extract_audio": "extracting_audio",
-    "transcribe": "transcribing",
-    "detect_silence": "detecting_silence",
-    "detect_freeze": "detecting_freeze",
-    "detect_scenes": "detecting_scenes",
-    "plan_cuts": "planning_cuts",
-    "style_subtitles": "styling_subtitles",
-    "plan_crop": "planning_crop",
-    "plan_uvr": "planning_uvr",
-    "plan_render": "planning_render",
-    "render_review": "rendering_review",
-    "render_final": "rendering_final",
-}
-COVER_GENERATIONS: set[str] = set()
-COVER_GENERATIONS_LOCK = threading.Lock()
-ENHANCEMENT_RUNS: set[str] = set()
-ENHANCEMENT_RUNS_LOCK = threading.Lock()
+TERMINAL_STATUSES = {"needs_review", "done", "failed", "canceled"}
+RERUN_STATUS = {name: spec.status for name, spec in PIPELINE_STAGE_SPECS.items()}
 TOOLS_INSTALL_LOCK = threading.Lock()
 TOOLS_INSTALL_STATE: dict[str, Any] = {"status": "idle", "message": "", "log_tail": []}
 EDITABLE_ENV_KEYS = {
@@ -152,28 +137,45 @@ EDITABLE_ENV_KEYS = {
 
 
 class AutomationHTTPServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler], queue_service: QueueService):
-        self.queue_service = queue_service
+    # On Windows, SO_REUSEADDR can allow multiple live processes to bind the
+    # same port and split incoming requests between different code versions.
+    allow_reuse_address = False
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler: type[BaseHTTPRequestHandler],
+        queue_worker: QueueWorkerProcess | None,
+    ):
+        self.queue_worker = queue_worker
         super().__init__(server_address, handler)
 
     def server_close(self) -> None:
-        self.queue_service.stop()
+        if self.queue_worker is not None:
+            self.queue_worker.stop()
         super().server_close()
 
 
-def create_server(settings: Settings) -> ThreadingHTTPServer:
+def create_server(settings: Settings, *, start_queue_worker: bool = True) -> ThreadingHTTPServer:
     database_path = library_database_path(settings)
     ensure_database_ready(database_path)
+    configure_event_store(database_path)
     handler = _handler_class(settings)
     if database_path.is_file():
         backup_database(database_path, keep=5)
-    queue_service = getattr(handler, "queue_service")
-    return AutomationHTTPServer((settings.api_host, settings.api_port), handler, queue_service)
+    queue_worker = QueueWorkerProcess(settings) if start_queue_worker else None
+    server = AutomationHTTPServer((settings.api_host, settings.api_port), handler, queue_worker)
+    if queue_worker is not None:
+        try:
+            queue_worker.start()
+        except Exception:
+            server.server_close()
+            raise
+    return server
 
 
 def serve(settings: Settings) -> None:
     server = create_server(settings)
-    _start_transcription_warmup(settings)
     print(f"Video Automation API listening on http://{settings.api_host}:{settings.api_port}", flush=True)
     server.serve_forever()
 
@@ -187,16 +189,8 @@ def _start_transcription_warmup(settings: Settings) -> None:
 
 
 def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
-    process_semaphore = threading.Semaphore(max(1, settings.api_parallel_jobs))
     allowed_origins = _allowed_api_origins(settings)
     queue_repository = queue_repository_for(settings)
-    stale_before = (datetime.now() - timedelta(seconds=30)).isoformat(timespec="seconds")
-    queue_repository.recover_interrupted(stale_before)
-    queue_service = QueueService(
-        queue_repository,
-        lambda item: _execute_queue_item(settings, item),
-    )
-    queue_service.start(workers=max(1, settings.api_parallel_jobs))
 
     class Handler(BaseHTTPRequestHandler):
         def end_headers(self) -> None:
@@ -223,48 +217,8 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     status, payload = response
                     self._json(payload, status=status)
                     return
-            if parsed.path == "/":
-                self._send_static_file("index.html")
-                return
-            if parsed.path.startswith("/static/"):
-                self._send_static_file(unquote(parsed.path.removeprefix("/static/")))
-                return
-            if parsed.path == "/health":
-                self._json(_health_response(Settings.load()))
-                return
-            if parsed.path == "/recordings":
-                self._json(_recording_files(settings))
-                return
-            if parsed.path == "/publish/packages":
-                self._json(_publish_package_queue(settings))
-                return
-            if parsed.path == "/events":
-                self._send_events(parsed.query)
-                return
-            if parsed.path == "/jobs":
-                jobs = list_jobs(settings)
-                library_fields = job_library_fields_map(settings, [job.job_dir.name for job in jobs])
-                self._json([
-                    self._job_payload(job, library_fields=library_fields.get(job.job_dir.name))
-                    for job in jobs
-                ])
-                return
-            if parsed.path.startswith("/jobs/"):
-                parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "files":
-                    self._send_job_file(parts[1], parts[3], parsed.query)
-                    return
-                name = parts[1] if len(parts) >= 2 else ""
-                job = load_job(settings.jobs_dir / name / "job.json")
-                if job is None:
-                    self._json({"error": "job not found"}, status=404)
-                    return
-                payload = job.to_dict()
-                payload["files"] = _job_files(job.job_dir)
-                payload.update(job_library_fields(settings, job.job_dir.name))
-                self._json(payload)
-                return
-            self._json({"error": "not found"}, status=404)
+            if not self._dispatch_core_route("GET", parsed.path, parsed.query):
+                self._json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:  # noqa: N802
             nonlocal settings, allowed_origins
@@ -280,75 +234,8 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     status, body = response
                     self._json(body, status=status)
                     return
-            if parsed.path == "/health/install-tools":
-                self._install_health_tools()
-                return
-            if parsed.path == "/settings":
-                self._update_settings()
-                return
-            if parsed.path == "/recordings/upload":
-                self._upload_recording(parsed.query)
-                return
-            if parsed.path.startswith("/jobs/"):
-                parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approve":
-                    self._approve_job(parts[1])
-                    return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cuts":
-                    self._update_job_cuts(parts[1])
-                    return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "transcript":
-                    self._update_job_transcript(parts[1])
-                    return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "clip-feedback":
-                    self._save_clip_feedback(parts[1])
-                    return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "rerun":
-                    self._rerun_job_stage(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "covers" and parts[3] == "generate":
-                    self._generate_job_covers(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "covers" and parts[3] == "select":
-                    self._select_job_cover(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "segments" and parts[3] == "generate":
-                    self._generate_job_segments(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "metadata" and parts[3] == "generate":
-                    self._generate_job_metadata(parts[1])
-                    return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "metadata":
-                    self._save_job_metadata(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "generate":
-                    self._generate_job_highlights(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "cut":
-                    self._generate_job_highlight_cut(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "highlights" and parts[3] == "render":
-                    self._render_job_highlight_cut(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "publish" and parts[3] == "package":
-                    self._generate_job_publish_package(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "project-export" and parts[3] == "generate":
-                    self._generate_job_project_export(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "subtitles" and parts[3] == "translate":
-                    self._translate_job_subtitles(parts[1])
-                    return
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "subtitles" and parts[3] == "render-translated":
-                    self._render_translated_subtitles(parts[1])
-                    return
-            if parsed.path == "/process/batch":
-                self._process_batch(process_semaphore)
-                return
-            if parsed.path != "/process":
+            if not self._dispatch_core_route("POST", parsed.path, parsed.query):
                 self._json({"error": "not found"}, status=404)
-                return
-            self._process_one(process_semaphore)
 
         def _update_settings(self) -> None:
             nonlocal settings, allowed_origins
@@ -368,7 +255,6 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             settings = Settings.load()
             allowed_origins = _allowed_api_origins(settings)
             clear_health_cache()
-            _start_transcription_warmup(settings)
             publish_event("settings", {"changed": sorted(changed)})
             response = health_payload(settings)
             response["changed"] = sorted(changed)
@@ -424,12 +310,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return
             self._json({"tools_install": _tools_install_snapshot()}, status=202)
 
-        def _process_one(self, process_semaphore: threading.Semaphore) -> None:
+        def _process_one(self) -> None:
             payload = self._read_json()
             if payload is None:
                 return
             try:
-                job, status, queue_item = self._submit_process_payload(payload, process_semaphore)
+                job, status, queue_item = self._submit_process_payload(payload)
             except ValueError as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
@@ -438,7 +324,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 response["queue"] = queue_item
             self._json(response, status=status)
 
-        def _process_batch(self, process_semaphore: threading.Semaphore) -> None:
+        def _process_batch(self) -> None:
             payload = self._read_json()
             if payload is None:
                 return
@@ -470,7 +356,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 item_payload["batch_index"] = batch_index
                 item_payload["batch_size"] = batch_size
                 try:
-                    job, status, queue_item = self._submit_process_payload(item_payload, process_semaphore)
+                    job, status, queue_item = self._submit_process_payload(item_payload)
                 except ValueError as exc:
                     self._json({"error": str(exc)}, status=400)
                     return
@@ -489,7 +375,6 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
         def _submit_process_payload(
             self,
             payload: dict[str, Any],
-            process_semaphore: threading.Semaphore,
         ) -> tuple[Job, int, dict[str, Any] | None]:
             source = payload.get("path") or payload.get("source_path")
             if not source:
@@ -506,13 +391,20 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             except OSError as exc:
                 raise ValueError(str(exc)) from exc
             attach_job_context(settings, job, payload)
-            if job.status in {"needs_review", "done", "failed"} and not bool(payload.get("force", False)):
+            if job.status in TERMINAL_STATUSES and not bool(payload.get("force", False)):
                 return job, 200, queue_repository.get_by_job(job.job_dir.name)
             if job.status != "pending" and not bool(payload.get("force", False)):
                 return job, 202, queue_repository.get_by_job(job.job_dir.name)
             job.set_status("queued")
             queued_payload = dict(payload)
             queued_payload["path"] = str(job.source_path)
+            queued_payload["_runtime_settings_snapshot"] = snapshot_runtime_settings(settings)
+            recipe_id = str(queued_payload.get("recipe_id") or "").strip()
+            if recipe_id:
+                recipe = automation_repository_for(settings).get_recipe(recipe_id)
+                if recipe is None:
+                    raise ValueError(f"recipe not found: {recipe_id}")
+                queued_payload["_recipe_snapshot"] = recipe
             queue_item = queue_repository.enqueue(
                 job.job_dir.name,
                 queued_payload,
@@ -530,11 +422,85 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     status, payload = response
                     self._json(payload, status=status)
                     return
-            parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
-            if len(parts) == 2 and parts[0] == "jobs":
-                self._delete_job(parts[1])
+            if not self._dispatch_core_route("DELETE", parsed.path, parsed.query):
+                self._json({"error": "not found"}, status=404)
+
+        def _dispatch_core_route(self, method: str, path: str, query: str) -> bool:
+            matched = CORE_ROUTER.resolve(method, path)
+            if matched is None:
+                return False
+            job_name = matched.params.get("job_name", "")
+            handlers: dict[str, Callable[[], None]] = {
+                "root": lambda: self._send_static_file("index.html"),
+                "static_file": lambda: self._send_static_file(matched.params["asset_path"]),
+                "health": self._send_health,
+                "recordings": lambda: self._json(_recording_files(settings)),
+                "publish_packages": lambda: self._json(_publish_package_queue(settings)),
+                "events": lambda: self._send_events(query),
+                "jobs": self._send_jobs,
+                "job_file": lambda: self._send_job_file(job_name, matched.params["filename"], query),
+                "job": lambda: self._send_job(job_name),
+                "install_tools": self._install_health_tools,
+                "update_settings": self._update_settings,
+                "upload_recording": lambda: self._upload_recording(query),
+                "approve_job": lambda: self._approve_job(job_name),
+                "cancel_job": lambda: self._cancel_job(job_name),
+                "update_job_cuts": lambda: self._update_job_cuts(job_name),
+                "update_job_transcript": lambda: self._update_job_transcript(job_name),
+                "save_clip_feedback": lambda: self._save_clip_feedback(job_name),
+                "rerun_job_stage": lambda: self._rerun_job_stage(job_name),
+                "generate_job_covers": lambda: self._generate_job_covers(job_name),
+                "select_job_cover": lambda: self._select_job_cover(job_name),
+                "generate_job_segments": lambda: self._generate_job_segments(job_name),
+                "generate_job_metadata": lambda: self._generate_job_metadata(job_name),
+                "save_job_metadata": lambda: self._save_job_metadata(job_name),
+                "generate_job_highlights": lambda: self._generate_job_highlights(job_name),
+                "generate_job_highlight_cut": lambda: self._generate_job_highlight_cut(job_name),
+                "render_job_highlight_cut": lambda: self._render_job_highlight_cut(job_name),
+                "generate_job_publish_package": lambda: self._generate_job_publish_package(job_name),
+                "generate_job_project_export": lambda: self._generate_job_project_export(job_name),
+                "translate_job_subtitles": lambda: self._translate_job_subtitles(job_name),
+                "render_translated_subtitles": lambda: self._render_translated_subtitles(job_name),
+                "process_batch": self._process_batch,
+                "process_one": self._process_one,
+                "delete_job": lambda: self._delete_job(job_name),
+            }
+            handler = handlers.get(matched.endpoint)
+            if handler is None:
+                return False
+            handler()
+            return True
+
+        def _send_health(self) -> None:
+            payload = _health_response(Settings.load())
+            queue_worker = getattr(self.server, "queue_worker", None)
+            payload["queue_worker"] = (
+                queue_worker.status()
+                if queue_worker is not None
+                else {"mode": "disabled", "running": False, "pid": None, "workers": 0, "restart_count": 0}
+            )
+            self._json(payload)
+
+        def _send_jobs(self) -> None:
+            jobs = list_jobs(settings)
+            library_fields = job_library_fields_map(settings, [job.job_dir.name for job in jobs])
+            self._json([
+                self._job_payload(job, library_fields=library_fields.get(job.job_dir.name))
+                for job in jobs
+            ])
+
+        def _send_job(self, job_name: str) -> None:
+            job = load_job(settings.jobs_dir / job_name / "job.json")
+            if job is None:
+                self._json({"error": "job not found"}, status=404)
                 return
-            self._json({"error": "not found"}, status=404)
+            payload = self._job_payload(job, include_runtime=True)
+            payload["pipeline_runs"] = StageRunRepository(library_database_path(settings)).list_for_job(job_name)
+            latest_run = payload["pipeline_runs"][0] if payload["pipeline_runs"] else None
+            payload["active_stages"] = [
+                stage for stage in (latest_run or {}).get("stages", []) if stage.get("status") == "running"
+            ]
+            self._json(payload)
 
         def _approve_job(self, job_name: str) -> None:
             job_dir = (settings.jobs_dir / job_name).resolve()
@@ -668,6 +634,9 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if not _job_is_terminal(job):
                 self._json({"error": f"job is already {job.status}; wait for it to finish"}, status=409)
                 return
+            if self._job_runtime(job).get("active"):
+                self._json({"error": "another managed task is already active for this job"}, status=409)
+                return
             payload = self._read_json()
             if payload is None:
                 return
@@ -675,13 +644,22 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if stage not in RERUN_STATUS:
                 self._json({"error": f"unsupported stage: {stage}"}, status=400)
                 return
-            thread = threading.Thread(
-                target=_run_single_stage,
-                args=(settings, job, stage, payload),
-                daemon=True,
+            existing = queue_repository.get_by_job(job.job_dir.name)
+            queued_payload = dict((existing or {}).get("payload") or {})
+            queued_payload.update(payload)
+            queued_payload["path"] = str(job.source_path)
+            queued_payload["_runtime_settings_snapshot"] = snapshot_runtime_settings(settings)
+            if existing is None:
+                existing = queue_repository.enqueue(job.job_dir.name, queued_payload)
+            queue_item = queue_repository.retry_stage(
+                str(existing["id"]),
+                stage,
+                payload=queued_payload,
             )
-            thread.start()
-            self._json(self._job_payload(job), status=202)
+            job.set_status("queued")
+            response = self._job_payload(job, include_runtime=True)
+            response["queue"] = queue_item
+            self._json(response, status=202)
 
         def _generate_job_covers(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
@@ -701,21 +679,12 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             except Exception as exc:
                 self._json({"error": str(exc)}, status=400)
                 return
-            key = str(job.job_dir.resolve())
-            with COVER_GENERATIONS_LOCK:
-                if key in COVER_GENERATIONS:
-                    self._json({"error": "cover generation is already running for this job"}, status=409)
-                    return
-                COVER_GENERATIONS.add(key)
             manifest = mark_cover_generation_started(settings, job.job_dir, options)
             _publish_job_dir_event(job.job_dir)
-            thread = threading.Thread(
-                target=_run_cover_generation,
-                args=(settings, job.job_dir, key, options),
-                daemon=True,
-            )
-            thread.start()
-            self._json({"job": self._job_payload(job), "cover": manifest}, status=202)
+            queue_item = self._enqueue_job_command(job, "generate_covers", options)
+            if queue_item is None:
+                return
+            self._json({"job": self._job_payload(job), "cover": manifest, "queue": queue_item}, status=202)
 
         def _select_job_cover(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
@@ -740,272 +709,134 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             self._json({"job": self._job_payload(job), "cover": manifest})
 
         def _generate_job_segments(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    manifest = generate_platform_segments(
-                        settings,
-                        job.job_dir,
-                        platforms=_string_list(payload.get("platforms")),
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "segments": manifest})
-            finally:
-                _end_enhancement(run_key)
+            self._queue_job_enhancement(job_name, "generate_segments")
 
         def _generate_job_metadata(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    metadata = generate_metadata(
-                        settings,
-                        job.job_dir,
-                        platform=str(payload.get("platform") or "douyin"),
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "metadata": metadata})
-            finally:
-                _end_enhancement(run_key)
+            self._queue_job_enhancement(job_name, "generate_metadata")
 
         def _save_job_metadata(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
-            if job is None:
+            if job is None or not self._allow_quick_mutation(job):
                 return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
+            payload = self._read_json()
+            if payload is None:
                 return
             try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    metadata = save_metadata(job.job_dir, payload)
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "metadata": metadata})
-            finally:
-                _end_enhancement(run_key)
+                metadata = save_metadata(job.job_dir, payload)
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            self._json({"job": self._job_payload(job), "metadata": metadata})
 
         def _generate_job_highlights(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    highlights = generate_highlights(settings, job.job_dir, force=bool(payload.get("force", False)))
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "highlights": highlights})
-            finally:
-                _end_enhancement(run_key)
+            self._queue_job_enhancement(job_name, "generate_highlights")
 
         def _generate_job_highlight_cut(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
-            if job is None:
+            if job is None or not self._allow_quick_mutation(job):
                 return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
+            payload = self._read_json()
+            if payload is None:
                 return
             try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    highlight_cut = generate_highlight_cut(
-                        job.job_dir,
-                        target_seconds=float(payload.get("target_seconds") or 60),
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "highlight_cut": highlight_cut})
-            finally:
-                _end_enhancement(run_key)
+                highlight_cut = generate_highlight_cut(
+                    job.job_dir,
+                    target_seconds=float(payload.get("target_seconds") or 60),
+                    force=bool(payload.get("force", False)),
+                )
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            self._json({"job": self._job_payload(job), "highlight_cut": highlight_cut})
 
         def _render_job_highlight_cut(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
             if job is None:
                 return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
+            payload = self._read_json()
+            if payload is None:
                 return
+            target_seconds = float(payload.get("target_seconds") or 60)
             try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                target_seconds = float(payload.get("target_seconds") or 60)
-                try:
-                    highlight_cut = generate_highlight_cut(
-                        job.job_dir,
-                        target_seconds=target_seconds,
-                        force=bool(payload.get("force_cut", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                thread = threading.Thread(
-                    target=_run_highlight_render,
-                    args=(settings, job, run_key, highlight_cut),
-                    daemon=True,
+                highlight_cut = generate_highlight_cut(
+                    job.job_dir,
+                    target_seconds=target_seconds,
+                    force=bool(payload.get("force_cut", False)),
                 )
-                thread.start()
-                run_key = ""
-                self._json({
-                    "job": self._job_payload(job),
-                    "status": "rendering",
-                    "highlight_cut": highlight_cut,
-                    "output": "highlight.mp4",
-                }, status=202)
-            finally:
-                if run_key:
-                    _end_enhancement(run_key)
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            queue_item = self._enqueue_job_command(job, "render_highlight", {"highlight_cut": highlight_cut})
+            if queue_item is None:
+                return
+            self._json({
+                "job": self._job_payload(job),
+                "status": "queued",
+                "highlight_cut": highlight_cut,
+                "output": "highlight.mp4",
+                "queue": queue_item,
+            }, status=202)
 
         def _generate_job_publish_package(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    package = generate_publish_package(
-                        settings,
-                        job.job_dir,
-                        platforms=_string_list(payload.get("platforms")),
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "package": package})
-            finally:
-                _end_enhancement(run_key)
-
+            self._queue_job_enhancement(job_name, "generate_publish_package")
         def _generate_job_project_export(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                try:
-                    export_manifest = generate_project_exports(
-                        settings,
-                        job.job_dir,
-                        targets=_string_list(payload.get("targets")),
-                        include_clips=bool(payload.get("include_clips", False)),
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "project_export": export_manifest})
-            finally:
-                _end_enhancement(run_key)
-
+            self._queue_job_enhancement(job_name, "generate_project_export")
         def _translate_job_subtitles(self, job_name: str) -> None:
-            job = self._load_job_for_mutation(job_name)
-            if job is None:
-                return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
-                return
-            try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                target_language = str(payload.get("target_language") or "zh").strip() or "zh"
-                try:
-                    translation = translate_subtitles(
-                        settings,
-                        job.job_dir,
-                        target_language=target_language,
-                        force=bool(payload.get("force", False)),
-                    )
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                self._json({"job": self._job_payload(job), "translation": translation})
-            finally:
-                _end_enhancement(run_key)
-
+            self._queue_job_enhancement(job_name, "translate_subtitles")
         def _render_translated_subtitles(self, job_name: str) -> None:
             job = self._load_job_for_mutation(job_name)
             if job is None:
                 return
-            run_key = self._begin_enhancement(job)
-            if run_key is None:
+            payload = self._read_json()
+            if payload is None:
                 return
+            target_language = str(payload.get("target_language") or "zh").strip() or "zh"
             try:
-                payload = self._read_json()
-                if payload is None:
-                    return
-                target_language = str(payload.get("target_language") or "zh").strip() or "zh"
-                try:
-                    subtitle_name = translated_clipped_ass_name(target_language)
-                    output_filename = translated_final_video_name(target_language)
-                except Exception as exc:
-                    self._json({"error": str(exc)}, status=400)
-                    return
-                subtitle_file = job.job_dir / subtitle_name
-                if not subtitle_file.exists() or subtitle_file.stat().st_size < 1:
-                    self._json({"error": f"translated subtitles are not ready for {target_language}"}, status=400)
-                    return
-                thread = threading.Thread(
-                    target=_run_translated_final_render,
-                    args=(settings, job, run_key, target_language, output_filename),
-                    daemon=True,
-                )
-                thread.start()
-                run_key = ""
-                self._json({
-                    "job": self._job_payload(job),
-                    "status": "rendering",
-                    "target_language": target_language,
-                    "output": output_filename,
-                }, status=202)
-            finally:
-                if run_key:
-                    _end_enhancement(run_key)
+                subtitle_name = translated_clipped_ass_name(target_language)
+                output_filename = translated_final_video_name(target_language)
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            subtitle_file = job.job_dir / subtitle_name
+            if not subtitle_file.exists() or subtitle_file.stat().st_size < 1:
+                self._json({"error": f"translated subtitles are not ready for {target_language}"}, status=400)
+                return
+            queue_item = self._enqueue_job_command(job, "render_translated_subtitles", {
+                "target_language": target_language,
+                "output_filename": output_filename,
+            })
+            if queue_item is None:
+                return
+            self._json({
+                "job": self._job_payload(job),
+                "status": "queued",
+                "target_language": target_language,
+                "output": output_filename,
+                "queue": queue_item,
+            }, status=202)
+
+        def _cancel_job(self, job_name: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            if _job_is_terminal(job):
+                self._json({"error": f"job is already {job.status}"}, status=409)
+                return
+            runtime = self._job_runtime(job)
+            queue_item = runtime.get("queue")
+            if isinstance(queue_item, dict) and queue_item.get("status") in {"pending", "paused", "running"}:
+                updated = queue_repository.cancel(str(queue_item.get("id") or ""))
+                # A running worker owns job.json until it acknowledges the
+                # cooperative stop. Pending and paused work has no owner and
+                # can become terminal immediately.
+                if updated and updated.get("status") == "canceled":
+                    job.cancel()
+            elif runtime.get("stale"):
+                job.cancel("Stopped stale job state because no active worker was found")
+            else:
+                self._json({"error": "job is active outside the managed queue and cannot be canceled safely"}, status=409)
+                return
+            self._json(self._job_payload(job, include_runtime=True))
 
         def _delete_job(self, job_name: str) -> None:
             job_dir = (settings.jobs_dir / job_name).resolve()
@@ -1021,10 +852,21 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             if job is None:
                 self._json({"error": "job not found"}, status=404)
                 return
-            if not _job_is_terminal(job):
+            runtime = self._job_runtime(job)
+            if runtime.get("active"):
+                self._json({"error": "job still has an active worker; wait for cancellation to finish before deleting"}, status=409)
+                return
+            if not _job_is_terminal(job) and not runtime.get("stale"):
                 self._json({"error": f"job is already {job.status}; wait for it to finish before deleting"}, status=409)
                 return
-            shutil.rmtree(job_dir)
+            tombstone = job_dir.with_name(f".{job_dir.name}.deleting-{uuid.uuid4().hex}")
+            job_dir.replace(tombstone)
+            try:
+                delete_job_records(settings, job_name)
+            except Exception:
+                tombstone.replace(job_dir)
+                raise
+            shutil.rmtree(tombstone)
             self._json({"deleted": job_name})
 
         def _upload_recording(self, query: str) -> None:
@@ -1089,24 +931,72 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return None
             return job
 
-        def _job_payload(self, job: Job, *, library_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+        def _job_payload(
+            self,
+            job: Job,
+            *,
+            library_fields: dict[str, Any] | None = None,
+            include_runtime: bool = False,
+        ) -> dict[str, Any]:
             payload = job.to_dict()
             payload["files"] = _job_files(job.job_dir)
             payload["feedback"] = _job_feedback(job.job_dir)
             payload.update(library_fields or job_library_fields(settings, job.job_dir.name))
+            if include_runtime:
+                payload["runtime"] = self._job_runtime(job)
             return payload
 
-        def _begin_enhancement(self, job: Job) -> str | None:
+        def _job_runtime(self, job: Job) -> dict[str, Any]:
+            queue_item = queue_repository.get_by_job(job.job_dir.name)
+            pipeline_runs = StageRunRepository(library_database_path(settings)).list_for_job(job.job_dir.name, limit=1)
+            return _job_runtime_state(job.status, queue_item, pipeline_runs)
+
+        def _allow_quick_mutation(self, job: Job) -> bool:
             if not _job_is_terminal(job):
                 self._json({"error": f"job is already {job.status}; wait for it to finish before running enhancements"}, status=409)
+                return False
+            if self._job_runtime(job).get("active"):
+                self._json({"error": "another managed task is already active for this job"}, status=409)
+                return False
+            return True
+
+        def _enqueue_job_command(
+            self,
+            job: Job,
+            command: str,
+            command_payload: dict[str, Any],
+        ) -> dict[str, Any] | None:
+            if not _job_is_terminal(job):
+                self._json({"error": f"job is already {job.status}; wait for it to finish"}, status=409)
                 return None
-            key = str(job.job_dir.resolve())
-            with ENHANCEMENT_RUNS_LOCK:
-                if key in ENHANCEMENT_RUNS:
-                    self._json({"error": "an enhancement is already running for this job"}, status=409)
-                    return None
-                ENHANCEMENT_RUNS.add(key)
-            return key
+            current = queue_repository.get_by_job(job.job_dir.name)
+            if current and current.get("status") in {"pending", "running", "paused"}:
+                self._json({"error": "another managed task is already active for this job"}, status=409)
+                return None
+            payload = {
+                "path": str(job.source_path),
+                "_command": command,
+                "_command_payload": command_payload,
+                "_runtime_settings_snapshot": snapshot_runtime_settings(settings),
+            }
+            return queue_repository.enqueue(job.job_dir.name, payload)
+
+        def _queue_job_enhancement(self, job_name: str, command: str) -> None:
+            job = self._load_job_for_mutation(job_name)
+            if job is None:
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            queue_item = self._enqueue_job_command(job, command, payload)
+            if queue_item is None:
+                return
+            self._json({
+                "job": self._job_payload(job),
+                "status": "queued",
+                "command": command,
+                "queue": queue_item,
+            }, status=202)
 
         def _send_events(self, query: str = "") -> None:
             requested_last_id = _event_last_id(self.headers.get("Last-Event-ID"), query)
@@ -1126,7 +1016,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                     "server_time": datetime.now().isoformat(timespec="seconds"),
                 }, event_id=snapshot_id).encode("utf-8"))
                 self.wfile.flush()
-                if requested_last_id <= 0:
+                if requested_last_id <= 0 or requested_last_id > snapshot_id:
                     last_id = snapshot_id
                 while True:
                     events = wait_for_events(last_id, timeout_seconds=15.0)
@@ -1202,12 +1092,15 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             with path.open("rb") as handle:
                 handle.seek(start)
                 remaining = content_length
-                while remaining > 0:
-                    chunk = handle.read(min(CHUNK_SIZE, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+                try:
+                    while remaining > 0:
+                        chunk = handle.read(min(CHUNK_SIZE, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -1258,7 +1151,6 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             self._json({"error": "origin not allowed"}, status=403)
             return False
 
-    Handler.queue_service = queue_service
     return Handler
 
 
@@ -1502,6 +1394,61 @@ def _job_is_terminal(job: Job) -> bool:
     return job.status in TERMINAL_STATUSES
 
 
+def _job_runtime_state(
+    job_status: str,
+    queue_item: dict[str, Any] | None,
+    pipeline_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    queue_status = str((queue_item or {}).get("status") or "")
+    queue_pid = _safe_int((queue_item or {}).get("worker_pid"))
+    queue_active = queue_status in {"pending", "paused"} or queue_status == "running"
+    latest_run = pipeline_runs[0] if pipeline_runs else None
+    pipeline_pid = _safe_int((latest_run or {}).get("worker_pid"))
+    pipeline_active = bool(
+        latest_run
+        and latest_run.get("status") == "running"
+        and _pid_is_alive(pipeline_pid)
+    )
+    terminal = job_status in TERMINAL_STATUSES
+    # Queue ownership is authoritative even if job.json temporarily contains
+    # a terminal projection while the worker is finishing its acknowledgement.
+    active = queue_active or (not terminal and pipeline_active)
+    stale = not terminal and not active
+    queue_summary = None
+    if queue_item is not None:
+        queue_summary = {
+            "id": queue_item.get("id"),
+            "status": queue_status,
+            "worker_pid": queue_item.get("worker_pid"),
+            "heartbeat_at": queue_item.get("heartbeat_at"),
+            "cancel_requested": bool(queue_item.get("cancel_requested")),
+        }
+    return {
+        "active": active,
+        "stale": stale,
+        "can_cancel": not terminal and not bool((queue_item or {}).get("cancel_requested")) and (active or stale),
+        "can_delete": not active and (terminal or stale),
+        "queue": queue_summary,
+        "pipeline": {
+            "id": latest_run.get("id"),
+            "status": latest_run.get("status"),
+            "worker_pid": latest_run.get("worker_pid"),
+        } if latest_run else None,
+    }
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _job_feedback(job_dir: Path) -> dict[str, Any]:
     return read_json_file(job_dir / "feedback.json") or {"items": []}
 
@@ -1578,11 +1525,6 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _end_enhancement(key: str) -> None:
-    with ENHANCEMENT_RUNS_LOCK:
-        ENHANCEMENT_RUNS.discard(key)
 
 
 def _job_files(job_dir: Path) -> list[dict[str, Any]]:
@@ -1666,29 +1608,6 @@ def _recording_upload_path(settings: Settings, filename: str) -> Path:
     raise ValueError("too many duplicate filenames")
 
 
-def _run_cover_generation(settings: Settings, job_dir: Path, key: str, options: dict[str, Any]) -> None:
-    try:
-        try:
-            generate_cover_candidates(
-                settings,
-                job_dir,
-                title=str(options.get("title") or "").strip(),
-                style=str(options.get("style") or "short_video").strip(),
-                count=int(options.get("count") or settings.cover_count),
-                aspects=[str(value) for value in options.get("aspects", [])] if isinstance(options.get("aspects"), list) else None,
-            )
-        except Exception as exc:
-            manifest = cover_manifest(job_dir)
-            manifest["status"] = "failed"
-            manifest["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            manifest["error"] = str(exc)
-            write_json_atomic(job_dir / "cover_manifest.json", manifest)
-    finally:
-        with COVER_GENERATIONS_LOCK:
-            COVER_GENERATIONS.discard(key)
-        _publish_job_dir_event(job_dir)
-
-
 def _execute_queue_item(settings: Settings, item: dict[str, Any]) -> None:
     job_name = str(item.get("job_name") or "")
     job = load_job(Path(settings.jobs_dir) / job_name / "job.json")
@@ -1696,17 +1615,215 @@ def _execute_queue_item(settings: Settings, item: dict[str, Any]) -> None:
         raise RuntimeError(f"queued job not found: {job_name}")
     ensure_job_capacity(settings, job.source_path)
     payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    write_json_atomic(job.job_dir / "run_config.json", {
+        "queue_id": item.get("id"),
+        "attempt": item.get("attempt"),
+        "retry_stage": item.get("retry_stage"),
+        "runtime_settings": payload.get("_runtime_settings_snapshot"),
+        "recipe": payload.get("_recipe_snapshot"),
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+    })
     job_settings, options = _queued_process_config(settings, payload)
     retry_stage = str(item.get("retry_stage") or "").strip()
+    def control_callback() -> str | None:
+        return _queue_control_action(settings, str(item.get("id") or ""))
+    command = str(payload.get("_command") or "").strip()
+    if command:
+        _execute_managed_job_command(
+            job_settings,
+            job,
+            command,
+            payload.get("_command_payload") if isinstance(payload.get("_command_payload"), dict) else {},
+            control_callback=control_callback,
+        )
+        return
     if retry_stage:
         if retry_stage not in RERUN_STATUS:
             raise RuntimeError(f"unsupported retry stage: {retry_stage}")
-        _run_single_stage(job_settings, job, retry_stage, options)
+        options.update({
+            "force": True,
+            "selected_stages": [retry_stage],
+            "expand_selected_dependencies": False,
+            "completion_status": "needs_review",
+            "control_callback": control_callback,
+        })
+        process_job(job_settings, job, **options)
     else:
-        options["control_callback"] = lambda: _queue_control_action(settings, str(item.get("id") or ""))
+        options["control_callback"] = control_callback
         process_job(job_settings, job, **options)
     if job.status == "failed":
         raise RuntimeError(job.error or "job failed")
+
+
+def _execute_managed_job_command(
+    settings: Settings,
+    job: Job,
+    command: str,
+    payload: dict[str, Any],
+    *,
+    control_callback: Callable[[], str | None],
+) -> None:
+    def check_control() -> None:
+        action = control_callback()
+        if action in {"paused", "canceled"}:
+            raise QueueControlRequested(action)
+
+    check_control()
+    if command == "generate_covers":
+        try:
+            generate_cover_candidates(
+                settings,
+                job.job_dir,
+                title=str(payload.get("title") or "").strip(),
+                style=str(payload.get("style") or "short_video").strip(),
+                count=int(payload.get("count") or settings.cover_count),
+                aspects=[str(value) for value in payload.get("aspects", [])]
+                if isinstance(payload.get("aspects"), list)
+                else None,
+            )
+        finally:
+            _publish_job_dir_event(job.job_dir)
+        check_control()
+        return
+    if command == "generate_segments":
+        generate_platform_segments(
+            settings,
+            job.job_dir,
+            platforms=_string_list(payload.get("platforms")),
+            force=bool(payload.get("force", False)),
+        )
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "generate_metadata":
+        generate_metadata(
+            settings,
+            job.job_dir,
+            platform=str(payload.get("platform") or "douyin"),
+            force=bool(payload.get("force", False)),
+        )
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "generate_highlights":
+        generate_highlights(settings, job.job_dir, force=bool(payload.get("force", False)))
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "generate_publish_package":
+        generate_publish_package(
+            settings,
+            job.job_dir,
+            platforms=_string_list(payload.get("platforms")),
+            force=bool(payload.get("force", False)),
+        )
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "generate_project_export":
+        generate_project_exports(
+            settings,
+            job.job_dir,
+            targets=_string_list(payload.get("targets")),
+            include_clips=bool(payload.get("include_clips", False)),
+            force=bool(payload.get("force", False)),
+        )
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "translate_subtitles":
+        target_language = str(payload.get("target_language") or "zh").strip() or "zh"
+        translate_subtitles(
+            settings,
+            job.job_dir,
+            target_language=target_language,
+            force=bool(payload.get("force", False)),
+        )
+        check_control()
+        _publish_job_dir_event(job.job_dir)
+        return
+    if command == "render_highlight":
+        highlight_cut = payload.get("highlight_cut") if isinstance(payload.get("highlight_cut"), dict) else {}
+        status_path = job.job_dir / "highlight_render_status.json"
+        status_base = {
+            "output": "highlight.mp4",
+            "duration_seconds": highlight_cut.get("duration_seconds", 0),
+            "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            write_json_atomic(status_path, {**status_base, "status": "rendering", "message": "Rendering highlight video."})
+            render_highlight_video(
+                settings,
+                job.job_dir,
+                job.source_path,
+                force=True,
+                resource_wait_callback=lambda: write_json_atomic(
+                    status_path, {**status_base, "status": "waiting_for_gpu", "message": "Waiting for GPU to render highlight video."}
+                ),
+                resource_acquired_callback=lambda: write_json_atomic(
+                    status_path, {**status_base, "status": "rendering", "message": "GPU available. Rendering highlight video."}
+                ),
+                control_callback=control_callback,
+            )
+            write_json_atomic(status_path, {
+                **status_base,
+                "status": "done",
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+            })
+        except QueueControlRequested:
+            write_json_atomic(status_path, {**status_base, "status": "canceled"})
+            raise
+        except Exception as exc:
+            write_json_atomic(status_path, {**status_base, "status": "failed", "error": str(exc)})
+            raise
+        finally:
+            _publish_job_dir_event(job.job_dir)
+        return
+    if command == "render_translated_subtitles":
+        target_language = str(payload.get("target_language") or "zh").strip() or "zh"
+        output_filename = str(payload.get("output_filename") or translated_final_video_name(target_language))
+        status_path = job.job_dir / f"subtitle_translation_render_{target_language}.json"
+        status_base = {
+            "target_language": target_language,
+            "output": output_filename,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
+        try:
+            write_json_atomic(status_path, {**status_base, "status": "rendering", "message": "Rendering translated subtitles."})
+            render_final_video(
+                settings,
+                job.job_dir,
+                job.source_path,
+                force=True,
+                vertical=bool(preview.get("vertical", False)),
+                burn_subtitles=True,
+                subtitle_filename=translated_clipped_ass_name(target_language),
+                output_filename=output_filename,
+                resource_wait_callback=lambda: write_json_atomic(
+                    status_path, {**status_base, "status": "waiting_for_gpu", "message": "Waiting for GPU to render translated subtitles."}
+                ),
+                resource_acquired_callback=lambda: write_json_atomic(
+                    status_path, {**status_base, "status": "rendering", "message": "GPU available. Rendering translated subtitles."}
+                ),
+                control_callback=control_callback,
+            )
+            write_json_atomic(status_path, {
+                **status_base,
+                "status": "done",
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+            })
+        except QueueControlRequested:
+            write_json_atomic(status_path, {**status_base, "status": "canceled"})
+            raise
+        except Exception as exc:
+            write_json_atomic(status_path, {**status_base, "status": "failed", "error": str(exc)})
+            raise
+        finally:
+            _publish_job_dir_event(job.job_dir)
+        return
+    raise RuntimeError(f"unsupported managed job command: {command}")
 
 
 def _queue_control_action(settings: Settings, queue_id: str) -> str | None:
@@ -1721,10 +1838,13 @@ def _queue_control_action(settings: Settings, queue_id: str) -> str | None:
 
 
 def _queued_process_config(settings: Settings, payload: dict[str, Any]) -> tuple[Settings, dict[str, Any]]:
+    settings = apply_runtime_settings_snapshot(settings, payload.get("_runtime_settings_snapshot"))
     effective = dict(payload)
     recipe_id = str(payload.get("recipe_id") or "").strip()
     if recipe_id:
-        recipe = automation_repository_for(settings).get_recipe(recipe_id)
+        recipe = payload.get("_recipe_snapshot")
+        if not isinstance(recipe, dict):
+            recipe = automation_repository_for(settings).get_recipe(recipe_id)
         if recipe is None:
             raise RuntimeError(f"recipe not found: {recipe_id}")
         effective = {**recipe.get("options", {}), **effective}
@@ -1755,251 +1875,35 @@ def _queued_process_config(settings: Settings, payload: dict[str, Any]) -> tuple
     return job_settings, options
 
 
-def _run_process_job(process_semaphore: threading.Semaphore, settings: Settings, job: Job, options: dict[str, Any]) -> None:
-    with process_semaphore:
-        process_job(settings, job, **options)
-
-
 def _publish_job_dir_event(job_dir: Path) -> None:
     job = load_job(job_dir / "job.json")
     if job is not None:
         publish_event("job", job.to_dict())
 
 
-def _run_single_stage(settings: Settings, job: Job, stage: str, options: dict[str, Any]) -> None:
-    job.start_stage(RERUN_STATUS[stage], stage, message=f"Rerunning {stage}.")
-    try:
-        if stage == "probe":
-            manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=True)
-            if manifest["audio_stream_count"] < 1:
-                raise RuntimeError("source has no audio stream")
-            if manifest.get("video_stream_count", 0) > 0:
-                generate_thumbnail(settings, job.source_path, job.job_dir / "thumbnail.jpg", manifest["duration_seconds"], force=True)
-        elif stage == "detect_corruption":
-            manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=False)
-            detect_decode_errors(settings, job.source_path, manifest["duration_seconds"], job.job_dir / "corrupt.json", force=True)
-        elif stage == "extract_audio":
-            extract_audio_outputs(
-                settings,
-                job.source_path,
-                job.job_dir / "audio.wav",
-                _high_quality_audio_path(settings, job, plan_uvr_enabled=bool(options.get("plan_uvr", False))),
-                force=True,
-            )
-            generate_waveform(settings, job.job_dir / "audio.wav", job.job_dir / "waveform.json", force=True)
-        elif stage == "transcribe":
-            on_wait, on_acquired = job_gpu_status_callbacks(job, "transcription")
-            transcribe_audio(
-                settings,
-                job.job_dir / "audio.wav",
-                job.job_dir,
-                force=True,
-                resource_wait_callback=on_wait,
-                resource_acquired_callback=on_acquired,
-            )
-            if (job.job_dir / "cuts.json").exists():
-                generate_cuts(
-                    job.job_dir,
-                    _manifest_duration(job.job_dir),
-                    force=True,
-                    min_clip_seconds=settings.cut_min_clip_seconds,
-                    merge_gap_seconds=settings.cut_merge_gap_seconds,
-                )
-                _remove_render_outputs(job.job_dir)
-                generate_render_preview(settings, job.job_dir, job.source_path, force=True)
-        elif stage == "detect_silence":
-            detect_silence(settings, job.job_dir / "audio.wav", _manifest_duration(job.job_dir), job.job_dir / "silence.json", force=True)
-        elif stage == "detect_freeze":
-            detect_freeze(settings, job.source_path, _manifest_duration(job.job_dir), job.job_dir / "freeze.json", force=True)
-        elif stage == "detect_scenes":
-            detect_scenes(settings, job.source_path, _manifest_duration(job.job_dir), job.job_dir / "scene.json", force=True)
-        elif stage == "plan_cuts":
-            generate_cuts(
-                job.job_dir,
-                _manifest_duration(job.job_dir),
-                force=True,
-                min_clip_seconds=settings.cut_min_clip_seconds,
-                merge_gap_seconds=settings.cut_merge_gap_seconds,
-            )
-            _remove_render_outputs(job.job_dir)
-            generate_render_preview(settings, job.job_dir, job.source_path, force=True)
-        elif stage == "style_subtitles":
-            generate_ass_subtitles(settings, job.job_dir, force=True)
-            generate_clipped_ass_subtitles(settings, job.job_dir, force=True)
-        elif stage == "plan_crop":
-            generate_vertical_crop_plan(settings, job.job_dir, force=True)
-        elif stage == "plan_uvr":
-            generate_uvr_plan(settings, job.job_dir, force=True)
-        elif stage == "plan_render":
-            generate_render_preview(settings, job.job_dir, job.source_path, force=True)
-            generate_platform_export_plan(settings, job.job_dir, force=True)
-            generate_bgm_mix_plan(settings, job.job_dir, force=True)
-            generate_webhook_plan(settings, job.job_dir, force=True)
-        elif stage == "render_review":
-            on_wait, on_acquired = job_gpu_status_callbacks(job, "review render")
-            render_review_video(
-                settings,
-                job.job_dir,
-                job.source_path,
-                force=True,
-                progress_callback=_progress_callback(job, stage),
-                resource_wait_callback=on_wait,
-                resource_acquired_callback=on_acquired,
-            )
-        elif stage == "render_final":
-            preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
-            vertical, burn_subtitles = _infer_final_render_options(job.job_dir, preview, options)
-            on_wait, on_acquired = job_gpu_status_callbacks(job, "final render")
-            render_final_video(
-                settings,
-                job.job_dir,
-                job.source_path,
-                force=True,
-                vertical=vertical,
-                burn_subtitles=burn_subtitles,
-                progress_callback=_progress_callback(job, stage),
-                resource_wait_callback=on_wait,
-                resource_acquired_callback=on_acquired,
-            )
-        job.complete_stage()
-        job.set_status("needs_review")
-    except Exception as exc:
-        job.fail(str(exc))
-
-
-def _run_translated_final_render(settings: Settings, job: Job, run_key: str, target_language: str, output_filename: str) -> None:
-    status_path = job.job_dir / f"subtitle_translation_render_{target_language}.json"
-    status_base = {
-        "target_language": target_language,
-        "output": output_filename,
-        "started_at": datetime.now().isoformat(timespec="seconds"),
-    }
-
-    def write_status(status: str, message: str) -> None:
-        write_json_atomic(status_path, {**status_base, "status": status, "message": message})
-
-    try:
-        preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
-        write_status("rendering", "Rendering translated subtitles.")
-        render_final_video(
-            settings,
-            job.job_dir,
-            job.source_path,
-            force=True,
-            vertical=bool(preview.get("vertical", False)),
-            burn_subtitles=True,
-            subtitle_filename=translated_clipped_ass_name(target_language),
-            output_filename=output_filename,
-            resource_wait_callback=lambda: write_status("waiting_for_gpu", "Waiting for GPU to render translated subtitles."),
-            resource_acquired_callback=lambda: write_status("rendering", "GPU available. Rendering translated subtitles."),
-        )
-        write_json_atomic(status_path, {
-            "status": "done",
-            "target_language": target_language,
-            "output": output_filename,
-            "completed_at": datetime.now().isoformat(timespec="seconds"),
-        })
-    except Exception as exc:
-        write_json_atomic(status_path, {
-            "status": "failed",
-            "target_language": target_language,
-            "output": output_filename,
-            "error": str(exc),
-            "failed_at": datetime.now().isoformat(timespec="seconds"),
-        })
-    finally:
-        _end_enhancement(run_key)
-
-
-def _run_highlight_render(settings: Settings, job: Job, run_key: str, highlight_cut: dict[str, Any]) -> None:
-    status_path = job.job_dir / "highlight_render_status.json"
-    output_filename = "highlight.mp4"
-    status_base = {
-        "output": output_filename,
-        "duration_seconds": highlight_cut.get("duration_seconds", 0),
-        "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
-        "started_at": datetime.now().isoformat(timespec="seconds"),
-    }
-
-    def write_status(status: str, message: str) -> None:
-        write_json_atomic(status_path, {**status_base, "status": status, "message": message})
-
-    try:
-        write_status("rendering", "Rendering highlight video.")
-        render_highlight_video(
-            settings,
-            job.job_dir,
-            job.source_path,
-            force=True,
-            resource_wait_callback=lambda: write_status("waiting_for_gpu", "Waiting for GPU to render highlight video."),
-            resource_acquired_callback=lambda: write_status("rendering", "GPU available. Rendering highlight video."),
-        )
-        write_json_atomic(status_path, {
-            "status": "done",
-            "output": output_filename,
-            "duration_seconds": highlight_cut.get("duration_seconds", 0),
-            "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
-            "completed_at": datetime.now().isoformat(timespec="seconds"),
-        })
-        _publish_job_dir_event(job.job_dir)
-    except Exception as exc:
-        write_json_atomic(status_path, {
-            "status": "failed",
-            "output": output_filename,
-            "error": str(exc),
-            "failed_at": datetime.now().isoformat(timespec="seconds"),
-        })
-        _publish_job_dir_event(job.job_dir)
-    finally:
-        _end_enhancement(run_key)
-
-
-def _progress_callback(job: Job, stage: str):
-    def callback(percent: float) -> None:
-        value = round(max(0.0, min(100.0, percent)), 2)
-        job.update_stage_progress(value, message=f"{stage} progress {value:.1f}%.")
-
-    return callback
-
-
-def _manifest_duration(job_dir: Path) -> float:
-    manifest = read_json_file(job_dir / "manifest.json") or {}
-    try:
-        return float(manifest.get("duration_seconds") or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _infer_final_render_options(job_dir: Path, preview: dict[str, Any], options: dict[str, Any]) -> tuple[bool, bool]:
-    vertical = bool(options["vertical"]) if "vertical" in options else bool(preview.get("vertical", False))
-    burn_subtitles = (
-        bool(options["burn_subtitles"])
-        if "burn_subtitles" in options
-        else bool(preview.get("burn_subtitles", False))
+def _run_single_stage(
+    settings: Settings,
+    job: Job,
+    stage: str,
+    options: dict[str, Any],
+    *,
+    control_callback: Callable[[], str | None] | None = None,
+) -> None:
+    """Compatibility entry point backed by the canonical pipeline implementation."""
+    if stage not in RERUN_STATUS:
+        raise ValueError(f"unsupported stage: {stage}")
+    job_settings, process_options = _queued_process_config(
+        settings,
+        {"path": str(job.source_path), **dict(options)},
     )
-    if "vertical" not in options and not vertical:
-        vertical = _has_vertical_crop_plan(job_dir)
-    if "burn_subtitles" not in options and not burn_subtitles:
-        burn_subtitles = (job_dir / "subtitles_clipped.ass").exists()
-    return vertical, burn_subtitles
-
-
-def _has_vertical_crop_plan(job_dir: Path) -> bool:
-    plan = read_json_file(job_dir / "crop_plan.json") or {}
-    target = plan.get("target") if isinstance(plan, dict) else {}
-    if isinstance(target, dict):
-        try:
-            width = int(target.get("width") or 0)
-            height = int(target.get("height") or 0)
-        except (TypeError, ValueError):
-            width = 0
-            height = 0
-        if width > 0 and height > width:
-            return True
-    filter_text = str(plan.get("ffmpeg_filter") or "") if isinstance(plan, dict) else ""
-    return "1080:1920" in filter_text or "crop=1080:1920" in filter_text
-
-
+    process_options.update({
+        "force": True,
+        "selected_stages": [stage],
+        "expand_selected_dependencies": False,
+        "completion_status": "needs_review",
+        "control_callback": control_callback,
+    })
+    process_job(job_settings, job, **process_options)
 def _update_transcript_from_editor(job_dir: Path, segments: list[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(segments, list):
         raise RuntimeError("segments must be a list")

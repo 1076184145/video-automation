@@ -75,13 +75,13 @@ test("dashboard cards use creator actions instead of raw pipeline status codes",
   assert.doesNotMatch(html, />needs_review</);
 });
 
-test("dashboard only renders delete controls for completed jobs", () => {
+test("dashboard renders delete controls for completed and failed jobs", () => {
   const html = renderDashboardJobsForTest(jobs);
 
   assert.match(html, /data-delete-job="done-job"/);
   assert.doesNotMatch(html, /data-delete-job="review-job"/);
-  assert.doesNotMatch(html, /data-delete-job="failed-job"/);
-  assert.match(html, /aria-label="删除已完成任务"/);
+  assert.match(html, /data-delete-job="failed-job"/);
+  assert.match(html, /aria-label="删除任务"/);
 });
 
 test("dashboard empty actionable state still exposes completed history", () => {

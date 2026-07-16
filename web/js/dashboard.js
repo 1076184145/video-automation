@@ -23,15 +23,15 @@ export async function renderDashboard(_match, { signal } = {}) {
   app.innerHTML = pageShell();
   const unbindQueue = bindQueuePanel(app, loadQueue);
   bindControls(() => updateJobs(jobs));
-  const unbindDelete = bindCompletedJobDelete(async (button, name) => {
-    if (!window.confirm(t("dashboard.delete_completed_confirm"))) return;
+  const unbindDelete = bindJobDelete(async (button, name) => {
+    if (!window.confirm(t("dashboard.delete_job_confirm"))) return;
     setButtonLoading(button, true);
     try {
       await API.deleteJob(name);
       jobs = jobs.filter((job) => jobName(job) !== name);
       lastJobsKey = "";
       updateJobs(jobs);
-      showToast(t("dashboard.delete_completed_success"), "success");
+      showToast(t("dashboard.delete_job_success"), "success");
     } catch (error) {
       setButtonLoading(button, false);
       showToast(`${t("dashboard.delete_completed_failed")} ${error.message || t("common.error")}`, "error");
@@ -117,11 +117,15 @@ export async function renderDashboard(_match, { signal } = {}) {
   const queueTimer = setInterval(() => {
     if (document.visibilityState === "visible") loadQueue();
   }, 2000);
+  const jobsTimer = setInterval(() => {
+    if (document.visibilityState === "visible") load();
+  }, 15000);
   return () => {
     stopEvents();
     unbindDelete();
     unbindQueue();
     clearInterval(queueTimer);
+    clearInterval(jobsTimer);
     clearTimeout(searchTimer);
     document.removeEventListener("visibilitychange", handleVisibility);
   };
@@ -132,6 +136,9 @@ function mergeJob(jobs, nextJob) {
   if (index < 0) {
     return [nextJob, ...jobs].sort(compareJobs);
   }
+  const currentVersion = Number(jobs[index].state_version || 0);
+  const nextVersion = Number(nextJob.state_version || 0);
+  if (nextVersion > 0 && currentVersion > nextVersion) return jobs;
   const merged = jobs.slice();
   merged[index] = {
     ...merged[index],
@@ -207,7 +214,7 @@ function bindControls(update) {
   }
 }
 
-function bindCompletedJobDelete(removeJob) {
+function bindJobDelete(removeJob) {
   const target = document.getElementById("dashboard-jobs");
   if (!target) return () => {};
   const handleClick = (event) => {
@@ -432,14 +439,15 @@ function renderJobCard(job, projectNames = new Map()) {
       : group === "done"
         ? "dashboard.action_view"
         : "dashboard.action_progress";
-  const deleteControl = group === "done"
+  const canDelete = ["done", "failed"].includes(group);
+  const deleteControl = canDelete
     ? `
       <button
         class="job-card-delete"
         type="button"
         data-delete-job="${escapeHtml(name)}"
-        aria-label="${t("dashboard.delete_completed")}"
-        title="${t("dashboard.delete_completed")}"
+        aria-label="${t("dashboard.delete_job")}"
+        title="${t("dashboard.delete_job")}"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6"></path>
@@ -447,7 +455,7 @@ function renderJobCard(job, projectNames = new Map()) {
       </button>`
     : "";
   return `
-    <article class="card job-card ${group === "done" ? "has-delete" : ""}">
+    <article class="card job-card ${canDelete ? "has-delete" : ""}">
       <a class="job-card-link" href="#/jobs/${encodeURIComponent(name)}">
         <div>
           <h2 class="job-title">${escapeHtml(sourceName || name)} <span class="badge ${group}">${t(statusLabelKey(job.status))}</span></h2>

@@ -69,7 +69,7 @@ class QualityApiTests(unittest.TestCase):
         self.assertEqual(quality["status"], "blocked")
         self.assertIn("aspect_ratio", {item["code"] for item in quality["blocking"]})
 
-        server = create_server(self.settings)
+        server = create_server(self.settings, start_queue_worker=False)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         host, port = server.server_address
@@ -126,7 +126,7 @@ class QualityApiTests(unittest.TestCase):
             source = self.job_dir / filename
             target = unicode_dir / filename
             target.write_bytes(source.read_bytes())
-        server = create_server(self.settings)
+        server = create_server(self.settings, start_queue_worker=False)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         host, port = server.server_address

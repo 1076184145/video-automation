@@ -30,6 +30,10 @@ export function isJobEventForName(job, name) {
   return Boolean(job?.job_dir) && jobName(job) === name;
 }
 
+export function shouldApplyLiveJobEvent(runtimeStale) {
+  return !runtimeStale;
+}
+
 export function isTypingTarget(target) {
   return Boolean(target?.closest?.("input, textarea, select, button, a, [contenteditable='true']"));
 }

@@ -6,11 +6,14 @@ import sys
 import tempfile
 import unittest
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from video_automation import api, media, worker
+from video_automation.config import Settings
+from video_automation.jobs import Job
 from video_automation.media import (
     detect_visual_events,
     extract_audio_outputs,
@@ -79,6 +82,19 @@ class MediaParserTests(unittest.TestCase):
 
 
 class AudioExtractionTests(unittest.TestCase):
+    def test_severe_source_corruption_stops_pipeline_before_expensive_stages(self) -> None:
+        settings = SimpleNamespace(source_integrity_scan_max_errors=40)
+        with self.assertRaisesRegex(RuntimeError, "70358 decode errors"):
+            worker._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
+                settings,  # type: ignore[arg-type]
+                {"status": "corrupt", "error_count": 70358},
+            )
+
+        worker._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
+            settings,  # type: ignore[arg-type]
+            {"status": "corrupt", "error_count": 3},
+        )
+
     def test_joint_extraction_can_scan_video_integrity_in_same_ffmpeg_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -406,19 +422,14 @@ class AudioExtractionTests(unittest.TestCase):
     def test_rerun_audio_stage_uses_joint_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            job = SimpleNamespace(
-                source_path=root / "source.mp4",
-                job_dir=root / "job",
-                start_stage=lambda *_args, **_kwargs: None,
-                complete_stage=lambda: None,
-                set_status=lambda _status: None,
-                fail=lambda _error: None,
-            )
-            settings = SimpleNamespace()
+            job_dir = root / "jobs" / "job"
+            job_dir.mkdir(parents=True)
+            job = Job(source_path=root / "source.mp4", job_dir=job_dir, status="queued")
+            settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
 
             with (
-                patch.object(api, "extract_audio_outputs", create=True) as joint,
-                patch.object(api, "generate_waveform"),
+                patch.object(worker, "extract_audio_outputs", create=True) as joint,
+                patch.object(worker, "generate_waveform"),
             ):
                 api._run_single_stage(settings, job, "extract_audio", {})  # type: ignore[arg-type]
 
@@ -429,6 +440,34 @@ class AudioExtractionTests(unittest.TestCase):
                 job.job_dir / "audio_hq.flac",
                 force=True,
             )
+
+    def test_rerun_final_stage_does_not_hide_web_preview_work_inside_final_render(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job_dir = root / "jobs" / "job"
+            job_dir.mkdir(parents=True)
+            job = Job(source_path=root / "source.mp4", job_dir=job_dir, status="queued")
+            settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
+
+            with patch.object(worker, "render_final_video") as render_final:
+                api._run_single_stage(settings, job, "render_final", {})  # type: ignore[arg-type]
+
+            self.assertFalse(render_final.call_args.kwargs["refresh_web_preview"])
+
+    def test_rerun_web_preview_stage_renders_from_existing_final(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job_dir = root / "jobs" / "job"
+            job_dir.mkdir(parents=True)
+            (job_dir / "final.mp4").write_bytes(b"final")
+            job = Job(source_path=root / "source.mp4", job_dir=job_dir, status="queued")
+            settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
+
+            with patch.object(worker, "render_web_preview") as render_preview:
+                api._run_single_stage(settings, job, "render_web_preview", {})  # type: ignore[arg-type]
+
+            self.assertEqual(render_preview.call_args.kwargs["source_path"], job_dir / "final.mp4")
+            self.assertTrue(render_preview.call_args.kwargs["force"])
 
 
 class WaveformFallbackTests(unittest.TestCase):
