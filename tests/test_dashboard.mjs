@@ -17,7 +17,7 @@ globalThis.window = {
   addEventListener() {},
 };
 
-const { renderDashboardJobsForTest } = await import("../web/js/dashboard.js");
+const { deleteJobErrorMessageForTest, renderDashboardJobsForTest, withoutDeletedJobsForTest } = await import("../web/js/dashboard.js");
 
 const jobs = [
   {
@@ -82,6 +82,23 @@ test("dashboard renders delete controls for completed and failed jobs", () => {
   assert.doesNotMatch(html, /data-delete-job="review-job"/);
   assert.match(html, /data-delete-job="failed-job"/);
   assert.match(html, /aria-label="删除任务"/);
+});
+
+test("deleted jobs stay hidden from stale polling and event snapshots", () => {
+  const visible = withoutDeletedJobsForTest(jobs, new Set(["done-job"]));
+
+  assert.deepEqual(visible.map((job) => job.job_dir), ["D:/jobs/review-job", "D:/jobs/failed-job"]);
+});
+
+test("delete errors explain locked files and disconnected service in Chinese", () => {
+  assert.equal(
+    deleteJobErrorMessageForTest({ payload: { code: "job_files_in_use" } }),
+    "任务文件仍被后台进程或播放器占用，请关闭预览后重试。",
+  );
+  assert.equal(
+    deleteJobErrorMessageForTest({ message: "Failed to fetch" }),
+    "无法连接后台，任务未删除。请确认项目仍在运行后重试。",
+  );
 });
 
 test("dashboard empty actionable state still exposes completed history", () => {

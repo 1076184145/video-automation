@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
+import subprocess
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -8,10 +13,17 @@ from typing import Any
 from .config import Settings
 from .crop import generate_vertical_crop_plan
 from .highlight_cut import generate_highlight_cut
+from .process_tree import process_group_popen_kwargs
 from .progress import ControlCallback, ProgressCallback, run_ffmpeg_with_progress
 from .resources import GPU_EXECUTION_GATE, rendering_uses_gpu
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .subtitles import generate_clipped_ass_subtitles
+
+
+LOGGER = logging.getLogger(__name__)
+NVENC_PROBE_TTL_SECONDS = 60.0
+_NVENC_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_NVENC_PROBE_LOCK = threading.Lock()
 
 
 def generate_render_preview(
@@ -29,9 +41,10 @@ def generate_render_preview(
         if cached is not None:
             return cached
 
+    effective_settings, fallback_reason = effective_render_settings(settings)
     cuts = _read_json(job_dir / "cuts.json")
     clips = _kept_clips(cuts)
-    command = build_render_command(settings, source_path, clips, output_path)
+    command = build_render_command(effective_settings, source_path, clips, output_path)
     payload = {
         "status": "ready",
         "source_path": str(source_path),
@@ -39,6 +52,9 @@ def generate_render_preview(
         "clip_count": len(clips),
         "clips": clips,
         "command": command,
+        "configured_encoder": settings.render_video_encoder,
+        "effective_encoder": effective_settings.render_video_encoder,
+        "encoder_fallback_reason": fallback_reason or "",
         "notes": [
             "This preview does not render automatically.",
             "Run render_review.ps1 or use --render-review after reviewing cuts.json.",
@@ -62,17 +78,19 @@ def render_review_video(
     refresh_web_preview: bool = True,
 ) -> Path:
     preview = generate_render_preview(settings, job_dir, source_path, force=force)
+    effective_settings = _settings_for_preview(settings, preview)
     output_path = Path(preview["output_path"])
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
         if refresh_web_preview:
             _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
+    duration_seconds = _clips_duration(preview.get("clips", []))
     result = _run_ffmpeg_with_resource_gate(
-        settings,
+        effective_settings,
         [str(part) for part in preview["command"]],
-        duration_seconds=_clips_duration(preview.get("clips", [])),
+        duration_seconds=duration_seconds,
         progress_callback=progress_callback,
-        timeout=3600,
+        timeout=_render_timeout_seconds(effective_settings, duration_seconds),
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
         control_callback=control_callback,
@@ -106,10 +124,14 @@ def render_final_video(
     except ValueError as exc:
         raise RuntimeError("final render output must stay inside the job directory") from exc
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
-        if refresh_web_preview:
-            _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
-        return output_path
+        if _valid_media_output(settings, output_path):
+            if refresh_web_preview:
+                _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
+            return output_path
+    if output_path.exists():
+        _remove_failed_output(output_path)
 
+    effective_settings, fallback_reason = effective_render_settings(settings)
     cuts = _read_json(job_dir / "cuts.json")
     clips = _kept_clips(cuts)
     if vertical:
@@ -117,7 +139,7 @@ def render_final_video(
     if burn_subtitles:
         generate_clipped_ass_subtitles(settings, job_dir, force=force or vertical)
     command = build_final_render_command(
-        settings,
+        effective_settings,
         source_path,
         clips,
         output_path,
@@ -146,21 +168,29 @@ def render_final_video(
             "bgm_volume": settings.bgm_volume,
         },
         "command": command,
+        "configured_encoder": settings.render_video_encoder,
+        "effective_encoder": effective_settings.render_video_encoder,
+        "encoder_fallback_reason": fallback_reason or "",
     }
     write_json_atomic(job_dir / "final_render_preview.json", preview)
 
+    duration_seconds = _clips_duration(clips) or _duration_from_manifest(job_dir)
     result = _run_ffmpeg_with_resource_gate(
-        settings,
+        effective_settings,
         command,
-        duration_seconds=_clips_duration(clips) or _duration_from_manifest(job_dir),
+        duration_seconds=duration_seconds,
         progress_callback=progress_callback,
-        timeout=3600,
+        timeout=_render_timeout_seconds(effective_settings, duration_seconds),
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
         control_callback=control_callback,
     )
     if result.returncode != 0:
+        _remove_failed_output(output_path)
         raise RuntimeError(f"ffmpeg final render failed: {result.stderr.strip()}")
+    if not _valid_media_output(settings, output_path):
+        _remove_failed_output(output_path)
+        raise RuntimeError("ffmpeg final render produced an invalid or incomplete media file")
     if refresh_web_preview:
         _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
@@ -190,7 +220,8 @@ def generate_highlight_render_preview(
     clips = _kept_clips({"clips": highlight_cut.get("clips", [])})
     if not clips:
         raise RuntimeError("highlight_cut.json has no clips to render")
-    command = build_final_render_command(settings, source_path, clips, output_path, post_filters=[])
+    effective_settings, fallback_reason = effective_render_settings(settings)
+    command = build_final_render_command(effective_settings, source_path, clips, output_path, post_filters=[])
     preview = {
         "status": "ready",
         "source_path": str(source_path),
@@ -199,6 +230,9 @@ def generate_highlight_render_preview(
         "duration_seconds": _clips_duration(clips),
         "clips": clips,
         "command": command,
+        "configured_encoder": settings.render_video_encoder,
+        "effective_encoder": effective_settings.render_video_encoder,
+        "encoder_fallback_reason": fallback_reason or "",
     }
     write_json_atomic(preview_path, preview)
     return preview
@@ -216,16 +250,18 @@ def render_highlight_video(
     control_callback: ControlCallback | None = None,
 ) -> Path:
     preview = generate_highlight_render_preview(settings, job_dir, source_path, force=force)
+    effective_settings = _settings_for_preview(settings, preview)
     output_path = Path(preview["output_path"])
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
         _refresh_web_preview(settings, job_dir, source_path=output_path, force=False)
         return output_path
+    duration_seconds = _clips_duration(preview.get("clips", []))
     result = _run_ffmpeg_with_resource_gate(
-        settings,
+        effective_settings,
         [str(part) for part in preview["command"]],
-        duration_seconds=_clips_duration(preview.get("clips", [])),
+        duration_seconds=duration_seconds,
         progress_callback=progress_callback,
-        timeout=3600,
+        timeout=_render_timeout_seconds(effective_settings, duration_seconds),
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
         control_callback=control_callback,
@@ -263,7 +299,8 @@ def render_web_preview(
     ):
         return output_path
 
-    command = build_web_preview_command(settings, source_path, output_path)
+    effective_settings, fallback_reason = effective_render_settings(settings)
+    command = build_web_preview_command(effective_settings, source_path, output_path)
     payload = {
         "status": "ready",
         "source_path": str(source_path),
@@ -273,17 +310,21 @@ def render_web_preview(
         "fps": settings.web_preview_fps,
         "video_bitrate": settings.web_preview_video_bitrate,
         "command": command,
+        "configured_encoder": settings.render_video_encoder,
+        "effective_encoder": effective_settings.render_video_encoder,
+        "encoder_fallback_reason": fallback_reason or "",
     }
     write_json_atomic(job_dir / "web_preview.json", payload)
+    duration_seconds = (
+        _clips_duration(_kept_clips(_read_json(job_dir / "cuts.json")))
+        or _duration_from_manifest(job_dir)
+    )
     result = _run_ffmpeg_with_resource_gate(
-        settings,
+        effective_settings,
         command,
-        duration_seconds=(
-            _clips_duration(_kept_clips(_read_json(job_dir / "cuts.json")))
-            or _duration_from_manifest(job_dir)
-        ),
+        duration_seconds=duration_seconds,
         progress_callback=progress_callback,
-        timeout=3600,
+        timeout=_render_timeout_seconds(effective_settings, duration_seconds),
         resource_wait_callback=resource_wait_callback,
         resource_acquired_callback=resource_acquired_callback,
         control_callback=control_callback,
@@ -321,6 +362,116 @@ def _run_ffmpeg_with_resource_gate(
             control_callback=control_callback,
             timeout=timeout,
         )
+
+
+def probe_nvenc_encoder(
+    ffmpeg_path: Path | str,
+    *,
+    force: bool = False,
+    cache_ttl_seconds: float = NVENC_PROBE_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Open a real one-frame NVENC session instead of trusting the encoder list."""
+    key = str(ffmpeg_path)
+    now = time.monotonic()
+    with _NVENC_PROBE_LOCK:
+        cached = _NVENC_PROBE_CACHE.get(key)
+        if cached and not force and now - cached[0] <= max(0.0, cache_ttl_seconds):
+            return dict(cached[1])
+    command = [
+        key,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=640x360:r=1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "h264_nvenc",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = run_ffmpeg_with_progress(command, duration_seconds=1.0, timeout=15)
+        available = result.returncode == 0
+        detail = "" if available else result.stderr.strip()[-2000:]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        available = False
+        detail = str(exc)
+    payload = {
+        "available": available,
+        "detail": detail,
+        "path": key,
+    }
+    with _NVENC_PROBE_LOCK:
+        _NVENC_PROBE_CACHE[key] = (now, payload)
+    return dict(payload)
+
+
+def effective_render_settings(settings: Settings) -> tuple[Settings, str | None]:
+    if not rendering_uses_gpu(settings):
+        return settings, None
+    probe = probe_nvenc_encoder(settings.ffmpeg_path)
+    if probe["available"]:
+        return settings, None
+    detail = str(probe.get("detail") or "NVENC session could not be opened")
+    reason = detail.splitlines()[0][:300]
+    LOGGER.warning("NVENC unavailable; falling back to libx264: %s", reason)
+    return replace(settings, render_video_encoder="libx264"), reason
+
+
+def _settings_for_preview(settings: Settings, preview: dict[str, Any]) -> Settings:
+    encoder = str(preview.get("effective_encoder") or "").strip()
+    if encoder and encoder != settings.render_video_encoder:
+        return replace(settings, render_video_encoder=encoder)
+    return settings
+
+
+def _valid_media_output(settings: Settings, path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                str(settings.ffprobe_path),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            **process_group_popen_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _remove_failed_output(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        LOGGER.warning("Could not remove incomplete render output: %s", path)
+
+
+def _render_timeout_seconds(settings: Settings, duration_seconds: float) -> int:
+    duration = max(1.0, float(duration_seconds or 0.0))
+    multiplier = 2.5 if rendering_uses_gpu(settings) else 8.0
+    minimum = 1800 if rendering_uses_gpu(settings) else 3600
+    return int(min(12 * 3600, max(minimum, duration * multiplier + 600)))
 
 
 def build_web_preview_command(settings: Settings, source_path: Path, output_path: Path) -> list[str]:

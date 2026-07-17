@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
+from .process_tree import attach_process_tree, process_group_popen_kwargs, release_process_tree, terminate_process_tree
 from .task_queue import QueueControlRequested
 
 
@@ -42,7 +43,9 @@ def run_ffmpeg_with_progress(
         text=True,
         encoding="utf-8",
         errors="replace",
+        **process_group_popen_kwargs(),
     )
+    attach_process_tree(process)
     stderr_parts: deque[str] = deque()
     stderr_chars = 0
     lines: queue.Queue[str | object] = queue.Queue(maxsize=STDERR_QUEUE_LINES)
@@ -61,9 +64,12 @@ def run_ffmpeg_with_progress(
     def read_stderr() -> None:
         assert process.stderr is not None
         try:
-            for line in process.stderr:
-                if not enqueue(line):
-                    return
+            try:
+                for line in process.stderr:
+                    if not enqueue(line):
+                        return
+            except (OSError, ValueError):
+                return
         finally:
             enqueue(sentinel)
 
@@ -104,16 +110,16 @@ def run_ffmpeg_with_progress(
         process.wait(timeout=5)
     except Exception:
         stop_reader.set()
-        process.kill()
-        process.wait()
-        reader.join(timeout=1)
+        terminate_process_tree(process)
         if process.stderr is not None:
             process.stderr.close()
+        reader.join(timeout=0.2)
         raise
     stop_reader.set()
     reader.join(timeout=1)
     if process.stderr is not None:
         process.stderr.close()
+    release_process_tree(process)
     if progress_callback is not None and process.returncode == 0:
         progress_callback(100.0)
     stderr = "".join(stderr_parts)

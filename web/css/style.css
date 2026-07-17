@@ -795,8 +795,8 @@ body.offline::before {
   padding: 28px;
   border: 1px solid var(--border-hover);
   border-radius: var(--radius-lg);
-  background: hsla(var(--hue), 12%, 8%, 0.92);
-  box-shadow: 0 24px 80px hsla(0,0%,0%,0.55), inset 0 1px 0 hsla(0,0%,100%,0.06);
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 80px hsla(0,0%,0%,0.24), inset 0 1px 0 hsla(0,0%,100%,0.32);
 }
 
 .modal-head {
@@ -808,6 +808,32 @@ body.offline::before {
 }
 .modal-head h2 { margin: 0; font-size: 24px; }
 .modal-head p { margin: 6px 0 0; color: var(--text-secondary); }
+
+.confirm-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 18px;
+  width: min(480px, 100%);
+}
+.confirm-card h2 { margin: 0; font-size: 22px; }
+.confirm-card p { margin: 7px 0 0; color: var(--text-secondary); line-height: 1.65; }
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-full);
+  color: #b42318;
+  background: color-mix(in srgb, #ef4444 12%, var(--bg-elevated));
+  font-weight: 800;
+}
+.confirm-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
 
 .shortcut-grid { display: grid; gap: 10px; }
 .shortcut-row {
@@ -2363,16 +2389,18 @@ details[open] > summary .settings-disclosure {
   padding: 12px 14px;
   border: 1px solid var(--border-hover);
   border-radius: var(--radius-md);
-  background: hsla(var(--hue), 12%, 10%, 0.94);
+  background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
   color: var(--text-primary);
-  box-shadow: 0 16px 40px hsla(0,0%,0%,0.45);
+  box-shadow: 0 16px 40px hsla(0,0%,0%,0.18);
   backdrop-filter: blur(12px);
   pointer-events: auto;
   animation: toast-in 180ms ease-out;
 }
-.toast.success { border-color: hsla(var(--accent-hue), 100%, 42%, 0.45); }
-.toast.error { border-color: hsla(0, 84%, 60%, 0.55); color: #fca5a5; }
-.toast.warning { border-color: hsla(38, 92%, 50%, 0.55); color: #fbbf24; }
+.toast.success { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
+.toast.error { border-color: hsla(0, 84%, 60%, 0.55); color: #b42318; }
+.toast.warning { border-color: hsla(38, 92%, 50%, 0.55); color: #8a4b08; }
+:root[data-theme="dark"] .toast.error { color: #fca5a5; }
+:root[data-theme="dark"] .toast.warning { color: #fbbf24; }
 .toast button { border: 0; background: transparent; color: inherit; padding: 0 2px; font-size: 18px; line-height: 1; opacity: 0.72; }
 .toast button:hover { opacity: 1; }
 .toast.is-leaving { animation: toast-out 180ms ease-in forwards; }

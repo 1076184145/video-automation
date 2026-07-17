@@ -24,6 +24,12 @@ class ErrorAdvisorTests(unittest.TestCase):
         self.assertEqual(advice["code"], "missing_ffmpeg")
         self.assertEqual(advice["actions"][0]["type"], "open_health")
 
+    def test_nvenc_session_failure_suggests_cpu_render_retry(self) -> None:
+        advice = advise_error("OpenEncodeSessionEx failed: incompatible client key (21)")
+        self.assertEqual(advice["code"], "nvenc_unavailable")
+        self.assertEqual(advice["actions"][0]["env"]["RENDER_VIDEO_ENCODER"], "libx264")
+        self.assertEqual(advice["actions"][0]["stage"], "render_final")
+
     def test_unmatched_http_errors_use_generic_advice(self) -> None:
         advice = advise_error("HTTP Error 403: Forbidden")
         self.assertEqual(advice["code"], "generic")

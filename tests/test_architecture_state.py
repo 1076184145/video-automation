@@ -237,6 +237,29 @@ class ArchitectureStateTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=5)
 
+    def test_delete_returns_structured_conflict_when_job_files_are_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = _settings(Path(tmp))
+            job = Job(Path(tmp) / "source.mp4", settings.jobs_dir / "job-locked", status="done")
+            job.save()
+            server = create_server(settings, start_queue_worker=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(*server.server_address, timeout=5)
+            try:
+                with patch.object(Path, "replace", side_effect=PermissionError("locked")):
+                    connection.request("DELETE", "/jobs/job-locked")
+                    response = connection.getresponse()
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 409)
+                self.assertEqual(payload["code"], "job_files_in_use")
+                self.assertTrue(job.job_dir.exists())
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()
