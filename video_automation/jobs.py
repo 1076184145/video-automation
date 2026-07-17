@@ -237,6 +237,8 @@ def find_existing_job(settings: Settings, source_path: Path) -> Job | None:
         return None
     source_text = str(source_path.resolve())
     for state_path in sorted(settings.jobs_dir.glob("*/job.json"), reverse=True):
+        if state_path.parent.name.startswith("."):
+            continue
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -299,7 +301,11 @@ def load_job(state_path: Path) -> Job | None:
 def list_jobs(settings: Settings) -> list[Job]:
     if not settings.jobs_dir.exists():
         return []
-    jobs = [job for path in settings.jobs_dir.glob("*/job.json") if (job := load_job(path))]
+    jobs = [
+        job
+        for path in settings.jobs_dir.glob("*/job.json")
+        if not path.parent.name.startswith(".") and (job := load_job(path))
+    ]
     return sorted(jobs, key=lambda job: job.updated_at, reverse=True)
 
 

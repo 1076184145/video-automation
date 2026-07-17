@@ -1,9 +1,10 @@
 import { API } from "./api.js";
 import { bindQueuePanel, renderQueuePanel } from "./automation.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { eventHub } from "./event-hub.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
-import { setButtonLoading, showToast } from "./toast.js";
+import { showToast } from "./toast.js";
 import { basename, escapeHtml, fileMap, formatDate, jobName, progressForJob, statusGroup, statusLabelKey } from "./utils.js";
 
 let filter = "all";
@@ -19,22 +20,32 @@ export async function renderDashboard(_match, { signal } = {}) {
   let jobs = [];
   let projects = [];
   let queue = { paused: false, items: [] };
+  const deletedJobNames = new Set();
   lastJobsKey = "";
   app.innerHTML = pageShell();
   const unbindQueue = bindQueuePanel(app, loadQueue);
   bindControls(() => updateJobs(jobs));
   const unbindDelete = bindJobDelete(async (button, name) => {
-    if (!window.confirm(t("dashboard.delete_job_confirm"))) return;
-    setButtonLoading(button, true);
+    const confirmed = await confirmAction(t("dashboard.delete_job_confirm"), {
+      title: t("dashboard.delete_job"),
+      confirmLabel: t("common.delete"),
+      cancelLabel: t("common.cancel"),
+    });
+    if (!confirmed) return;
+    const previousJobs = jobs;
+    deletedJobNames.add(name);
+    jobs = withoutDeletedJobsForTest(jobs, deletedJobNames);
+    lastJobsKey = "";
+    updateJobs(jobs, projects);
     try {
       await API.deleteJob(name);
-      jobs = jobs.filter((job) => jobName(job) !== name);
-      lastJobsKey = "";
-      updateJobs(jobs);
       showToast(t("dashboard.delete_job_success"), "success");
     } catch (error) {
-      setButtonLoading(button, false);
-      showToast(`${t("dashboard.delete_completed_failed")} ${error.message || t("common.error")}`, "error");
+      deletedJobNames.delete(name);
+      jobs = previousJobs;
+      lastJobsKey = "";
+      updateJobs(jobs, projects);
+      showToast(`${t("dashboard.delete_completed_failed")} ${deleteJobErrorMessageForTest(error)}`, "error");
     }
   });
 
@@ -44,7 +55,7 @@ export async function renderDashboard(_match, { signal } = {}) {
         API.getJobs({ signal }),
         API.getProjects({ signal }).catch(() => ({ items: projects })),
       ]);
-      jobs = nextJobs;
+      jobs = withoutDeletedJobsForTest(nextJobs, deletedJobNames);
       projects = projectPayload.items || projects;
       updateJobs(jobs, projects);
     } catch (error) {
@@ -80,12 +91,13 @@ export async function renderDashboard(_match, { signal } = {}) {
       eventUnsubscribers = [
         eventHub.subscribe("hello", (payload) => {
         if (Array.isArray(payload.jobs)) {
-          jobs = payload.jobs;
+          jobs = withoutDeletedJobsForTest(payload.jobs, deletedJobNames);
           updateJobs(jobs, projects);
         }
         }),
         eventHub.subscribe("job", (job) => {
         if (!job || !job.job_dir) return;
+        if (deletedJobNames.has(jobName(job))) return;
         jobs = mergeJob(jobs, job);
         updateJobs(jobs, projects);
         }),
@@ -129,6 +141,19 @@ export async function renderDashboard(_match, { signal } = {}) {
     clearTimeout(searchTimer);
     document.removeEventListener("visibilitychange", handleVisibility);
   };
+}
+
+export function withoutDeletedJobsForTest(jobs, deletedJobNames) {
+  const hidden = deletedJobNames instanceof Set ? deletedJobNames : new Set(deletedJobNames || []);
+  return jobs.filter((job) => !hidden.has(jobName(job)));
+}
+
+export function deleteJobErrorMessageForTest(error) {
+  const code = String(error?.payload?.code || "");
+  if (code === "job_files_in_use") return t("dashboard.delete_job_in_use");
+  if (code === "job_delete_failed") return t("dashboard.delete_job_backend_failed");
+  if (String(error?.message || "") === "Failed to fetch") return t("dashboard.delete_job_network_failed");
+  return error?.message || t("common.error");
 }
 
 function mergeJob(jobs, nextJob) {

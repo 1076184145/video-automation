@@ -29,7 +29,7 @@ from .media import MEDIA_EXTENSIONS, detect_silence, detect_visual_events, extra
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .pipeline_spec import PIPELINE_STAGE_DEPENDENCIES, PIPELINE_STAGE_SELECTION_DEPENDENCIES, PIPELINE_STAGE_SPECS
 from .profiles import apply_profile_settings, profile_flags
-from .render import generate_render_preview, render_final_video, render_review_video, render_web_preview
+from .render import generate_render_preview, probe_nvenc_encoder, render_final_video, render_review_video, render_web_preview
 from .resources import job_gpu_status_callbacks, rendering_uses_gpu, transcription_uses_gpu
 from .stage_runs import StageRunRepository
 from .task_queue import QueueControlRequested
@@ -308,7 +308,12 @@ def _render_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
     encoder = settings.render_video_encoder.strip().lower()
     if encoder not in {"h264_nvenc", "nvenc"}:
         return []
-    exists = _ffmpeg_has_encoder(settings.ffmpeg_path, "h264_nvenc")
+    compiled = _ffmpeg_has_encoder(settings.ffmpeg_path, "h264_nvenc")
+    probe = probe_nvenc_encoder(settings.ffmpeg_path) if compiled else {
+        "available": False,
+        "detail": "FFmpeg was not built with h264_nvenc",
+    }
+    exists = bool(probe["available"])
     return [{
         "name": "h264_nvenc",
         "path": str(settings.ffmpeg_path),
@@ -317,6 +322,7 @@ def _render_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         "optional": False,
         "status": "ok" if exists else "missing",
         "version": "NVIDIA NVENC H.264 encoder" if exists else "",
+        "detail": str(probe.get("detail") or ""),
     }]
 
 

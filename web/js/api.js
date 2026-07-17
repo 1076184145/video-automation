@@ -205,7 +205,7 @@ export const API = {
     return postJson(`/jobs/${encodeURIComponent(name)}/subtitles/render-translated`, payload, 30000);
   },
   async deleteJob(name) {
-    return requestJson(`/jobs/${encodeURIComponent(name)}`, { method: "DELETE" });
+    return requestJson(`/jobs/${encodeURIComponent(name)}`, { method: "DELETE", timeout: 120000 });
   },
   async cancelJob(name) {
     return postJson(`/jobs/${encodeURIComponent(name)}/cancel`, {});

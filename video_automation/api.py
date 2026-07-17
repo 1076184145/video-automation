@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import replace
 from datetime import datetime
@@ -47,7 +48,7 @@ from .render import generate_render_preview, render_final_video, render_highligh
 from .segments import generate_platform_segments
 from .subtitle_translation import translate_subtitles, translated_clipped_ass_name, translated_final_video_name
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
-from .queue_worker import QueueWorkerProcess
+from .queue_worker import QueueWorkerProcess, process_is_alive
 from .routing import CORE_ROUTER
 from .runtime_config import apply_runtime_settings_snapshot, snapshot_runtime_settings
 from .stage_runs import StageRunRepository
@@ -163,6 +164,7 @@ def create_server(settings: Settings, *, start_queue_worker: bool = True) -> Thr
     handler = _handler_class(settings)
     if database_path.is_file():
         backup_database(database_path, keep=5)
+    _resume_tombstone_cleanup(settings.jobs_dir)
     queue_worker = QueueWorkerProcess(settings) if start_queue_worker else None
     server = AutomationHTTPServer((settings.api_host, settings.api_port), handler, queue_worker)
     if queue_worker is not None:
@@ -860,14 +862,33 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 self._json({"error": f"job is already {job.status}; wait for it to finish before deleting"}, status=409)
                 return
             tombstone = job_dir.with_name(f".{job_dir.name}.deleting-{uuid.uuid4().hex}")
-            job_dir.replace(tombstone)
+            try:
+                job_dir.replace(tombstone)
+            except OSError:
+                self._json({
+                    "error": "job files are still in use",
+                    "code": "job_files_in_use",
+                }, status=409)
+                return
             try:
                 delete_job_records(settings, job_name)
             except Exception:
-                tombstone.replace(job_dir)
-                raise
-            shutil.rmtree(tombstone)
-            self._json({"deleted": job_name})
+                try:
+                    tombstone.replace(job_dir)
+                except OSError:
+                    _schedule_tombstone_cleanup(tombstone)
+                self._json({
+                    "error": "job metadata could not be deleted",
+                    "code": "job_delete_failed",
+                }, status=500)
+                return
+            try:
+                shutil.rmtree(tombstone)
+            except OSError:
+                _schedule_tombstone_cleanup(tombstone)
+                self._json({"deleted": job_name, "cleanup_pending": True}, status=202)
+                return
+            self._json({"deleted": job_name, "cleanup_pending": False})
 
         def _upload_recording(self, query: str) -> None:
             params = parse_qs(query)
@@ -1256,6 +1277,32 @@ def _tools_install_snapshot() -> dict[str, Any]:
         return snapshot
 
 
+def _schedule_tombstone_cleanup(path: Path, *, attempts: int = 60, delay_seconds: float = 1.0) -> None:
+    def cleanup() -> None:
+        for _ in range(max(1, attempts)):
+            try:
+                shutil.rmtree(path)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(max(0.05, delay_seconds))
+
+    threading.Thread(
+        target=cleanup,
+        name=f"job-cleanup-{path.name[-12:]}",
+        daemon=True,
+    ).start()
+
+
+def _resume_tombstone_cleanup(jobs_dir: Path) -> None:
+    if not jobs_dir.exists():
+        return
+    for path in jobs_dir.glob(".*.deleting-*"):
+        if path.is_dir():
+            _schedule_tombstone_cleanup(path)
+
+
 def _set_tools_install_state(**updates: Any) -> dict[str, Any]:
     with TOOLS_INSTALL_LOCK:
         if "log_append" in updates:
@@ -1440,13 +1487,7 @@ def _job_runtime_state(
 def _pid_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return process_is_alive(pid)
 
 
 def _job_feedback(job_dir: Path) -> dict[str, Any]:

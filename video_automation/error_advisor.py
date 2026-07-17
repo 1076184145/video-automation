@@ -69,6 +69,32 @@ def _missing_ffmpeg_advice() -> Advice:
     }
 
 
+def _nvenc_unavailable_advice() -> Advice:
+    return {
+        "code": "nvenc_unavailable",
+        "title": "NVIDIA 硬件编码不可用",
+        "summary": "FFmpeg 找到了 NVENC 编码器，但当前驱动无法打开实际编码会话。",
+        "next_steps": [
+            "切换到 libx264 CPU 编码后重试最终渲染。",
+            "在健康检查页确认 NVENC 实际编码测试结果。",
+            "需要恢复硬件编码时，再检查 NVIDIA 驱动与 FFmpeg 版本兼容性。",
+        ],
+        "actions": [
+            {
+                "type": "settings_patch_and_rerun",
+                "label": "切换 CPU 编码并重试成片",
+                "env": {"RENDER_VIDEO_ENCODER": "libx264"},
+                "stage": "render_final",
+            },
+            {
+                "type": "open_health",
+                "label": "查看编码器健康检查",
+                "target": "#/health",
+            },
+        ],
+    }
+
+
 def _empty_transcript_advice() -> Advice:
     return {
         "code": "empty_transcript",
@@ -145,6 +171,7 @@ def _matches(pattern: str):
 
 _RULES: list[tuple[Any, Any]] = [
     (_matches(r"(cuda out of memory|cublas|cudnn|vram|gpu memory|outofmemory|显存)"), _gpu_memory_advice),
+    (_matches(r"(openencodesessionex|incompatible client key|no capable devices|nvenc.*(?:unavailable|failed))"), _nvenc_unavailable_advice),
     (_matches(r"(ffmpeg|ffprobe).*(not found|winerror 2|no such file|cannot find)|winerror 2.*(ffmpeg|ffprobe)"), _missing_ffmpeg_advice),
     (_matches(r"(empty transcript|empty segments|no speech|未检测到语音|转写.*空|transcription returned empty)"), _empty_transcript_advice),
     (_contains_any("no space left", "not enough space", "disk full", "磁盘空间不足"), _disk_space_advice),
