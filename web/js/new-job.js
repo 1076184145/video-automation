@@ -1,21 +1,22 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { legacyProfilesToRecipes } from "./automation.js";
 import { t } from "./i18n.js";
+import {
+  NEW_JOB_OPTIONS,
+  batchListHtml,
+  recordingListHtml,
+  renderNewJobForm,
+  summaryCard,
+  uploadProgressHtml,
+} from "./new-job-view.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { basename, escapeHtml, jobName } from "./utils.js";
 
-const options = [
-  ["source_integrity_scan", "new.source_integrity_scan", true],
-  ["detect_silence", "new.detect_silence", true],
-  ["detect_freeze", "new.detect_freeze", true],
-  ["detect_scenes", "new.detect_scenes", true],
-  ["plan_crop", "new.plan_crop", true],
-  ["render_review", "new.render_review", false],
-  ["render_final", "new.render_final", false],
-  ["vertical", "new.vertical", false],
-  ["burn_subtitles", "new.burn_subtitles", false],
-  ["skip_transcribe", "new.skip_transcribe", false]
-];
+// New-job wizard controller: owns batch/upload state, profile logic, and all
+// event wiring. Markup lives in new-job-view.js; this module only reads and
+// drives the DOM.
+
+const options = NEW_JOB_OPTIONS;
 const CUSTOM_PROFILE_STORAGE_KEY = "videoAutomationCustomProfiles";
 const CUSTOM_PROFILE_BACKUP_KEY = "videoAutomationCustomProfiles.migratedBackup";
 const NEW_JOB_DISCLOSURE_STORAGE_KEY = "videoAutomationNewJobDisclosures";
@@ -32,210 +33,70 @@ const BATCH_PATH_LIMIT = 30;
 const UPLOAD_FILE_LIMIT = 8;
 const UPLOAD_TOTAL_LIMIT_BYTES = 20 * 1024 * 1024 * 1024;
 const BROWSER_UPLOAD_CONFIRM_BYTES = 512 * 1024 * 1024;
-let batchPaths = [];
-let sourcePathBatchMirror = false;
-let serverRecipes = [];
-
 export async function renderNewJob(_match, { signal } = {}) {
-  batchPaths = [];
-  sourcePathBatchMirror = false;
+  const controller = new AbortController();
+  const abortSession = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abortSession, { once: true });
+  const state = {
+    batchPaths: [],
+    sourcePathBatchMirror: false,
+    serverRecipes: [],
+    disposed: false,
+    uploadInProgress: false,
+    recordingLoadVersion: 0,
+    signal: controller.signal,
+  };
   const app = document.getElementById("app");
-  const library = await loadLibraryOptions(signal);
-  serverRecipes = library.recipes || [];
+  const library = await loadLibraryOptions(state.signal);
+  state.signal.throwIfAborted();
+  state.serverRecipes = library.recipes || [];
   app.innerHTML = renderNewJobFormForTest(loadNewJobDisclosureState(), library);
-  document.getElementById("new-job-form").addEventListener("submit", submit);
-  document.getElementById("workflow-profile").addEventListener("change", applyProfile);
-  document.getElementById("save-current-profile").addEventListener("click", saveCurrentProfile);
-  document.getElementById("delete-current-profile").addEventListener("click", deleteCurrentProfile);
+  document.getElementById("new-job-form").addEventListener("submit", (event) => submit(event, state));
+  document.getElementById("workflow-profile").addEventListener("change", (event) => applyProfile(event, state));
+  document.getElementById("save-current-profile").addEventListener("click", () => saveCurrentProfile(state));
+  document.getElementById("delete-current-profile").addEventListener("click", () => deleteCurrentProfile(state));
   document.getElementById("source-path").addEventListener("input", () => {
-    if (sourcePathBatchMirror && batchPaths.length <= 1) {
-      batchPaths = [];
-      sourcePathBatchMirror = false;
-      renderBatchList();
+    if (state.sourcePathBatchMirror && state.batchPaths.length <= 1) {
+      state.batchPaths = [];
+      state.sourcePathBatchMirror = false;
+      renderBatchList(state);
     }
-    updateWizardSummary();
+    updateWizardSummary(state);
   });
   document.getElementById("source-path").addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing) return;
     event.preventDefault();
-    addCurrentSourceToBatch();
+    addCurrentSourceToBatch(state);
   });
-  document.getElementById("add-source-to-batch").addEventListener("click", addCurrentSourceToBatch);
-  document.getElementById("whisper-language").addEventListener("change", updateWizardSummary);
-  document.getElementById("project-id")?.addEventListener("change", applyProjectDefaultKit);
-  document.querySelectorAll(".options input").forEach((input) => input.addEventListener("change", updateWizardSummary));
+  document.getElementById("add-source-to-batch").addEventListener("click", () => addCurrentSourceToBatch(state));
+  document.getElementById("whisper-language").addEventListener("change", () => updateWizardSummary(state));
+  document.getElementById("project-id")?.addEventListener("change", () => applyProjectDefaultKit(state));
+  document.querySelectorAll(".options input").forEach((input) => input.addEventListener("change", () => updateWizardSummary(state)));
   bindWizardRail();
   bindNewJobDisclosures();
-  bindUploadDropzone();
-  renderBatchList();
-  selectProjectFromHash();
-  updateWizardSummary();
-  loadRecordings();
+  bindUploadDropzone(state);
+  renderBatchList(state);
+  selectProjectFromHash(state);
+  updateWizardSummary(state);
+  loadRecordings(state);
   const handleVisibility = () => {
     if (document.visibilityState === "visible") {
-      loadRecordings();
+      loadRecordings(state);
     }
   };
   document.addEventListener("visibilitychange", handleVisibility);
   return () => {
+    state.disposed = true;
+    state.recordingLoadVersion += 1;
+    controller.abort();
+    signal?.removeEventListener("abort", abortSession);
     document.removeEventListener("visibilitychange", handleVisibility);
   };
 }
 
 export function renderNewJobFormForTest(disclosures = {}, library = {}) {
-  const sourceToolsOpen = disclosures.sourceTools ? " open" : "";
-  const processingOptionsOpen = disclosures.processingOptions ? " open" : "";
-  const projects = Array.isArray(library.projects) ? library.projects : [];
-  const kits = Array.isArray(library.kits) ? library.kits : [];
   const recipes = Array.isArray(library.recipes) ? library.recipes : [];
-  return `
-    <section class="page-head">
-      <div>
-        <h1 class="page-title">${t("new.title")}</h1>
-        <p class="page-subtitle">${t("new.subtitle")}</p>
-      </div>
-    </section>
-    <form class="panel form" id="new-job-form">
-      ${renderWizardRail()}
-      <div class="new-job-wizard">
-        <section class="wizard-step-card" id="new-step-source">
-          <div class="wizard-step-head">
-            <span class="wizard-step-index">01</span>
-            <div>
-              <h2>${t("new.wizard_source_title")}</h2>
-              <p>${t("new.wizard_source_note")}</p>
-            </div>
-          </div>
-          <div class="upload-dropzone" id="upload-dropzone" tabindex="0" role="button" aria-label="${t("new.drop_aria")}">
-            <div class="upload-icon">+</div>
-            <div>
-              <strong>${t("new.drop_title")}</strong>
-              <p>${t("new.drop_note")}</p>
-            </div>
-            <input id="upload-file" type="file" accept="video/*,audio/*,.mp4,.mkv,.mov,.flv,.avi,.m4v,.webm,.mp3,.m4a,.wav" multiple hidden />
-          </div>
-          <div class="field">
-            <label for="source-path">${t("new.source_path")}</label>
-            <div class="inline-input source-path-input">
-              <input id="source-path" type="text" placeholder="${t("new.placeholder")}" autocomplete="off" />
-              <button class="button" id="add-source-to-batch" type="button">${t("new.add_to_batch")}</button>
-            </div>
-          </div>
-          <div class="batch-box" id="batch-box"></div>
-          <details class="new-job-disclosure source-tools" id="new-job-source-tools"${sourceToolsOpen}>
-            <summary>
-              <span>
-                <strong>${t("new.more_sources_title")}</strong>
-                <small>${t("new.more_sources_note")}</small>
-              </span>
-              <span class="disclosure-chevron" aria-hidden="true">⌄</span>
-            </summary>
-            <div class="new-job-disclosure-body">
-              <div class="recording-picker" id="recording-picker">
-                <div class="loading">${t("common.loading")}</div>
-              </div>
-            </div>
-          </details>
-        </section>
-        <section class="wizard-step-card" id="new-step-goal">
-          <div class="wizard-step-head">
-            <span class="wizard-step-index">02</span>
-            <div>
-              <h2>${t("new.wizard_goal_title")}</h2>
-              <p>${t("new.wizard_goal_note")}</p>
-            </div>
-          </div>
-          <div class="form-row library-context-fields">
-            <div class="field">
-              <label for="project-id">${t("new.project")}</label>
-              <select id="project-id">
-                <option value="">${t("new.project_none")}</option>
-                ${projects.map((project) => `<option value="${escapeHtml(project.id)}" data-default-kit="${escapeHtml(project.default_kit_id || "")}">${escapeHtml(project.name)}</option>`).join("")}
-              </select>
-            </div>
-            <div class="field">
-              <label for="creator-kit-id">${t("new.creator_kit")}</label>
-              <select id="creator-kit-id">
-                <option value="">${t("new.creator_kit_auto")}</option>
-                ${kits.map((kit) => `<option value="${escapeHtml(kit.id)}">${escapeHtml(kit.name)} · ${escapeHtml(kit.aspect || "—")}</option>`).join("")}
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="field">
-              <label for="workflow-profile">${t("new.profile")}</label>
-              <select id="workflow-profile">
-                ${renderProfileOptions(recipes)}
-              </select>
-            </div>
-            <div class="field">
-              <label for="whisper-language">${t("new.whisper_language")}</label>
-              <select id="whisper-language">
-                <option value="Chinese">${t("new.language_chinese")}</option>
-                <option value="English">${t("new.language_english")}</option>
-                <option value="auto">${t("new.language_auto")}</option>
-              </select>
-            </div>
-          </div>
-          <details class="new-job-disclosure processing-options" id="new-job-processing-options"${processingOptionsOpen}>
-            <summary>
-              <span>
-                <strong>${t("new.advanced_options_title")}</strong>
-                <small>${t("new.advanced_options_note")}</small>
-              </span>
-              <span class="disclosure-chevron" aria-hidden="true">⌄</span>
-            </summary>
-            <div class="new-job-disclosure-body">
-              <div class="profile-actions">
-                <button class="button compact-button" id="save-current-profile" type="button">${t("new.profile_save")}</button>
-                <button class="button compact-button danger" id="delete-current-profile" type="button">${t("new.profile_delete")}</button>
-              </div>
-              <div class="field">
-                <label>${t("new.wizard_options_title")}</label>
-                <div class="options">${options.map(([name, key, checked]) => `
-                  <label class="check"><input type="checkbox" name="${name}" ${checked ? "checked" : ""} /> ${t(key)}</label>
-                `).join("")}</div>
-              </div>
-              <div class="notice feature-hint">
-                <strong>${t("cover.title")}</strong>
-                <p>${t("new.cover_hint")}</p>
-              </div>
-            </div>
-          </details>
-        </section>
-        <section class="wizard-step-card wizard-step-run" id="new-step-run">
-          <div class="wizard-step-head">
-            <span class="wizard-step-index">03</span>
-            <div>
-              <h2>${t("new.wizard_run_title")}</h2>
-              <p>${t("new.wizard_run_note")}</p>
-            </div>
-          </div>
-          <div class="wizard-summary-grid" id="new-job-summary"></div>
-          <div id="form-error"></div>
-          <button class="button primary" type="submit">${t("new.start")}</button>
-        </section>
-      </div>
-    </form>
-  `;
-}
-
-function renderWizardRail() {
-  const steps = [
-    ["new-step-source", "01", "new.wizard_source_title"],
-    ["new-step-goal", "02", "new.wizard_goal_title"],
-    ["new-step-run", "03", "new.wizard_run_title"]
-  ];
-  return `
-    <nav class="wizard-rail" aria-label="${t("new.wizard_nav")}">
-      ${steps.map(([id, number, key], index) => `
-        <button class="wizard-rail-item ${index === 0 ? "active" : ""}" type="button" data-wizard-target="${id}">
-          <span>${number}</span>
-          <strong>${t(key)}</strong>
-        </button>
-      `).join("")}
-    </nav>
-  `;
+  return renderNewJobForm(disclosures, library, renderProfileOptions(recipes));
 }
 
 function loadNewJobDisclosureState() {
@@ -280,13 +141,13 @@ function bindWizardRail() {
   });
 }
 
-function updateWizardSummary() {
+function updateWizardSummary(state) {
   const target = document.getElementById("new-job-summary");
   const form = document.getElementById("new-job-form");
   if (!target || !form) return;
   const sourcePath = cleanSourcePath(document.getElementById("source-path")?.value || "");
-  const sourceText = batchPaths.length
-    ? `${t("new.wizard_batch_source")} ${batchPaths.length} ${t("new.batch_files")}`
+  const sourceText = state.batchPaths.length
+    ? `${t("new.wizard_batch_source")} ${state.batchPaths.length} ${t("new.batch_files")}`
     : sourcePath
       ? `${t("new.wizard_single_source")} ${basename(sourcePath)}`
       : t("new.wizard_no_source");
@@ -301,15 +162,6 @@ function updateWizardSummary() {
   `;
 }
 
-function summaryCard(label, value) {
-  return `
-    <div class="wizard-summary-card">
-      <span>${label}</span>
-      <strong>${escapeHtml(value)}</strong>
-    </div>
-  `;
-}
-
 function selectedOptionText(id) {
   const select = document.getElementById(id);
   return select?.selectedOptions?.[0]?.textContent?.trim() || "";
@@ -321,7 +173,7 @@ function selectedOutputLabels(form) {
     .map(([, key]) => t(key));
 }
 
-function bindUploadDropzone() {
+function bindUploadDropzone(state) {
   const dropzone = document.getElementById("upload-dropzone");
   const input = document.getElementById("upload-file");
   if (!dropzone || !input) return;
@@ -334,7 +186,7 @@ function bindUploadDropzone() {
   });
   input.addEventListener("change", () => {
     const files = Array.from(input.files || []).filter(isMediaFile);
-    if (files.length) uploadRecordings(files);
+    if (files.length) uploadRecordings(files, state);
     input.value = "";
   });
   for (const eventName of ["dragenter", "dragover"]) {
@@ -355,17 +207,17 @@ function bindUploadDropzone() {
       setUploadMessage(t("new.drop_invalid"), true);
       return;
     }
-    uploadRecordings(files);
+    uploadRecordings(files, state);
   });
 }
 
-async function uploadRecording(file) {
-  return uploadRecordings([file]);
-}
-
-async function uploadRecordings(files, options = {}) {
+async function uploadRecordings(files, state, options = {}) {
   const dropzone = document.getElementById("upload-dropzone");
-  if (!dropzone) return;
+  if (!dropzone || state.disposed || state.signal.aborted) return;
+  if (state.uploadInProgress) {
+    setUploadMessage(t("new.upload_in_progress"), true);
+    return;
+  }
   if (files.length > UPLOAD_FILE_LIMIT) {
     setUploadMessage(t("new.upload_too_many").replace("{count}", String(UPLOAD_FILE_LIMIT)), true);
     return;
@@ -390,7 +242,7 @@ async function uploadRecordings(files, options = {}) {
       uploadFiles.push(file);
     }
   }
-  const projectedBatch = new Set(batchPaths);
+  const projectedBatch = new Set(state.batchPaths);
   for (const path of directPaths) projectedBatch.add(cleanSourcePath(path));
   const projectedCount = projectedBatch.size + uploadFiles.length;
   if (projectedCount > BATCH_PATH_LIMIT) {
@@ -398,11 +250,11 @@ async function uploadRecordings(files, options = {}) {
     return;
   }
   for (const path of directPaths) {
-    addBatchPath(path);
+    addBatchPath(state, path);
     const input = document.getElementById("source-path");
     if (input) {
       input.value = path;
-      sourcePathBatchMirror = true;
+      state.sourcePathBatchMirror = true;
     }
   }
   if (!uploadFiles.length) {
@@ -410,13 +262,17 @@ async function uploadRecordings(files, options = {}) {
     return;
   }
   if (shouldConfirmBrowserUploadForTest(files) && !options.confirmBrowserUpload) {
-    setBrowserUploadConfirmation(uploadFiles, () => uploadRecordings(files, { confirmBrowserUpload: true }));
+    setBrowserUploadConfirmation(uploadFiles, () => uploadRecordings(files, state, { confirmBrowserUpload: true }));
     return;
   }
+  state.uploadInProgress = true;
+  const uploadController = new AbortController();
+  const abortUploads = () => uploadController.abort(state.signal.reason);
+  state.signal.addEventListener("abort", abortUploads, { once: true });
   dropzone.classList.add("uploading");
   const uploaded = [];
   const totalBytes = uploadFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
-  const progress = new Map(uploadFiles.map((file) => [file.name, 0]));
+  const progress = new Map(uploadFiles.map((_, index) => [index, 0]));
   let completed = 0;
   let lastRenderAt = 0;
 
@@ -424,8 +280,8 @@ async function uploadRecordings(files, options = {}) {
     const now = Date.now();
     if (!force && now - lastRenderAt < UPLOAD_PROGRESS_THROTTLE_MS) return;
     lastRenderAt = now;
-    const loadedBytes = uploadFiles.reduce((sum, file) => {
-      const percent = progress.get(file.name) || 0;
+    const loadedBytes = uploadFiles.reduce((sum, file, index) => {
+      const percent = progress.get(index) || 0;
       return sum + (Number(file.size) || 0) * percent / 100;
     }, 0);
     const percent = totalBytes > 0 ? loadedBytes / totalBytes * 100 : 0;
@@ -434,31 +290,38 @@ async function uploadRecordings(files, options = {}) {
 
   try {
     renderProgress(true);
-    await runWithConcurrency(uploadFiles, UPLOAD_CONCURRENCY, async (file) => {
+    await runWithConcurrency(uploadFiles, UPLOAD_CONCURRENCY, async (file, index) => {
       const payload = await API.uploadRecording(file, (percent) => {
-        progress.set(file.name, percent);
+        if (state.disposed) return;
+        progress.set(index, percent);
         renderProgress(false);
-      });
+      }, { signal: uploadController.signal });
+      if (state.disposed || uploadController.signal.aborted) return;
       if (payload.path) {
         uploaded.push(payload.path);
-        addBatchPath(payload.path);
+        addBatchPath(state, payload.path);
         const input = document.getElementById("source-path");
         if (input) {
           input.value = payload.path;
-          sourcePathBatchMirror = true;
+          state.sourcePathBatchMirror = true;
         }
       }
-      progress.set(file.name, 100);
+      progress.set(index, 100);
       completed += 1;
       renderProgress(true);
     });
     const totalAdded = uploaded.length + directPaths.length;
+    if (state.disposed || state.signal.aborted) return;
     setUploadMessage(`${t("new.upload_done")} ${totalAdded} ${t("new.batch_files")}`);
-    await loadRecordings();
+    await loadRecordings(state);
   } catch (error) {
+    uploadController.abort();
+    if (isAbortError(error, state.signal) || state.disposed) return;
     setUploadMessage(`${t("new.upload_failed")}${escapeHtml(error.message)}`, true);
   } finally {
-    dropzone.classList.remove("uploading");
+    state.signal.removeEventListener("abort", abortUploads);
+    state.uploadInProgress = false;
+    if (dropzone.isConnected) dropzone.classList.remove("uploading");
   }
 }
 
@@ -510,83 +373,52 @@ function setBrowserUploadConfirmation(files, onConfirm) {
   document.getElementById("confirm-browser-upload")?.addEventListener("click", onConfirm, { once: true });
 }
 
-function addBatchPath(path) {
+function addBatchPath(state, path) {
   const value = cleanSourcePath(path);
   if (!value) return false;
-  if (!batchPaths.includes(value)) {
-    if (batchPaths.length >= BATCH_PATH_LIMIT) {
+  if (!state.batchPaths.includes(value)) {
+    if (state.batchPaths.length >= BATCH_PATH_LIMIT) {
       setUploadMessage(t("new.batch_limit").replace("{count}", String(BATCH_PATH_LIMIT)), true);
       return false;
     }
-    batchPaths.push(value);
+    state.batchPaths.push(value);
   }
-  renderBatchList();
-  updateWizardSummary();
+  renderBatchList(state);
+  updateWizardSummary(state);
   return true;
 }
 
-function addCurrentSourceToBatch() {
+function addCurrentSourceToBatch(state) {
   const input = document.getElementById("source-path");
   const value = cleanSourcePath(input?.value || "");
   if (!value) {
     setUploadMessage(t("new.path_required"), true);
     return;
   }
-  addBatchPath(value);
-  sourcePathBatchMirror = false;
+  addBatchPath(state, value);
+  state.sourcePathBatchMirror = false;
   if (input) input.value = "";
   setUploadMessage(`${t("new.batch_direct_added")} 1 ${t("new.batch_files")}`);
 }
 
-function removeBatchPath(path) {
-  batchPaths = batchPaths.filter((item) => item !== path);
-  renderBatchList();
-  updateWizardSummary();
+function removeBatchPath(state, path) {
+  state.batchPaths = state.batchPaths.filter((item) => item !== path);
+  renderBatchList(state);
+  updateWizardSummary(state);
 }
 
-function renderBatchList() {
+function renderBatchList(state) {
   const target = document.getElementById("batch-box");
   if (!target) return;
-  if (!batchPaths.length) {
-    target.innerHTML = "";
-    return;
-  }
-  target.innerHTML = `
-    <div class="batch-head">
-      <strong>${t("new.batch_selected")} (${batchPaths.length})</strong>
-      <small>${t("new.batch_limit_hint").replace("{count}", String(BATCH_PATH_LIMIT))}</small>
-      <button class="button compact-button" id="clear-batch" type="button">${t("new.batch_clear")}</button>
-    </div>
-    <div class="batch-list">
-      ${batchPaths.map((path) => `
-        <div class="batch-item">
-          <span>${escapeHtml(basename(path))}</span>
-          <button class="button compact-button" type="button" data-remove-batch="${escapeHtml(path)}">${t("new.batch_remove")}</button>
-        </div>
-      `).join("")}
-    </div>
-  `;
+  target.innerHTML = batchListHtml(state.batchPaths, BATCH_PATH_LIMIT);
   target.querySelector("#clear-batch")?.addEventListener("click", () => {
-    batchPaths = [];
-    renderBatchList();
-    updateWizardSummary();
+    state.batchPaths = [];
+    renderBatchList(state);
+    updateWizardSummary(state);
   });
   target.querySelectorAll("[data-remove-batch]").forEach((button) => {
-    button.addEventListener("click", () => removeBatchPath(button.dataset.removeBatch || ""));
+    button.addEventListener("click", () => removeBatchPath(state, button.dataset.removeBatch || ""));
   });
-}
-
-function uploadProgressHtml(filename, percent) {
-  const rounded = Math.round(percent);
-  return `
-    <div class="upload-progress-head">
-      <span>${t("new.uploading")} ${escapeHtml(filename)}</span>
-      <strong>${rounded}%</strong>
-    </div>
-    <div class="progress upload-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${rounded}" aria-label="${t("new.upload_progress")}">
-      <span style="width:${rounded}%"></span>
-    </div>
-  `;
 }
 
 function setUploadMessage(message, isError = false) {
@@ -603,51 +435,42 @@ function isMediaFile(file) {
   );
 }
 
-async function loadRecordings() {
+async function loadRecordings(state) {
+  const version = ++state.recordingLoadVersion;
   const target = document.getElementById("recording-picker");
-  if (!target) return;
+  if (!target || state.disposed || state.signal.aborted) return;
   try {
-    const recordings = await API.getRecordings();
+    const recordings = await API.getRecordings({ signal: state.signal });
+    if (state.disposed || state.signal.aborted || version !== state.recordingLoadVersion || !target.isConnected) return;
     if (!recordings.length) {
       target.innerHTML = `<div class="empty">${t("new.no_recordings")}</div>`;
       return;
     }
-    renderRecordingList(target, recordings, false);
+    renderRecordingList(target, recordings, false, state);
   } catch (error) {
+    if (isAbortError(error, state.signal) || state.disposed || version !== state.recordingLoadVersion) return;
     target.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
   }
 }
 
-function renderRecordingList(target, recordings, showAll) {
-  const visible = showAll ? recordings : recordings.slice(0, 12);
-  target.innerHTML = `
-    <div class="recording-head">${t("new.pick_recording")}</div>
-    <div class="recording-list">
-      ${visible.map((file) => `
-        <button class="recording-item" type="button" data-path="${escapeHtml(file.path)}">
-          <span>${escapeHtml(file.relative_path || basename(file.path))}</span>
-          <small>${formatBytes(file.size_bytes)}</small>
-        </button>
-      `).join("")}
-      ${!showAll && recordings.length > visible.length ? `<button class="button" id="show-all-recordings" type="button">${t("new.show_all_recordings")} (${recordings.length})</button>` : ""}
-    </div>
-  `;
+function renderRecordingList(target, recordings, showAll, state) {
+  target.innerHTML = recordingListHtml(recordings, showAll);
   target.querySelectorAll("[data-path]").forEach((button) => {
     button.addEventListener("click", () => {
       document.getElementById("source-path").value = button.dataset.path || "";
-      sourcePathBatchMirror = true;
-      addBatchPath(button.dataset.path || "");
+      state.sourcePathBatchMirror = true;
+      addBatchPath(state, button.dataset.path || "");
     });
   });
   document.getElementById("show-all-recordings")?.addEventListener("click", () => {
-    renderRecordingList(target, recordings, true);
+    renderRecordingList(target, recordings, true, state);
   });
 }
 
-function applyProfile(event) {
+function applyProfile(event, state) {
   const form = document.getElementById("new-job-form");
   const preset = event.currentTarget.value;
-  const selected = getProfilePayload(preset);
+  const selected = getProfilePayload(preset, state);
   if (!form) return;
   if (selected?.whisper_language) document.getElementById("whisper-language").value = selected.whisper_language;
   for (const [name, , checked] of options) {
@@ -656,10 +479,10 @@ function applyProfile(event) {
       ? Boolean(selected[name])
       : Boolean(checked);
   }
-  updateWizardSummary();
+  updateWizardSummary(state);
 }
 
-function renderProfileOptions(recipes = serverRecipes) {
+function renderProfileOptions(recipes = []) {
   const customProfiles = loadCustomProfiles();
   return `
     <option value="">${t("new.profile_custom")}</option>
@@ -679,7 +502,7 @@ function renderProfileOptions(recipes = serverRecipes) {
   `;
 }
 
-function getProfilePayload(value) {
+function getProfilePayload(value, state) {
   if (!value) return null;
   if (value.startsWith("custom:")) {
     const id = value.slice("custom:".length);
@@ -687,7 +510,7 @@ function getProfilePayload(value) {
   }
   if (value.startsWith("recipe:")) {
     const id = value.slice("recipe:".length);
-    return serverRecipes.find((recipe) => recipe.id === id)?.options || null;
+    return state.serverRecipes.find((recipe) => recipe.id === id)?.options || null;
   }
   return BUILTIN_PROFILES[value] || null;
 }
@@ -708,7 +531,12 @@ function loadCustomProfiles() {
 }
 
 function storeCustomProfiles(profiles) {
-  localStorage.setItem(CUSTOM_PROFILE_STORAGE_KEY, JSON.stringify(profiles.slice(0, 30)));
+  try {
+    localStorage.setItem(CUSTOM_PROFILE_STORAGE_KEY, JSON.stringify(profiles.slice(0, 30)));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function currentProfilePayload(form) {
@@ -717,15 +545,15 @@ function currentProfilePayload(form) {
   return payload;
 }
 
-function refreshProfileSelect(selectedValue = "") {
+function refreshProfileSelect(state, selectedValue = "") {
   const select = document.getElementById("workflow-profile");
   if (!select) return;
-  select.innerHTML = renderProfileOptions();
+  select.innerHTML = renderProfileOptions(state.serverRecipes);
   select.value = selectedValue;
-  updateWizardSummary();
+  updateWizardSummary(state);
 }
 
-async function saveCurrentProfile() {
+async function saveCurrentProfile(state) {
   const form = document.getElementById("new-job-form");
   if (!form) return;
   const name = window.prompt(t("new.profile_name_prompt"));
@@ -737,15 +565,16 @@ async function saveCurrentProfile() {
   }];
   try {
     const recipe = await API.createRecipe(legacyProfilesToRecipes(legacy)[0]);
-    serverRecipes = [recipe, ...serverRecipes.filter((item) => item.id !== recipe.id)];
-    refreshProfileSelect(`recipe:${recipe.id}`);
+    if (state.disposed) return;
+    state.serverRecipes = [recipe, ...state.serverRecipes.filter((item) => item.id !== recipe.id)];
+    refreshProfileSelect(state, `recipe:${recipe.id}`);
     showToast(t("new.profile_saved"), "success");
   } catch (error) {
-    showToast(`${t("new.profile_save_failed")} ${error.message}`, "error");
+    if (!state.disposed) showToast(`${t("new.profile_save_failed")} ${error.message}`, "error");
   }
 }
 
-async function deleteCurrentProfile() {
+async function deleteCurrentProfile(state) {
   const select = document.getElementById("workflow-profile");
   if (!select?.value?.startsWith("custom:") && !select?.value?.startsWith("recipe:")) return;
   if (!window.confirm(t("new.profile_delete_confirm"))) return;
@@ -753,29 +582,33 @@ async function deleteCurrentProfile() {
     const id = select.value.slice("recipe:".length);
     try {
       await API.deleteRecipe(id);
-      serverRecipes = serverRecipes.filter((recipe) => recipe.id !== id);
-      refreshProfileSelect("");
-      applyProfile({ currentTarget: { value: "" } });
+      if (state.disposed) return;
+      state.serverRecipes = state.serverRecipes.filter((recipe) => recipe.id !== id);
+      refreshProfileSelect(state, "");
+      applyProfile({ currentTarget: { value: "" } }, state);
       showToast(t("new.profile_deleted"), "success");
     } catch (error) {
-      showToast(`${t("new.profile_delete_failed")} ${error.message}`, "error");
+      if (!state.disposed) showToast(`${t("new.profile_delete_failed")} ${error.message}`, "error");
     }
     return;
   }
   const id = select.value.slice("custom:".length);
-  storeCustomProfiles(loadCustomProfiles().filter((profile) => profile.id !== id));
-  refreshProfileSelect("");
-  applyProfile({ currentTarget: { value: "" } });
+  if (!storeCustomProfiles(loadCustomProfiles().filter((profile) => profile.id !== id))) {
+    showToast(t("new.profile_delete_failed"), "error");
+    return;
+  }
+  refreshProfileSelect(state, "");
+  applyProfile({ currentTarget: { value: "" } }, state);
   showToast(t("new.profile_deleted"), "success");
 }
 
-async function submit(event) {
+async function submit(event, state) {
   event.preventDefault();
   const form = event.currentTarget;
   const button = form.querySelector('[type="submit"]');
   const path = cleanSourcePath(document.getElementById("source-path").value);
   const errorBox = document.getElementById("form-error");
-  const paths = batchPaths.length ? batchPaths : (path ? [path] : []);
+  const paths = state.batchPaths.length ? state.batchPaths : (path ? [path] : []);
   if (!paths.length) {
     errorBox.innerHTML = `<div class="error">${t("new.path_required")}</div>`;
     return;
@@ -792,18 +625,21 @@ async function submit(event) {
         ...basePayload,
         items: paths.map((item) => ({ path: item }))
       });
+      if (state.disposed) return;
       errorBox.innerHTML = `<div class="notice">${t("new.batch_submit_started")} ${paths.length} ${t("new.batch_files")}</div>`;
       showToast(`${t("new.batch_submit_started")} ${paths.length} ${t("new.batch_files")}`, "success");
       location.hash = "#/";
     } else {
       const job = await API.submitJob({ ...basePayload, path: paths[0] });
+      if (state.disposed) return;
       location.hash = `#/jobs/${encodeURIComponent(jobName(job))}`;
     }
   } catch (error) {
+    if (state.disposed || isAbortError(error, state.signal)) return;
     errorBox.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
     showToast(error.message, "error");
   } finally {
-    setButtonLoading(button, false);
+    if (button?.isConnected) setButtonLoading(button, false);
   }
 }
 
@@ -827,11 +663,13 @@ async function loadLibraryOptions(signal) {
       API.getCreatorKits({ signal }),
       API.getRecipes({ signal }),
     ]);
+    signal?.throwIfAborted();
     let recipes = recipesResponse.items || [];
     const legacyProfiles = loadCustomProfiles();
     if (legacyProfiles.length) {
       try {
         const imported = await API.importRecipes(legacyProfilesToRecipes(legacyProfiles));
+        signal?.throwIfAborted();
         const byId = new Map([...recipes, ...(imported.items || [])].map((recipe) => [recipe.id, recipe]));
         recipes = [...byId.values()];
         const raw = localStorage.getItem(CUSTOM_PROFILE_STORAGE_KEY);
@@ -842,28 +680,29 @@ async function loadLibraryOptions(signal) {
       }
     }
     return { projects: projects.items || [], kits: kits.items || [], recipes };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     return { projects: [], kits: [], recipes: [] };
   }
 }
 
-function applyProjectDefaultKit() {
+function applyProjectDefaultKit(state) {
   const projectSelect = document.getElementById("project-id");
   const kitSelect = document.getElementById("creator-kit-id");
   const defaultKit = projectSelect?.selectedOptions?.[0]?.dataset.defaultKit || "";
   if (kitSelect && defaultKit && Array.from(kitSelect.options).some((option) => option.value === defaultKit)) {
     kitSelect.value = defaultKit;
   }
-  updateWizardSummary();
+  updateWizardSummary(state);
 }
 
-function selectProjectFromHash() {
+function selectProjectFromHash(state) {
   const query = String(location.hash || "").split("?", 2)[1] || "";
   const projectId = new URLSearchParams(query).get("project") || "";
   const select = document.getElementById("project-id");
   if (!select || !Array.from(select.options).some((option) => option.value === projectId)) return;
   select.value = projectId;
-  applyProjectDefaultKit();
+  applyProjectDefaultKit(state);
 }
 
 function cleanSourcePath(value) {

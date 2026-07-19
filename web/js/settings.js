@@ -1,4 +1,4 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { t } from "./i18n.js";
 import {
   settingDisplayValue,
@@ -7,6 +7,8 @@ import {
   settingOptionLabel,
   settingRecommendation,
 } from "./settings-schema.js";
+import { errorState, loadingState } from "./ui-states.js";
+import { showToast } from "./toast.js";
 import { escapeHtml } from "./utils.js";
 
 const groups = [
@@ -28,8 +30,9 @@ const editableGroups = [
   {
     title: "settings.edit_whisper",
     fields: [
-      { env: "WHISPER_BACKEND", path: ["whisper", "backend"], type: "select", options: ["funasr-whisper", "faster-whisper", "funasr", "cli"] },
+      { env: "WHISPER_BACKEND", path: ["whisper", "backend"], type: "select", options: ["faster-whisper", "cli"] },
       { env: "WHISPER_MODEL", path: ["whisper", "model"] },
+      { env: "WHISPER_MODEL_FALLBACKS", path: ["whisper", "model_fallbacks"] },
       { env: "WHISPER_LANGUAGE", path: ["whisper", "language"], type: "select", options: ["auto", "zh", "en", "ja", "ko"] },
       { env: "FASTER_WHISPER_DEVICE", path: ["whisper", "faster_whisper_device"], type: "select", options: ["cuda", "cpu", "auto"] },
       { env: "FASTER_WHISPER_COMPUTE_TYPE", path: ["whisper", "faster_whisper_compute_type"], type: "select", options: ["int8_float16", "float16", "int8", "float32"] },
@@ -117,31 +120,60 @@ const editableGroups = [
   }
 ];
 
-export async function renderSettings(routeValue = "") {
+export async function renderSettings(routeValue = "", { signal } = {}) {
   const message = normalizeSettingsMessage(routeValue);
   const app = document.getElementById("app");
+  let disposed = false;
+  let loadVersion = 0;
+  let latestPreferences = { event_count: 0, clip_feedback: {}, subtitle_replacements: {}, platforms: {} };
+  const isActive = () => !disposed && !signal?.aborted;
   const loadingTimer = setTimeout(() => {
-    app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
+    if (isActive()) app.innerHTML = loadingState(t("common.loading"));
   }, 150);
-  try {
-    const [payload, preferences] = await Promise.all([
-      API.getHealth(),
-      API.getPreferences().catch(() => ({ event_count: 0, clip_feedback: {}, subtitle_replacements: {}, platforms: {} })),
-    ]);
-    clearTimeout(loadingTimer);
-    renderSettingsPage(payload, message, preferences);
-  } catch (error) {
-    clearTimeout(loadingTimer);
-    app.innerHTML = `<div class="error">${t("common.error")} ${escapeHtml(error.message)} <button class="button" id="retry-settings">${t("common.retry")}</button></div>`;
-    document.getElementById("retry-settings")?.addEventListener("click", () => renderSettings());
+
+  const context = {
+    isActive,
+    render(payload, nextMessage = "") {
+      if (isActive()) renderSettingsPage(payload, nextMessage, latestPreferences, context);
+    },
+    refresh,
+  };
+
+  async function refresh(nextMessage = "") {
+    const version = ++loadVersion;
+    try {
+      const [payload, preferences] = await Promise.all([
+        API.getHealth({ signal }),
+        API.getPreferences({ signal }).catch((error) => {
+          if (isAbortError(error, signal)) throw error;
+          return latestPreferences;
+        }),
+      ]);
+      if (!isActive() || version !== loadVersion) return;
+      latestPreferences = preferences;
+      clearTimeout(loadingTimer);
+      context.render(payload, nextMessage);
+    } catch (error) {
+      clearTimeout(loadingTimer);
+      if (!isActive() || version !== loadVersion || isAbortError(error, signal)) return;
+      app.innerHTML = errorState(`${t("common.error")} ${error.message}`, { retryLabel: t("common.retry") });
+      app.querySelector("[data-retry]")?.addEventListener("click", () => refresh());
+    }
   }
+
+  await refresh(message);
+  return () => {
+    disposed = true;
+    loadVersion += 1;
+    clearTimeout(loadingTimer);
+  };
 }
 
 export function normalizeSettingsMessage(value) {
   return typeof value === "string" ? value : "";
 }
 
-function renderSettingsPage(payload, message = "", preferences = {}) {
+function renderSettingsPage(payload, message = "", preferences = {}, context = {}) {
   const settings = payload.settings || {};
   const checks = payload.checks || [];
   const recommendedUpdates = recommendedSettingsUpdates(editableGroups, settings, checks);
@@ -181,8 +213,8 @@ function renderSettingsPage(payload, message = "", preferences = {}) {
     ${renderLocalPreferences(preferences)}
     ${renderSettingsSnapshot(settings, checks)}
   `;
-  bindSettingsEditor();
-  bindLocalPreferences();
+  bindSettingsEditor(context);
+  bindLocalPreferences(context);
 }
 
 export function renderLocalPreferences(preferences = {}) {
@@ -212,26 +244,38 @@ export function renderLocalPreferences(preferences = {}) {
     </section>`;
 }
 
-function bindLocalPreferences() {
+function bindLocalPreferences(context) {
   const panel = document.querySelector(".local-preferences");
   if (!panel) return;
   panel.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-preferences-action]");
     if (!button) return;
-    if (button.dataset.preferencesAction === "clear") {
-      if (!window.confirm(t("preferences.clear_confirm"))) return;
-      await API.clearPreferences();
-      await renderSettings(t("preferences.cleared"));
-      return;
+    setButtonLoading(button, true);
+    try {
+      if (button.dataset.preferencesAction === "clear") {
+        if (!window.confirm(t("preferences.clear_confirm"))) return;
+        await API.clearPreferences();
+        if (!context.isActive?.()) return;
+        await context.refresh?.(t("preferences.cleared"));
+        return;
+      }
+      const payload = await API.exportPreferences();
+      if (!context.isActive?.()) return;
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "video-automation-preferences.json";
+        link.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      if (context.isActive?.()) showToast(`${t("common.error")} ${error.message}`, "error");
+    } finally {
+      if (button.isConnected) setButtonLoading(button, false);
     }
-    const payload = await API.exportPreferences();
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "video-automation-preferences.json";
-    link.click();
-    URL.revokeObjectURL(url);
   });
 }
 
@@ -309,7 +353,7 @@ function renderEditableField(field, settings, checks) {
   </label>`;
 }
 
-function bindSettingsEditor() {
+function bindSettingsEditor(context) {
   const form = document.getElementById("settings-editor");
   const message = document.getElementById("settings-message");
   const saveButton = document.getElementById("save-settings");
@@ -355,11 +399,11 @@ function bindSettingsEditor() {
     setButtonLoading(saveButton, true);
     try {
       const payload = await API.updateSettings({ env: updates });
-      renderSettingsPage(payload, t("settings.saved"));
+      context.render?.(payload, t("settings.saved"));
     } catch (error) {
-      setSettingsMessage(message, `${t("settings.save_failed")} ${error.message}`, true);
+      if (context.isActive?.()) setSettingsMessage(message, `${t("settings.save_failed")} ${error.message}`, true);
     } finally {
-      setButtonLoading(saveButton, false);
+      if (saveButton?.isConnected) setButtonLoading(saveButton, false);
     }
   });
 }
@@ -370,7 +414,11 @@ function bindSettingsDisclosure(form) {
       const open = [...form.querySelectorAll("[data-settings-group][open]")]
         .map((item) => item.dataset.settingsGroup)
         .filter(Boolean);
-      localStorage.setItem(SETTINGS_OPEN_GROUPS_KEY, JSON.stringify(open));
+      try {
+        localStorage.setItem(SETTINGS_OPEN_GROUPS_KEY, JSON.stringify(open));
+      } catch {
+        // Persisting disclosure state is optional.
+      }
     });
   });
 }

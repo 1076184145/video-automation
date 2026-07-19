@@ -1,4 +1,4 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { parseClipTime } from "./clip-time.js";
 import { bindCoverActions } from "./cover-panel.js";
 import { bindClipEditor, clipFromRow, refreshClipRowNumbers, renderClipRow, setClipMessage } from "./clip-editor.js";
@@ -18,6 +18,7 @@ import { loadReviewDraft } from "./review-drafts.js";
 import { bindRevisionHistory } from "./revision-history.js";
 import { renderTimeline } from "./timeline.js";
 import { showToast } from "./toast.js";
+import { errorState, loadingState } from "./ui-states.js";
 import { fileMap, formatTime, isTerminal } from "./utils.js";
 
 export async function renderJobDetail(match, { signal } = {}) {
@@ -41,10 +42,11 @@ export async function renderJobDetail(match, { signal } = {}) {
   let isEditingTranscript = false;
   let deferredFullRender = false;
   let disposed = false;
+  let loadVersion = 0;
   const actionCleanups = [];
   const hasUnsavedChanges = () => isEditingClips || isEditingTranscript;
 
-  app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
+  app.innerHTML = loadingState(t("common.loading"));
 
   const handleResize = () => {
     if (!timelineData) return;
@@ -351,16 +353,18 @@ export async function renderJobDetail(match, { signal } = {}) {
 
   async function load(forceRender = false) {
     if (disposed) return null;
+    const version = ++loadVersion;
+    const isCurrent = () => !disposed && !signal?.aborted && version === loadVersion;
     try {
       const job = await API.getJob(name, { signal });
-      if (disposed) return null;
+      if (!isCurrent()) return null;
       lastStatus = job.status;
       lastStateVersion = Math.max(lastStateVersion, Number(job.state_version || 0));
       lastRuntimeStale = Boolean(job.runtime?.stale);
       lastRuntimeActive = Boolean(job.runtime?.active);
       const files = fileMap(job);
-      const jobState = await loadJobFile(name, files, "job.json");
-      if (disposed) return null;
+      const jobState = await loadJobFile(name, files, "job.json", { signal });
+      if (!isCurrent()) return null;
       if (jobState) {
         Object.assign(job, jobState);
       }
@@ -379,28 +383,34 @@ export async function renderJobDetail(match, { signal } = {}) {
       }
 
       let [manifest, corrupt, cuts, transcript, silence, freeze, scene, waveform, stageTimings, cover, segments, metadata, highlights, highlightCut, highlightRender, publishPackage, projectExport, health, revisions, quality] = await Promise.all([
-        loadJobFile(name, files, "manifest.json"),
-        loadJobFile(name, files, "corrupt.json"),
-        loadJobFile(name, files, "cuts.json"),
-        loadJobFile(name, files, "transcript.json"),
-        loadJobFile(name, files, "silence.json"),
-        loadJobFile(name, files, "freeze.json"),
-        loadJobFile(name, files, "scene.json"),
-        loadJobFile(name, files, "waveform.json"),
-        loadJobFile(name, files, "stage_timings.json"),
-        loadJobFile(name, files, "cover_manifest.json"),
-        loadJobFile(name, files, "segments_manifest.json"),
-        loadJobFile(name, files, "metadata.json"),
-        loadJobFile(name, files, "highlights.json"),
-        loadJobFile(name, files, "highlight_cut.json"),
-        loadJobFile(name, files, "highlight_render_status.json"),
-        loadJobFile(name, files, "publish_package.json"),
-        loadJobFile(name, files, "project_export_manifest.json"),
-        loadHealthSafe(),
-        API.getRevisions(name, { signal }).then((result) => result.items || []).catch(() => []),
-        job.status === "needs_review" ? API.getJobQuality(name, { signal }).catch(() => null) : Promise.resolve(null)
+        loadJobFile(name, files, "manifest.json", { signal }),
+        loadJobFile(name, files, "corrupt.json", { signal }),
+        loadJobFile(name, files, "cuts.json", { signal }),
+        loadJobFile(name, files, "transcript.json", { signal }),
+        loadJobFile(name, files, "silence.json", { signal }),
+        loadJobFile(name, files, "freeze.json", { signal }),
+        loadJobFile(name, files, "scene.json", { signal }),
+        loadJobFile(name, files, "waveform.json", { signal }),
+        loadJobFile(name, files, "stage_timings.json", { signal }),
+        loadJobFile(name, files, "cover_manifest.json", { signal }),
+        loadJobFile(name, files, "segments_manifest.json", { signal }),
+        loadJobFile(name, files, "metadata.json", { signal }),
+        loadJobFile(name, files, "highlights.json", { signal }),
+        loadJobFile(name, files, "highlight_cut.json", { signal }),
+        loadJobFile(name, files, "highlight_render_status.json", { signal }),
+        loadJobFile(name, files, "publish_package.json", { signal }),
+        loadJobFile(name, files, "project_export_manifest.json", { signal }),
+        loadHealthSafe({ signal }),
+        API.getRevisions(name, { signal }).then((result) => result.items || []).catch((error) => {
+          if (isAbortError(error, signal)) throw error;
+          return [];
+        }),
+        job.status === "needs_review" ? API.getJobQuality(name, { signal }).catch((error) => {
+          if (isAbortError(error, signal)) throw error;
+          return null;
+        }) : Promise.resolve(null)
       ]);
-      if (disposed) return null;
+      if (!isCurrent()) return null;
 
       const cutsDraft = loadReviewDraft(name, "cuts");
       if (cutsDraft) {
@@ -467,9 +477,10 @@ export async function renderJobDetail(match, { signal } = {}) {
       else startEvents();
       return { job, payload };
     } catch (error) {
+      if (!isCurrent() || isAbortError(error, signal)) return null;
       if (isFirstRender) {
-        app.innerHTML = `<div class="error">${errorHintHtml(error.message)} <button class="button" id="retry">${t("common.retry")}</button></div>`;
-        document.getElementById("retry")?.addEventListener("click", () => load());
+        app.innerHTML = errorState(errorHintHtml(error.message), { retryLabel: t("common.retry"), trustedHtml: true });
+        app.querySelector("[data-retry]")?.addEventListener("click", () => load());
       } else {
         console.error("Job update failed", error);
       }
@@ -500,6 +511,7 @@ export async function renderJobDetail(match, { signal } = {}) {
   }, 10000);
   return () => {
     disposed = true;
+    loadVersion += 1;
     stopEvents();
     clearTimeout(resizeTimer);
     clearInterval(reconciliationTimer);

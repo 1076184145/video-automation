@@ -33,7 +33,25 @@ output/
 subtitles/
 config/
 
+# Local source/test videos and generated previews must never be committed.
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.flv
+*.wmv
+*.mpeg
+*.mpg
+
 .workbuddy/
+.agent/
+.agents/
+agent.md
+AGENT.md
+agents.md
+AGENTS.md
 docs/superpowers/
 docs/design/
 docs/reviews/

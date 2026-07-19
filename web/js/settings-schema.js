@@ -3,6 +3,7 @@ import { t } from "./i18n.js";
 const ENV_KEY_MAP = {
   WHISPER_BACKEND: "backend",
   WHISPER_MODEL: "whisper_model",
+  WHISPER_MODEL_FALLBACKS: "model_fallbacks",
   WHISPER_LANGUAGE: "language",
   FASTER_WHISPER_DEVICE: "faster_whisper_device",
   FASTER_WHISPER_COMPUTE_TYPE: "faster_whisper_compute_type",
@@ -254,7 +255,7 @@ function dynamicRecommendation(id, currentValue, capabilities) {
     };
   }
   const rules = {
-    "whisper.backend": capabilities.funasr ? "funasr-whisper" : "faster-whisper",
+    "whisper.backend": "faster-whisper",
     "whisper.model": hasTranscriptionCuda ? "medium" : "small",
     "whisper.faster_whisper_device": hasTranscriptionCuda ? "cuda" : "cpu",
     "whisper.faster_whisper_compute_type": hasTranscriptionCuda ? "int8_float16" : "int8",
@@ -343,9 +344,7 @@ function dynamicReasonKey(id, capabilities) {
       : "settings.recommendation.reason.nvenc_missing";
   }
   if (id === "whisper.backend") {
-    return capabilities.funasr
-      ? "settings.recommendation.reason.funasr_available"
-      : "settings.recommendation.reason.funasr_missing";
+    return "settings.recommendation.reason.funasr_missing";
   }
   if (id === "optional_modules.audio_separation_engine") {
     return capabilities.demucs

@@ -80,6 +80,33 @@ test("event hub shares one event source and releases it after the last subscribe
   assert.equal(closed, 1);
 });
 
+test("event hub isolates a failing subscriber from later subscribers", async () => {
+  const { createEventHub } = await import(eventHubModule);
+  const listeners = new Map();
+  const source = {
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    removeEventListener() {},
+    close() {},
+  };
+  const hub = createEventHub(() => source);
+  const received = [];
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    hub.subscribe("job", () => {
+      throw new Error("subscriber failed");
+    });
+    hub.subscribe("job", (payload) => received.push(payload.id));
+    listeners.get("job")({ data: JSON.stringify({ id: "job-after-error" }) });
+  } finally {
+    console.error = originalError;
+    hub.close();
+  }
+  assert.deepEqual(received, ["job-after-error"]);
+});
+
 test("structured API errors expose their readable message", async () => {
   const { apiErrorMessage } = await import("../web/js/api.js");
 
@@ -88,6 +115,65 @@ test("structured API errors expose their readable message", async () => {
     "Project not found",
   );
   assert.equal(apiErrorMessage({ error: "legacy error" }, "fallback"), "legacy error");
+});
+
+test("route-owned API cancellation stays an AbortError and is never retried", async () => {
+  const { requestJson } = await import("../web/js/api.js");
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+    calls += 1;
+    signal.addEventListener("abort", () => reject(signal.reason || new DOMException("Aborted", "AbortError")), { once: true });
+  });
+  const controller = new AbortController();
+  try {
+    const request = requestJson("/slow-route", { signal: controller.signal, timeout: 0, retries: 3 });
+    controller.abort();
+    await assert.rejects(request, (error) => error?.name === "AbortError");
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("route cancellation aborts an in-flight recording XHR", async () => {
+  const { API } = await import("../web/js/api.js");
+  const OriginalXHR = globalThis.XMLHttpRequest;
+  let instance = null;
+  class FakeXHR {
+    constructor() {
+      this.upload = {};
+      instance = this;
+    }
+    open() {}
+    setRequestHeader() {}
+    send() {
+      this.sent = true;
+    }
+    abort() {
+      this.aborted = true;
+      this.onabort?.();
+    }
+  }
+  globalThis.XMLHttpRequest = FakeXHR;
+  const controller = new AbortController();
+  try {
+    const upload = API.uploadRecording({ name: "clip.mp4", type: "video/mp4" }, null, { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(upload, (error) => error?.name === "AbortError");
+    assert.equal(instance.sent, true);
+    assert.equal(instance.aborted, true);
+  } finally {
+    globalThis.XMLHttpRequest = OriginalXHR;
+  }
+});
+
+test("shared error states escape server text unless trusted markup is explicit", async () => {
+  const { errorState } = await import("../web/js/ui-states.js");
+
+  assert.match(errorState('<img src=x onerror="boom">'), /&lt;img/);
+  assert.doesNotMatch(errorState('<img src=x onerror="boom">'), /<img/);
+  assert.match(errorState("<strong>local</strong>", { trustedHtml: true }), /<strong>local<\/strong>/);
 });
 
 test("lazy routes load a page module once and forward route arguments", async () => {
@@ -135,4 +221,15 @@ test("glass effects stay on navigation and overlays instead of ordinary panels",
 
   assert.match(source, /\.sidebar[\s\S]*backdrop-filter:\s*blur\(24px\)\s+saturate\(140%\)/);
   assert.doesNotMatch(source, /\.card,\s*\.panel[^{}]*backdrop-filter/);
+});
+
+test("mobile shortcut help stays above the bottom navigation and handles Escape first", async () => {
+  const [css, shortcut] = await Promise.all([
+    readFile(new URL("../web/css/style.css", import.meta.url), "utf8"),
+    readFile(new URL("../web/js/shortcut-help.js", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(css, /@media\s*\(max-width:\s*860px\)[\s\S]*?\.shortcut-help-button\s*\{[^}]*bottom:\s*calc\(84px/);
+  assert.match(css, /@media\s*\(max-width:\s*480px\)[\s\S]*?\.shortcut-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.ok(shortcut.indexOf('event.key === "Escape"') < shortcut.indexOf("isTypingTarget(event.target)"));
 });

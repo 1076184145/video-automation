@@ -1,10 +1,11 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
+import { errorState, loadingState } from "./ui-states.js";
 import { escapeHtml } from "./utils.js";
 
 const INSTALLABLE_CHECKS = new Set(["ffmpeg_path", "ffprobe_path"]);
-const TRANSCRIPTION_CHECKS = new Set(["faster_whisper", "ctranslate2_cuda", "funasr"]);
+const TRANSCRIPTION_CHECKS = new Set(["faster_whisper", "ctranslate2_cuda"]);
 const HEALTH_CHECK_LABEL_KEYS = {
   root: "health.check.root",
   input_recordings_dir: "health.check.input_recordings_dir",
@@ -27,18 +28,23 @@ const HEALTH_CHECK_LABEL_KEYS = {
   demucs: "health.check.demucs",
 };
 
-export async function renderHealth() {
+export async function renderHealth(_match, { signal } = {}) {
   const app = document.getElementById("app");
   let events = null;
   let latestPayload = null;
+  let disposed = false;
+  let loadVersion = 0;
+  const isActive = () => !disposed && !signal?.aborted;
 
   const loadingTimer = setTimeout(() => {
-    app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
+    if (isActive()) app.innerHTML = loadingState(t("common.loading"));
   }, 150);
 
   async function load() {
+    const version = ++loadVersion;
     try {
-      const payload = await API.getHealth();
+      const payload = await API.getHealth({ signal });
+      if (!isActive() || version !== loadVersion) return;
       latestPayload = payload;
       clearTimeout(loadingTimer);
       renderPayload(payload);
@@ -47,12 +53,14 @@ export async function renderHealth() {
       startEvents();
     } catch (error) {
       clearTimeout(loadingTimer);
-      app.innerHTML = `<div class="error">${t("common.error")} ${escapeHtml(error.message)} <button class="button" id="retry-health">${t("common.retry")}</button></div>`;
-      document.getElementById("retry-health")?.addEventListener("click", load);
+      if (!isActive() || version !== loadVersion || isAbortError(error, signal)) return;
+      app.innerHTML = errorState(`${t("common.error")} ${error.message}`, { retryLabel: t("common.retry") });
+      app.querySelector("[data-retry]")?.addEventListener("click", load);
     }
   }
 
   function renderPayload(payload) {
+    if (!isActive()) return;
     app.innerHTML = renderHealthPayloadForTest(payload);
   }
 
@@ -63,9 +71,11 @@ export async function renderHealth() {
       setButtonLoading(button, true, t("health.autofix_running"));
       try {
         const response = await API.installHealthTools({ install_ffmpeg: true });
+        if (!isActive()) return;
         updateInstallState(response.tools_install || {});
         showToast(t("health.autofix_started"), "success");
       } catch (error) {
+        if (!isActive()) return;
         showToast(`${t("health.autofix_failed")} ${error.message}`, "error");
         setButtonLoading(button, false);
       }
@@ -79,12 +89,14 @@ export async function renderHealth() {
         setButtonLoading(switchButton, true, t("health.switching_backend"));
         try {
           const payload = await API.updateSettings({ env: { WHISPER_BACKEND: "cli" } });
+          if (!isActive()) return;
           latestPayload = payload;
           renderPayload(payload);
           bindInstallButton();
           bindRecoveryButtons();
           showToast(t("health.switched_backend"), "success");
         } catch (error) {
+          if (!isActive()) return;
           showToast(`${t("common.error")} ${error.message}`, "error");
           setButtonLoading(switchButton, false);
         }
@@ -93,16 +105,19 @@ export async function renderHealth() {
   }
 
   function startEvents() {
-    if (events) return;
+    if (events || !isActive()) return;
     events = API.openEvents();
     events.addEventListener("hello", (event) => {
+      if (!isActive()) return;
       const payload = parseEventPayload(event);
       if (payload?.tools_install) updateInstallState(payload.tools_install);
     });
     events.addEventListener("tools_install", (event) => {
+      if (!isActive()) return;
       updateInstallState(parseEventPayload(event));
     });
     events.addEventListener("health", (event) => {
+      if (!isActive()) return;
       const payload = parseEventPayload(event);
       if (payload?.checks) {
         latestPayload = payload;
@@ -114,7 +129,7 @@ export async function renderHealth() {
   }
 
   function updateInstallState(state) {
-    if (!state || typeof state !== "object") return;
+    if (!isActive() || !state || typeof state !== "object") return;
     if (latestPayload) latestPayload.tools_install = state;
     const target = document.getElementById("health-install-panel");
     if (latestPayload && target) {
@@ -135,9 +150,15 @@ export async function renderHealth() {
   }
 
   await load();
-  return () => {
+  return cleanupHealth;
+
+  function cleanupHealth() {
+    if (disposed) return;
+    disposed = true;
+    loadVersion += 1;
+    clearTimeout(loadingTimer);
     if (events) events.close();
-  };
+  }
 }
 
 export function renderHealthPayloadForTest(payload = {}) {

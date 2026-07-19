@@ -98,11 +98,13 @@ python3 -m venv venv
 
 - AI 封面、字幕翻译、标题简介和高光建议
 - NVIDIA CUDA/NVENC 加速
-- FunASR 和 faster-whisper 本地转写后端
+- Faster-Whisper 本地转写（默认 `medium` 主模型、`small` 回退模型）；已有 FunASR 配置仍兼容
 - Demucs 音频分离
 - 单独配置的发布连接器；手动发布包始终可以作为备用方案
 
 AI 功能需要对应服务商的 Key。可以在 **设置** 或本地 `.env` 文件中填写；全部配置项见 [`.env.example`](.env.example)。
+
+转写在隔离子进程中运行，并带有阶段心跳、无进展超时、进程树清理和临时后端熔断。某个模型失败后会及时进入配置的回退模型，不会继续占住队列直到旧的按视频时长计算的超时结束。
 
 ## 重要输出文件
 

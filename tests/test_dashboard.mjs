@@ -17,7 +17,7 @@ globalThis.window = {
   addEventListener() {},
 };
 
-const { deleteJobErrorMessageForTest, renderDashboardJobsForTest, withoutDeletedJobsForTest } = await import("../web/js/dashboard.js");
+const { deleteJobErrorMessageForTest, mergeJobSnapshotsForTest, renderDashboardJobsForTest, withoutDeletedJobsForTest } = await import("../web/js/dashboard.js");
 
 const jobs = [
   {
@@ -136,6 +136,44 @@ test("dashboard groups jobs from the same batch behind one summary", () => {
   assert.match(html, /2 个视频/);
   assert.match(html, /batch-review\.mp4/);
   assert.match(html, /batch-failed\.mp4/);
+});
+
+test("dashboard batch ordering accepts a zero-based first index", () => {
+  const html = renderDashboardJobsForTest([
+    {
+      ...jobs[1],
+      job_dir: "D:/jobs/batch-one",
+      source_path: "D:/videos/one.mp4",
+      batch_id: "batch-zero-based",
+      batch_index: 1,
+      batch_size: 2,
+    },
+    {
+      ...jobs[2],
+      job_dir: "D:/jobs/batch-zero",
+      source_path: "D:/videos/zero.mp4",
+      batch_id: "batch-zero-based",
+      batch_index: 0,
+      batch_size: 2,
+    },
+  ]);
+
+  assert.ok(html.indexOf("zero.mp4") < html.indexOf("one.mp4"));
+});
+
+test("dashboard reconciliation preserves newer SSE state over a stale snapshot", () => {
+  const current = [{ ...jobs[1], state_version: 9, status: "done" }];
+  const stale = [{ ...jobs[1], state_version: 8, status: "processing" }];
+
+  assert.equal(mergeJobSnapshotsForTest(current, stale)[0].status, "done");
+  assert.equal(mergeJobSnapshotsForTest(current, [{ ...stale[0], state_version: 0 }])[0].status, "done");
+});
+
+test("dashboard reconciliation can retain an SSE-only job while an older poll resolves", () => {
+  const current = [jobs[0], { ...jobs[1], state_version: 3 }];
+  const merged = mergeJobSnapshotsForTest(current, [jobs[0]], { preserveMissing: true });
+
+  assert.deepEqual(new Set(merged.map((job) => job.job_dir)), new Set([jobs[0].job_dir, jobs[1].job_dir]));
 });
 
 test("dashboard leaves singleton batch metadata as a normal job card", () => {

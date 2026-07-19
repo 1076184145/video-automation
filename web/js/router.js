@@ -1,4 +1,5 @@
 import { t } from "./i18n.js";
+import { pageAction, pageState } from "./ui-states.js";
 import { escapeHtml } from "./utils.js";
 
 const routes = [];
@@ -64,7 +65,17 @@ export async function renderRoute(event) {
     if (!match) continue;
     try {
       updateTitle(route.title, match);
-      const nextCleanup = await route.render(match, { signal: controller.signal });
+      const isActive = () => currentRenderId === renderId && !controller.signal.aborted;
+      const routeContext = {
+        signal: controller.signal,
+        isActive,
+        commit(callback) {
+          if (!isActive() || typeof callback !== "function") return false;
+          callback();
+          return true;
+        },
+      };
+      const nextCleanup = await route.render(match, routeContext);
       if (currentRenderId !== renderId) {
         if (typeof nextCleanup === "function") nextCleanup();
         return;
@@ -73,6 +84,7 @@ export async function renderRoute(event) {
       if (app) {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
+            if (!isActive()) return;
             app.classList.remove("page-enter");
             app.classList.add("page-enter-active");
           });
@@ -82,13 +94,12 @@ export async function renderRoute(event) {
       if (controller.signal.aborted || currentRenderId !== renderId) return;
       console.error("[Router Error]", error);
       if (app) {
-        app.innerHTML = `
-          <div class="error" style="margin-top: 40px; text-align: center;">
-            <h2>${t("router.load_error")}</h2>
-            <p>${escapeHtml(error.message || t("router.load_error_note"))}</p>
-            <button class="button primary" onclick="location.reload()" style="margin-top: 16px;">${t("common.reload")}</button>
-          </div>
-        `;
+        app.innerHTML = pageState({
+          title: t("router.load_error"),
+          messageHtml: escapeHtml(error.message || t("router.load_error_note")),
+          actionHtml: pageAction(t("common.reload"), { id: "route-reload" })
+        });
+        app.querySelector("#route-reload")?.addEventListener("click", () => location.reload());
         app.classList.remove("page-enter");
         app.classList.add("page-enter-active");
       }
@@ -97,13 +108,11 @@ export async function renderRoute(event) {
   }
   updateTitle("router.not_found");
   if (app) {
-    app.innerHTML = `
-      <div class="error" style="margin-top: 40px; text-align: center;">
-        <h2>${t("router.not_found")}</h2>
-        <p>${t("router.not_found_note")}</p>
-        <a class="button primary" href="#/" style="margin-top: 16px;">${t("router.back_dashboard")}</a>
-      </div>
-    `;
+    app.innerHTML = pageState({
+      title: t("router.not_found"),
+      messageHtml: t("router.not_found_note"),
+      actionHtml: pageAction(t("router.back_dashboard"), { href: "#/" })
+    });
     app.classList.remove("page-enter");
     app.classList.add("page-enter-active");
   }

@@ -25,7 +25,13 @@ export function createEventHub(open = () => new EventSource("/events")) {
     if (!sourceListeners.has(type)) {
       const listener = (event) => {
         const payload = parsePayload(event);
-        for (const subscriber of subscribers.get(type) || []) subscriber(payload, event);
+        for (const subscriber of [...(subscribers.get(type) || [])]) {
+          try {
+            subscriber(payload, event);
+          } catch (error) {
+            console.error(`[EventHub:${type}] subscriber failed`, error);
+          }
+        }
       };
       sourceListeners.set(type, listener);
       ensureSource().addEventListener(type, listener);

@@ -1,19 +1,21 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { jobName } from "./utils.js";
 
-export async function loadJobFile(jobName, files, filename) {
+export async function loadJobFile(jobName, files, filename, options = {}) {
   if (!files.has(filename)) return null;
   try {
-    return await API.getJobFile(jobName, filename);
-  } catch {
+    return await API.getJobFile(jobName, filename, options);
+  } catch (error) {
+    if (isAbortError(error, options.signal)) throw error;
     return null;
   }
 }
 
-export async function loadHealthSafe() {
+export async function loadHealthSafe(options = {}) {
   try {
-    return await API.getHealth({ timeout: 5000, retries: 0 });
-  } catch {
+    return await API.getHealth({ ...options, timeout: 5000, retries: 0 });
+  } catch (error) {
+    if (isAbortError(error, options.signal)) throw error;
     return null;
   }
 }

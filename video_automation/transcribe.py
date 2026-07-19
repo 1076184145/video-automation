@@ -7,14 +7,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
 import wave
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, valid_json_file, write_json_atomic, write_text_atomic
+from .process_tree import attach_process_tree, process_group_popen_kwargs, terminate_process_tree
 from .profanity import apply_replacements, censor_text, censor_transcript_payload
 from .resources import GPU_EXECUTION_GATE, transcription_uses_gpu
 from .task_queue import QueueControlRequested
@@ -27,6 +31,8 @@ from .transcribe_worker import (
 
 _FUNASR_PERSISTENT_WORKER = PersistentTranscriptionWorker()
 MAX_TRANSCRIPTION_PROCESS_OUTPUT_BYTES = 256 * 1024
+_BACKEND_CIRCUIT_LOCK = threading.Lock()
+_BACKEND_UNHEALTHY_UNTIL: dict[str, float] = {}
 
 
 def transcribe_audio(
@@ -156,58 +162,205 @@ def _run_funasr_with_whisper_fallback(
     *,
     control_callback: Callable[[], str | None] | None = None,
 ) -> None:
-    primary_error = ""
-    try:
+    def run_primary() -> None:
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_funasr(settings, audio_path, txt_path, srt_path, json_path)
         else:
             _run_funasr_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
-        return
-    except QueueControlRequested:
-        raise
-    except Exception as exc:
-        primary_error = str(exc)
-        _remove_partial_transcripts(job_dir)
 
-    try:
+    def run_fallback() -> None:
         if os.environ.get("VIDEO_AUTOMATION_TRANSCRIBE_CHILD") == "1":
             transcribe_audio_faster_whisper(settings, audio_path, txt_path, srt_path, json_path)
         else:
             _run_faster_whisper_subprocess(settings, audio_path, job_dir, control_callback=control_callback)
-        _annotate_funasr_fallback(json_path, primary_error)
+
+    _run_primary_with_fallback(
+        settings,
+        job_dir,
+        json_path,
+        primary_backend="funasr",
+        primary_model=str(getattr(settings, "funasr_model", "")),
+        primary=run_primary,
+        fallback_backend="faster-whisper",
+        fallback_model=str(getattr(settings, "whisper_model", "")),
+        fallback=run_fallback,
+    )
+
+
+def _run_primary_with_fallback(
+    settings: Settings,
+    job_dir: Path,
+    json_path: Path,
+    *,
+    primary_backend: str,
+    primary_model: str,
+    primary: Callable[[], None],
+    fallback_backend: str,
+    fallback_model: str,
+    fallback: Callable[[], None],
+) -> None:
+    primary_error = ""
+    circuit_remaining = _backend_circuit_remaining(primary_backend)
+    if circuit_remaining > 0:
+        primary_error = f"{primary_backend} circuit breaker is open for another {circuit_remaining:.0f}s"
+        _record_transcription_attempt(
+            job_dir,
+            backend=primary_backend,
+            model=primary_model,
+            status="skipped",
+            duration_seconds=0.0,
+            error=primary_error,
+        )
+    else:
+        try:
+            _execute_transcription_attempt(job_dir, primary_backend, primary_model, primary)
+            _reset_backend_circuit(primary_backend)
+            return
+        except QueueControlRequested:
+            raise
+        except Exception as exc:
+            primary_error = str(exc)
+            if not isinstance(exc, TranscriptionTaskError):
+                _trip_backend_circuit(settings, primary_backend)
+            _remove_partial_transcripts(job_dir)
+
+    try:
+        _execute_transcription_attempt(job_dir, fallback_backend, fallback_model, fallback)
+        _annotate_fallback(json_path, primary_backend, primary_error)
         return
     except QueueControlRequested:
         raise
     except Exception as exc:
         fallback_error = str(exc)
         raise RuntimeError(
-            "FunASR failed and faster-whisper fallback also failed. "
-            f"FunASR: {primary_error or 'unknown error'} | faster-whisper: {fallback_error or 'unknown error'}"
+            f"{primary_backend} failed and {fallback_backend} fallback also failed. "
+            f"{primary_backend}: {primary_error or 'unknown error'} | "
+            f"{fallback_backend}: {fallback_error or 'unknown error'}"
         ) from exc
 
 
-def _annotate_funasr_fallback(json_path: Path, primary_error: str) -> None:
+def _execute_transcription_attempt(
+    job_dir: Path,
+    backend: str,
+    model: str,
+    operation: Callable[[], None],
+) -> None:
+    started = time.monotonic()
+    try:
+        operation()
+    except QueueControlRequested as exc:
+        _record_transcription_attempt(
+            job_dir,
+            backend=backend,
+            model=model,
+            status=str(exc) or "canceled",
+            duration_seconds=time.monotonic() - started,
+        )
+        raise
+    except Exception as exc:
+        _record_transcription_attempt(
+            job_dir,
+            backend=backend,
+            model=model,
+            status="failed",
+            duration_seconds=time.monotonic() - started,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise
+    _record_transcription_attempt(
+        job_dir,
+        backend=backend,
+        model=model,
+        status="complete",
+        duration_seconds=time.monotonic() - started,
+    )
+
+
+def _record_transcription_attempt(
+    job_dir: Path,
+    *,
+    backend: str,
+    model: str,
+    status: str,
+    duration_seconds: float,
+    error: str = "",
+    error_type: str = "",
+) -> None:
+    path = job_dir / "transcription_attempts.json"
+    existing = read_json_file(path)
+    attempts = list(existing.get("attempts") or []) if isinstance(existing, dict) else []
+    attempt = {
+        "backend": backend,
+        "model": model,
+        "status": status,
+        "duration_seconds": round(max(0.0, duration_seconds), 3),
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if error:
+        attempt["error"] = error[-1600:]
+    if error_type:
+        attempt["error_type"] = error_type
+    attempts.append(attempt)
+    write_json_atomic(path, {"schema_version": 1, "attempts": attempts[-20:]})
+
+
+def _backend_circuit_remaining(backend: str) -> float:
+    now = time.monotonic()
+    with _BACKEND_CIRCUIT_LOCK:
+        unhealthy_until = _BACKEND_UNHEALTHY_UNTIL.get(backend, 0.0)
+        if unhealthy_until <= now:
+            _BACKEND_UNHEALTHY_UNTIL.pop(backend, None)
+            return 0.0
+        return unhealthy_until - now
+
+
+def _trip_backend_circuit(settings: Settings, backend: str) -> None:
+    cooldown = max(0, int(getattr(settings, "transcribe_backend_cooldown_seconds", 1800)))
+    if cooldown <= 0:
+        return
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_UNHEALTHY_UNTIL[backend] = time.monotonic() + cooldown
+
+
+def _reset_backend_circuit(backend: str) -> None:
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_UNHEALTHY_UNTIL.pop(backend, None)
+
+
+def _annotate_fallback(json_path: Path, primary_backend: str, primary_error: str) -> None:
     payload = read_json_file(json_path)
     if not isinstance(payload, dict):
         return
-    payload["fallback_from"] = "funasr"
+    payload["fallback_from"] = primary_backend
     payload["fallback_reason"] = primary_error[-800:]
     payload["backend"] = f"{payload.get('backend') or 'faster-whisper'} (fallback)"
     write_json_atomic(json_path, payload)
 
 
-def transcribe_audio_faster_whisper(settings: Settings, audio_path: Path, txt_path: Path, srt_path: Path, json_path: Path) -> None:
+def transcribe_audio_faster_whisper(
+    settings: Settings,
+    audio_path: Path,
+    txt_path: Path,
+    srt_path: Path,
+    json_path: Path,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError("WHISPER_BACKEND=faster-whisper requires installing faster-whisper") from exc
 
+    _report_transcription_progress(progress_callback, "checking_runtime")
     _ensure_faster_whisper_cuda_ready(settings)
+    _report_transcription_progress(progress_callback, "loading_model")
     model = WhisperModel(
         settings.whisper_model,
         device=settings.faster_whisper_device,
         compute_type=settings.faster_whisper_compute_type,
     )
+    _report_transcription_progress(progress_callback, "model_ready")
     transcribe_options = {
         "language": _language_code(settings.whisper_language),
         "initial_prompt": settings.whisper_initial_prompt or None,
@@ -227,9 +380,11 @@ def transcribe_audio_faster_whisper(settings: Settings, audio_path: Path, txt_pa
         )
     else:
         segments_iter, info = model.transcribe(str(audio_path), **transcribe_options)
+    _report_transcription_progress(progress_callback, "transcribing")
     segments = []
     text_parts = []
     for index, segment in enumerate(segments_iter, start=1):
+        _report_transcription_progress(progress_callback, "transcribing")
         text = _postprocess_text(segment.text.strip(), settings)
         text_parts.append(text)
         payload = {
@@ -246,6 +401,7 @@ def transcribe_audio_faster_whisper(settings: Settings, audio_path: Path, txt_pa
             payload["speaker"] = speaker
         segments.append(payload)
 
+    _report_transcription_progress(progress_callback, "writing_outputs")
     write_text_atomic(txt_path, "\n".join(text_parts))
     write_text_atomic(srt_path, _segments_to_srt(segments))
     write_json_atomic(json_path, {
@@ -261,6 +417,11 @@ def transcribe_audio_faster_whisper(settings: Settings, audio_path: Path, txt_pa
         "word_timestamps": settings.whisper_word_timestamps,
         "vad_filter": settings.whisper_vad_filter,
     })
+
+
+def _report_transcription_progress(callback: Callable[[str], None] | None, phase: str) -> None:
+    if callback is not None:
+        callback(phase)
 
 
 def transcribe_audio_funasr(settings: Settings, audio_path: Path, txt_path: Path, srt_path: Path, json_path: Path) -> None:
@@ -487,7 +648,14 @@ def _run_faster_whisper_subprocess(
     python_executable = _project_python(settings)
     model_attempts = _model_attempts(settings)
     failures = []
+    deadline = time.monotonic() + _backend_attempt_timeout(settings, audio_path)
     for model in model_attempts:
+        model_started = time.monotonic()
+        model_reference = _resolve_model_reference(settings, model)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failures.append(f"{model}: backend attempt time budget exhausted")
+            break
         command = [
             str(python_executable),
             "-m",
@@ -499,19 +667,59 @@ def _run_faster_whisper_subprocess(
             "--backend",
             "faster-whisper",
             "--model",
-            model,
+            model_reference,
         ]
+        heartbeat_path = job_dir / f".transcribe-child-heartbeat-{uuid.uuid4().hex}.json"
+        command.extend(["--heartbeat", str(heartbeat_path)])
         if settings.whisper_language:
             command.extend(["--language", settings.whisper_language])
         env = _transcription_child_env(settings)
-        result = _run_transcription_process(
-            command,
-            cwd=str(settings.root),
-            env=env,
-            timeout=_transcribe_timeout(settings, audio_path),
-            control_callback=control_callback,
-        )
+        try:
+            result = _run_transcription_process(
+                command,
+                cwd=str(settings.root),
+                env=env,
+                timeout=remaining,
+                heartbeat_path=heartbeat_path,
+                no_progress_timeout=float(
+                    getattr(settings, "transcribe_no_progress_timeout_seconds", 300)
+                ),
+                control_callback=control_callback,
+            )
+        except WorkerInfrastructureError as exc:
+            failures.append(f"{model}: {exc}")
+            _record_transcription_attempt(
+                job_dir,
+                backend="faster-whisper",
+                model=model,
+                status="failed",
+                duration_seconds=time.monotonic() - model_started,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            _remove_partial_transcripts(job_dir)
+            continue
+        except subprocess.TimeoutExpired as exc:
+            _record_transcription_attempt(
+                job_dir,
+                backend="faster-whisper",
+                model=model,
+                status="failed",
+                duration_seconds=time.monotonic() - model_started,
+                error=f"hard timeout after {remaining:.1f}s",
+                error_type=type(exc).__name__,
+            )
+            raise
+        finally:
+            heartbeat_path.unlink(missing_ok=True)
         if _transcript_outputs_complete(job_dir):
+            _record_transcription_attempt(
+                job_dir,
+                backend="faster-whisper",
+                model=model,
+                status="complete",
+                duration_seconds=time.monotonic() - model_started,
+            )
             return
         detail = (
             result.stderr.strip()
@@ -523,6 +731,15 @@ def _run_faster_whisper_subprocess(
             )
         )[-1200:]
         failures.append(f"{model}: {detail}")
+        _record_transcription_attempt(
+            job_dir,
+            backend="faster-whisper",
+            model=model,
+            status="failed",
+            duration_seconds=time.monotonic() - model_started,
+            error=detail,
+            error_type="ChildProcessError",
+        )
         _remove_partial_transcripts(job_dir)
     raise RuntimeError("faster-whisper subprocess failed after model fallbacks: " + " | ".join(failures))
 
@@ -534,29 +751,16 @@ def _run_funasr_subprocess(
     *,
     control_callback: Callable[[], str | None] | None = None,
 ) -> None:
-    deadline = time.monotonic() + _transcribe_timeout(settings, audio_path)
+    deadline = time.monotonic() + _backend_attempt_timeout(settings, audio_path)
     if getattr(settings, "funasr_persistent_worker", True):
-        try:
-            _run_funasr_persistent(
-                settings,
-                audio_path,
-                job_dir,
-                timeout_seconds=max(0.01, deadline - time.monotonic()),
-                control_callback=control_callback,
-            )
-            return
-        except WorkerInfrastructureError as exc:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise WorkerInfrastructureError("FunASR transcription time budget exhausted") from exc
-            _run_funasr_one_shot_subprocess(
-                settings,
-                audio_path,
-                job_dir,
-                timeout_seconds=remaining,
-                control_callback=control_callback,
-            )
-            return
+        _run_funasr_persistent(
+            settings,
+            audio_path,
+            job_dir,
+            timeout_seconds=max(0.01, deadline - time.monotonic()),
+            control_callback=control_callback,
+        )
+        return
     _run_funasr_one_shot_subprocess(
         settings,
         audio_path,
@@ -621,8 +825,13 @@ def _run_funasr_worker_request(
             signature=_funasr_worker_signature(settings),
             request=request,
             timeout_seconds=timeout_seconds,
+            no_progress_timeout_seconds=float(
+                getattr(settings, "transcribe_no_progress_timeout_seconds", 300)
+            ),
             cwd=settings.root,
             env=env,
+            log_path=Path(getattr(settings, "logs_dir", settings.root / "logs")) / "transcription_worker.log",
+            log_max_bytes=int(getattr(settings, "transcribe_worker_log_max_bytes", 5 * 1024 * 1024)),
             control_callback=control_callback,
         )
     except TranscriptionTaskError:
@@ -792,17 +1001,46 @@ def _model_attempts(settings: Settings) -> list[str]:
     return unique
 
 
+def _resolve_model_reference(settings: Settings, model: str) -> str:
+    """Prefer a verified project-local model without making private .env files non-portable."""
+    value = model.strip()
+    path = Path(value).expanduser()
+    if path.is_absolute() or "/" in value or "\\" in value:
+        return str(path)
+    root = Path(getattr(settings, "root", Path.cwd()))
+    for candidate in (
+        root / "config" / "models" / f"faster-whisper-{value}",
+        root / "config" / "models" / value,
+    ):
+        if (candidate / "config.json").is_file() and (candidate / "model.bin").is_file():
+            return str(candidate)
+    return value
+
+
 def _run_transcription_process(
     command: list[str],
     *,
     cwd: str,
     env: dict[str, str],
     timeout: float,
-    control_callback: Callable[[], str | None] | None,
+    heartbeat_path: Path | None = None,
+    no_progress_timeout: float | None = None,
+    control_callback: Callable[[], str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     deadline = time.monotonic() + max(0.01, float(timeout))
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout_file, stderr=stderr_file)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **process_group_popen_kwargs(),
+        )
+        attach_process_tree(process)
+        last_progress_at = time.monotonic()
+        last_heartbeat_mtime_ns = 0
+        last_phase = "process_started"
         try:
             while process.poll() is None:
                 action = control_callback() if control_callback else None
@@ -810,10 +1048,27 @@ def _run_transcription_process(
                     raise QueueControlRequested(action)
                 if time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(command, timeout)
+                if heartbeat_path is not None:
+                    try:
+                        heartbeat_mtime_ns = heartbeat_path.stat().st_mtime_ns
+                    except OSError:
+                        heartbeat_mtime_ns = 0
+                    if heartbeat_mtime_ns and heartbeat_mtime_ns != last_heartbeat_mtime_ns:
+                        last_heartbeat_mtime_ns = heartbeat_mtime_ns
+                        last_progress_at = time.monotonic()
+                        heartbeat = read_json_file(heartbeat_path)
+                        if isinstance(heartbeat, dict):
+                            last_phase = str(heartbeat.get("phase") or last_phase)
+                    if no_progress_timeout is not None:
+                        stalled_for = time.monotonic() - last_progress_at
+                        if stalled_for >= max(0.01, float(no_progress_timeout)):
+                            raise WorkerInfrastructureError(
+                                "transcription subprocess made no progress "
+                                f"for {stalled_for:.1f}s (last phase: {last_phase})"
+                            )
                 time.sleep(0.1)
         except BaseException:
-            process.kill()
-            process.wait()
+            terminate_process_tree(process)
             raise
         return subprocess.CompletedProcess(
             command,
@@ -825,8 +1080,10 @@ def _run_transcription_process(
 
 def _read_transcription_output(handle: Any) -> str:
     handle.flush()
-    handle.seek(0)
-    return handle.read(MAX_TRANSCRIPTION_PROCESS_OUTPUT_BYTES).decode("utf-8", errors="replace")
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    handle.seek(max(0, size - MAX_TRANSCRIPTION_PROCESS_OUTPUT_BYTES))
+    return handle.read().decode("utf-8", errors="replace")
 
 
 def _remove_partial_transcripts(job_dir: Path) -> None:
@@ -892,6 +1149,12 @@ def _transcribe_timeout(settings: Settings, audio_path: Path) -> int:
     minimum = int(getattr(settings, "whisper_timeout_min_seconds", 300))
     multiplier = float(getattr(settings, "whisper_timeout_multiplier", 10.0))
     return max(minimum, int(duration * multiplier))
+
+
+def _backend_attempt_timeout(settings: Settings, audio_path: Path) -> int:
+    legacy_timeout = _transcribe_timeout(settings, audio_path)
+    hard_limit = max(30, int(getattr(settings, "transcribe_attempt_timeout_seconds", 1800)))
+    return min(legacy_timeout, hard_limit)
 
 
 def _wav_duration_seconds(audio_path: Path) -> float:
