@@ -116,15 +116,15 @@ export const API = {
   async getJob(name, options) {
     return requestJson(`/jobs/${encodeURIComponent(name)}`, options);
   },
-  async getRecordings() {
-    return requestJson("/recordings");
+  async getRecordings(options) {
+    return requestJson("/recordings", options);
   },
-  async uploadRecording(file, onProgress) {
+  async uploadRecording(file, onProgress, options) {
     const query = new URLSearchParams({ filename: file.name });
-    return uploadWithProgress(`/recordings/upload?${query.toString()}`, file, onProgress);
+    return uploadWithProgress(`/recordings/upload?${query.toString()}`, file, onProgress, options);
   },
-  async getJobFile(name, filename) {
-    return requestJson(this.jobFileUrl(name, filename));
+  async getJobFile(name, filename, options) {
+    return requestJson(this.jobFileUrl(name, filename), options);
   },
   async submitJob(payload) {
     return requestJson("/process", {
@@ -240,9 +240,22 @@ function postJson(url, payload, timeout) {
   });
 }
 
-function uploadWithProgress(url, file, onProgress) {
+function uploadWithProgress(url, file, onProgress, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (callback) => (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abortUpload);
+      callback(value);
+    };
+    const abortUpload = () => xhr.abort();
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    signal?.addEventListener("abort", abortUpload, { once: true });
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.responseType = "json";
@@ -250,7 +263,7 @@ function uploadWithProgress(url, file, onProgress) {
       if (!event.lengthComputable || typeof onProgress !== "function") return;
       onProgress(Math.min(100, Math.max(0, event.loaded / event.total * 100)));
     };
-    xhr.onload = () => {
+    xhr.onload = finish(() => {
       const payload = xhr.response || parseJson(xhr.responseText);
       if (xhr.status >= 200 && xhr.status < 300) {
         if (typeof onProgress === "function") onProgress(100);
@@ -258,9 +271,9 @@ function uploadWithProgress(url, file, onProgress) {
         return;
       }
       reject(new Error(apiErrorMessage(payload, `${xhr.status} ${xhr.statusText}`)));
-    };
-    xhr.onerror = () => reject(new Error("Network error"));
-    xhr.onabort = () => reject(new Error("Upload aborted"));
+    });
+    xhr.onerror = finish(() => reject(new Error("Network error")));
+    xhr.onabort = finish(() => reject(abortError(signal)));
     xhr.send(file);
   });
 }
@@ -273,7 +286,7 @@ function parseJson(text) {
   }
 }
 
-async function requestJson(url, options = {}) {
+export async function requestJson(url, options = {}) {
   const { timeout: timeoutOption, retries: retryOption, signal: externalSignal, ...fetchOptions } = options;
   const timeoutMs = timeoutOption === undefined ? 15000 : Number(timeoutOption);
   let retries = retryOption ?? 1;
@@ -281,20 +294,23 @@ async function requestJson(url, options = {}) {
   if (isNonIdempotent) retries = 0;
 
   while (retries >= 0) {
+    if (externalSignal?.aborted) throw abortError(externalSignal);
     const controller = new AbortController();
     let timeout = null;
     let abortListener = null;
+    let timedOut = false;
     if (externalSignal) {
-      if (externalSignal.aborted) controller.abort();
-      abortListener = () => controller.abort();
+      abortListener = () => controller.abort(externalSignal.reason);
       externalSignal.addEventListener("abort", abortListener, { once: true });
     }
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-      timeout = setTimeout(() => controller.abort(), timeoutMs);
+      timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
     }
     try {
       const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
-      cleanup(timeout, externalSignal, abortListener);
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         let payload = null;
@@ -307,18 +323,56 @@ async function requestJson(url, options = {}) {
         requestError.status = response.status;
         throw requestError;
       }
-      return await response.json();
+      const payload = await response.json();
+      cleanup(timeout, externalSignal, abortListener);
+      return payload;
     } catch (error) {
       cleanup(timeout, externalSignal, abortListener);
-      if (retries-- <= 0) {
-        const finalError = new Error(error.name === "AbortError" ? "Request Timeout" : error.message);
-        finalError.payload = error.payload;
-        finalError.status = error.status;
-        throw finalError;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (externalSignal?.aborted) throw abortError(externalSignal);
+      const finalError = timedOut ? requestTimeoutError(timeoutMs) : error;
+      if (retries-- <= 0 || !shouldRetry(error, timedOut)) throw finalError;
+      await abortableDelay(1000, externalSignal);
     }
   }
+}
+
+export function isAbortError(error, signal) {
+  return Boolean(signal?.aborted || error?.name === "AbortError");
+}
+
+function abortError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  return new DOMException("Request aborted", "AbortError");
+}
+
+function requestTimeoutError(timeoutMs) {
+  const error = new Error("Request Timeout");
+  error.name = "RequestTimeoutError";
+  error.timeoutMs = timeoutMs;
+  return error;
+}
+
+function shouldRetry(error, timedOut) {
+  if (timedOut) return true;
+  const status = Number(error?.status);
+  return !Number.isFinite(status) || status >= 500;
+}
+
+function abortableDelay(ms, signal) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, ms);
+    const handleAbort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", handleAbort);
+      reject(abortError(signal));
+    };
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
 }
 
 export function apiErrorMessage(payload, fallback) {

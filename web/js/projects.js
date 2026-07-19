@@ -1,22 +1,41 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
+import { emptyState, errorState, loadingState } from "./ui-states.js";
 import { escapeHtml } from "./utils.js";
 
 export async function renderProjects(_match, { signal } = {}) {
   const app = document.getElementById("app");
-  app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
-  try {
-    const [projectResponse, kitResponse] = await Promise.all([API.getProjects({ signal }), API.getCreatorKits({ signal })]);
-    app.innerHTML = renderProjectsView({
-      projects: projectResponse.items || [],
-      kits: kitResponse.items || [],
-    });
-    bindProjectActions(app);
-  } catch (error) {
-    app.innerHTML = `<div class="error">${escapeHtml(error.message || t("common.error"))} <button class="button" id="retry-projects">${t("common.retry")}</button></div>`;
-    document.getElementById("retry-projects")?.addEventListener("click", () => renderProjects(null, { signal }));
+  app.innerHTML = loadingState(t("common.loading"));
+  let disposed = false;
+  let loadVersion = 0;
+  const isActive = () => !disposed && !signal?.aborted;
+
+  async function refresh() {
+    const version = ++loadVersion;
+    try {
+      const [projectResponse, kitResponse] = await Promise.all([
+        API.getProjects({ signal }),
+        API.getCreatorKits({ signal }),
+      ]);
+      if (!isActive() || version !== loadVersion) return;
+      app.innerHTML = renderProjectsView({
+        projects: projectResponse.items || [],
+        kits: kitResponse.items || [],
+      });
+    } catch (error) {
+      if (!isActive() || version !== loadVersion || isAbortError(error, signal)) return;
+      app.innerHTML = errorState(error.message || t("common.error"), { retryLabel: t("common.retry") });
+    }
   }
+
+  const unbind = bindProjectActions(app, { refresh, isActive });
+  await refresh();
+  return () => {
+    disposed = true;
+    loadVersion += 1;
+    unbind();
+  };
 }
 
 export function renderProjectsView({ projects = [], kits = [] } = {}) {
@@ -101,46 +120,49 @@ function renderKitRow(kit) {
 }
 
 function renderEmpty(message, href = "", action = "") {
-  return `<div class="empty library-empty"><strong>${escapeHtml(message)}</strong>${href ? `<a class="button" href="${href}">${escapeHtml(action)}</a>` : ""}</div>`;
+  return emptyState({
+    title: escapeHtml(message),
+    className: "library-empty",
+    actionHtml: href ? `<a class="button" href="${href}">${escapeHtml(action)}</a>` : ""
+  });
 }
 
-function bindProjectActions(root) {
-  root.querySelector("#create-project-form")?.addEventListener("submit", async (event) => {
+function bindProjectActions(root, { refresh, isActive }) {
+  const handleSubmit = async (event) => {
+    const projectForm = event.target?.closest?.("#create-project-form");
+    const kitForm = event.target?.closest?.("#create-kit-form");
+    if (!projectForm && !kitForm) return;
     event.preventDefault();
-    const button = event.currentTarget.querySelector('[type="submit"]');
-    const data = new FormData(event.currentTarget);
+    const form = projectForm || kitForm;
+    const button = form.querySelector('[type="submit"]');
+    const data = new FormData(form);
     setButtonLoading(button, true, t("common.loading"));
     try {
-      await API.createProject({
-        name: data.get("name"),
-        description: data.get("description"),
-        tags: String(data.get("tags") || "").split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
-        default_kit_id: data.get("default_kit_id") || null,
-      });
-      showToast(t("projects.created"), "success");
-      await renderProjects();
+      if (projectForm) {
+        await API.createProject({
+          name: data.get("name"),
+          description: data.get("description"),
+          tags: String(data.get("tags") || "").split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+          default_kit_id: data.get("default_kit_id") || null,
+        });
+      } else {
+        await API.createCreatorKit({ name: data.get("name"), platform: data.get("platform"), aspect: data.get("aspect") });
+      }
+      if (!isActive()) return;
+      showToast(t(projectForm ? "projects.created" : "kits.created"), "success");
+      await refresh();
     } catch (error) {
+      if (!isActive()) return;
       showToast(error.message, "error");
       setButtonLoading(button, false);
     }
-  });
+  };
 
-  root.querySelector("#create-kit-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('[type="submit"]');
-    const data = new FormData(event.currentTarget);
-    setButtonLoading(button, true, t("common.loading"));
-    try {
-      await API.createCreatorKit({ name: data.get("name"), platform: data.get("platform"), aspect: data.get("aspect") });
-      showToast(t("kits.created"), "success");
-      await renderProjects();
-    } catch (error) {
-      showToast(error.message, "error");
-      setButtonLoading(button, false);
+  const handleClick = async (event) => {
+    if (event.target?.closest?.("[data-retry]")) {
+      await refresh();
+      return;
     }
-  });
-
-  root.addEventListener("click", async (event) => {
     const projectButton = event.target.closest("[data-delete-project]");
     const kitButton = event.target.closest("[data-delete-kit]");
     if (!projectButton && !kitButton) return;
@@ -150,10 +172,19 @@ function bindProjectActions(root) {
     try {
       if (projectButton) await API.deleteProject(projectButton.dataset.deleteProject);
       else await API.deleteCreatorKit(kitButton.dataset.deleteKit);
-      await renderProjects();
+      if (!isActive()) return;
+      await refresh();
     } catch (error) {
+      if (!isActive()) return;
       showToast(error.message, "error");
       setButtonLoading(button, false);
     }
-  });
+  };
+
+  root.addEventListener("submit", handleSubmit);
+  root.addEventListener("click", handleClick);
+  return () => {
+    root.removeEventListener("submit", handleSubmit);
+    root.removeEventListener("click", handleClick);
+  };
 }

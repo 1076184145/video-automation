@@ -69,6 +69,7 @@ TOOLS_INSTALL_STATE: dict[str, Any] = {"status": "idle", "message": "", "log_tai
 EDITABLE_ENV_KEYS = {
     "WHISPER_BACKEND",
     "WHISPER_MODEL",
+    "WHISPER_MODEL_FALLBACKS",
     "WHISPER_LANGUAGE",
     "WHISPER_INITIAL_PROMPT",
     "FASTER_WHISPER_DEVICE",

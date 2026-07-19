@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,18 @@ from typing import Any
 from .config import Settings
 from .io_utils import write_json_atomic
 from .transcribe import create_funasr_model, transcribe_audio_funasr_with_model
+
+
+def _write_heartbeat(request: dict[str, Any], phase: str, **details: Any) -> None:
+    raw_path = request.get("heartbeat_path")
+    if not raw_path:
+        return
+    payload = {
+        "phase": phase,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        **details,
+    }
+    write_json_atomic(Path(str(raw_path)), payload)
 
 
 def process_request(
@@ -22,12 +35,14 @@ def process_request(
     response_path = Path(str(request["response_path"]))
     try:
         if request.get("warmup"):
+            _write_heartbeat(request, "model_ready")
             payload = {"status": "ok", "warmup": True}
             write_json_atomic(response_path, payload)
             return payload
         audio_path = Path(str(request["audio_path"]))
         job_dir = Path(str(request["job_dir"]))
         job_dir.mkdir(parents=True, exist_ok=True)
+        _write_heartbeat(request, "transcribing", audio_path=str(audio_path))
         transcribe(
             settings,
             model,
@@ -36,8 +51,10 @@ def process_request(
             job_dir / "transcript.srt",
             job_dir / "transcript.json",
         )
+        _write_heartbeat(request, "writing_outputs")
         payload = {"status": "ok"}
     except Exception as exc:
+        _write_heartbeat(request, "failed", error_type=type(exc).__name__)
         payload = {"status": "error", "error": str(exc)}
     write_json_atomic(response_path, payload)
     return payload

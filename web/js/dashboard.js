@@ -1,18 +1,24 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { bindQueuePanel, renderQueuePanel } from "./automation.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { eventHub } from "./event-hub.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
+import { compareJobs, groupedBatches, MAX_RENDERED_JOBS, renderJobCard, renderJobCollection } from "./job-card.js";
 import { showToast } from "./toast.js";
-import { basename, escapeHtml, fileMap, formatDate, jobName, progressForJob, statusGroup, statusLabelKey } from "./utils.js";
+import { emptyState, errorState, skeletonGrid } from "./ui-states.js";
+import { escapeHtml, jobName, statusGroup } from "./utils.js";
+
+// Dashboard controller: owns job/queue/health state, polling, SSE updates,
+// and section composition. Card markup lives in job-card.js; shared loading /
+// empty / error states live in ui-states.js.
+
+export { MAX_RENDERED_JOBS };
 
 let filter = "all";
 let search = "";
 let lastJobsKey = "";
-let searchTimer = null;
 let lastQueueKey = "";
-export const MAX_RENDERED_JOBS = 100;
 
 export async function renderDashboard(_match, { signal } = {}) {
   const app = document.getElementById("app");
@@ -20,56 +26,83 @@ export async function renderDashboard(_match, { signal } = {}) {
   let jobs = [];
   let projects = [];
   let queue = { paused: false, items: [] };
+  let disposed = false;
+  let jobsLoadVersion = 0;
+  let queueLoadVersion = 0;
+  let healthLoadVersion = 0;
+  let jobsMutationVersion = 0;
+  let queueTimer = null;
+  let jobsTimer = null;
   const deletedJobNames = new Set();
+  const isActive = () => !disposed && !signal?.aborted;
   lastJobsKey = "";
   app.innerHTML = pageShell();
   const unbindQueue = bindQueuePanel(app, loadQueue);
-  bindControls(() => updateJobs(jobs));
+  const unbindControls = bindControls(() => updateJobs(jobs, projects));
+  const unbindJobList = bindJobListActions(load);
   const unbindDelete = bindJobDelete(async (button, name) => {
     const confirmed = await confirmAction(t("dashboard.delete_job_confirm"), {
       title: t("dashboard.delete_job"),
       confirmLabel: t("common.delete"),
       cancelLabel: t("common.cancel"),
     });
-    if (!confirmed) return;
-    const previousJobs = jobs;
+    if (!confirmed || !isActive()) return;
+    const removedJob = jobs.find((job) => jobName(job) === name) || null;
     deletedJobNames.add(name);
     jobs = withoutDeletedJobsForTest(jobs, deletedJobNames);
+    jobsMutationVersion += 1;
     lastJobsKey = "";
     updateJobs(jobs, projects);
     try {
       await API.deleteJob(name);
-      showToast(t("dashboard.delete_job_success"), "success");
+      if (isActive()) showToast(t("dashboard.delete_job_success"), "success");
     } catch (error) {
+      if (!isActive()) return;
       deletedJobNames.delete(name);
-      jobs = previousJobs;
+      if (removedJob) jobs = mergeJob(jobs, removedJob);
+      jobsMutationVersion += 1;
       lastJobsKey = "";
       updateJobs(jobs, projects);
       showToast(`${t("dashboard.delete_completed_failed")} ${deleteJobErrorMessageForTest(error)}`, "error");
+      load();
     }
   });
 
   async function load() {
+    const version = ++jobsLoadVersion;
+    const mutationVersion = jobsMutationVersion;
     try {
       const [nextJobs, projectPayload] = await Promise.all([
         API.getJobs({ signal }),
-        API.getProjects({ signal }).catch(() => ({ items: projects })),
+        API.getProjects({ signal }).catch((error) => {
+          if (isAbortError(error, signal)) throw error;
+          return { items: projects };
+        }),
       ]);
-      jobs = withoutDeletedJobsForTest(nextJobs, deletedJobNames);
+      if (!isActive() || version !== jobsLoadVersion) return;
+      const preserveMissing = mutationVersion !== jobsMutationVersion;
+      jobs = withoutDeletedJobsForTest(
+        mergeJobSnapshotsForTest(jobs, Array.isArray(nextJobs) ? nextJobs : [], { preserveMissing }),
+        deletedJobNames,
+      );
       projects = projectPayload.items || projects;
       updateJobs(jobs, projects);
     } catch (error) {
+      if (!isActive() || version !== jobsLoadVersion || isAbortError(error, signal)) return;
       const target = document.getElementById("dashboard-jobs");
-      target.innerHTML = `<div class="error">${errorHintHtml(error.message || t("common.error"))} <button class="button" id="retry">${t("common.retry")}</button></div>`;
-      document.getElementById("retry")?.addEventListener("click", load);
+      if (target) target.innerHTML = errorState(errorHintHtml(error.message || t("common.error")), { retryLabel: t("common.retry"), trustedHtml: true });
     }
   }
 
   async function loadQueue() {
+    const version = ++queueLoadVersion;
     try {
-      queue = await API.getQueue({ signal });
+      const nextQueue = await API.getQueue({ signal });
+      if (!isActive() || version !== queueLoadVersion) return;
+      queue = nextQueue;
       updateQueue(queue);
     } catch (error) {
+      if (!isActive() || version !== queueLoadVersion || isAbortError(error, signal)) return;
       const target = document.getElementById("queue-panel");
       if (target && !target.innerHTML.trim()) {
         target.innerHTML = `<div class="error">${escapeHtml(error.message || t("common.error"))}</div>`;
@@ -78,28 +111,35 @@ export async function renderDashboard(_match, { signal } = {}) {
   }
 
   async function loadHealth() {
+    const version = ++healthLoadVersion;
     try {
-      updateHealth(await getHealthWithTimeout(2500));
-    } catch {
+      const health = await API.getHealth({ signal, timeout: 2500, retries: 0 });
+      if (!isActive() || version !== healthLoadVersion) return;
+      updateHealth(health);
+    } catch (error) {
+      if (!isActive() || version !== healthLoadVersion || isAbortError(error, signal)) return;
       updateHealth(null);
     }
   }
 
   function startEvents() {
-    if (document.visibilityState !== "visible") return;
+    if (!isActive() || document.visibilityState !== "visible") return;
     if (!eventUnsubscribers.length) {
       eventUnsubscribers = [
         eventHub.subscribe("hello", (payload) => {
-        if (Array.isArray(payload.jobs)) {
-          jobs = withoutDeletedJobsForTest(payload.jobs, deletedJobNames);
-          updateJobs(jobs, projects);
-        }
+          if (!isActive()) return;
+          if (Array.isArray(payload.jobs)) {
+            jobsMutationVersion += 1;
+            jobs = withoutDeletedJobsForTest(mergeJobSnapshotsForTest(jobs, payload.jobs), deletedJobNames);
+            updateJobs(jobs, projects);
+          }
         }),
         eventHub.subscribe("job", (job) => {
-        if (!job || !job.job_dir) return;
-        if (deletedJobNames.has(jobName(job))) return;
-        jobs = mergeJob(jobs, job);
-        updateJobs(jobs, projects);
+          if (!isActive() || !job || !job.job_dir) return;
+          if (deletedJobNames.has(jobName(job))) return;
+          jobsMutationVersion += 1;
+          jobs = mergeJob(jobs, job);
+          updateJobs(jobs, projects);
         }),
       ];
     }
@@ -123,24 +163,34 @@ export async function renderDashboard(_match, { signal } = {}) {
   document.addEventListener("visibilitychange", handleVisibility);
 
   await load();
+  if (!isActive()) return cleanupDashboard;
   await loadQueue();
+  if (!isActive()) return cleanupDashboard;
   loadHealth();
   startEvents();
-  const queueTimer = setInterval(() => {
+  queueTimer = setInterval(() => {
     if (document.visibilityState === "visible") loadQueue();
   }, 2000);
-  const jobsTimer = setInterval(() => {
+  jobsTimer = setInterval(() => {
     if (document.visibilityState === "visible") load();
   }, 15000);
-  return () => {
+  return cleanupDashboard;
+
+  function cleanupDashboard() {
+    if (disposed) return;
+    disposed = true;
+    jobsLoadVersion += 1;
+    queueLoadVersion += 1;
+    healthLoadVersion += 1;
     stopEvents();
     unbindDelete();
     unbindQueue();
+    unbindControls();
+    unbindJobList();
     clearInterval(queueTimer);
     clearInterval(jobsTimer);
-    clearTimeout(searchTimer);
     document.removeEventListener("visibilitychange", handleVisibility);
-  };
+  }
 }
 
 export function withoutDeletedJobsForTest(jobs, deletedJobNames) {
@@ -163,7 +213,7 @@ function mergeJob(jobs, nextJob) {
   }
   const currentVersion = Number(jobs[index].state_version || 0);
   const nextVersion = Number(nextJob.state_version || 0);
-  if (nextVersion > 0 && currentVersion > nextVersion) return jobs;
+  if (currentVersion > 0 && (nextVersion === 0 || currentVersion > nextVersion)) return jobs;
   const merged = jobs.slice();
   merged[index] = {
     ...merged[index],
@@ -173,18 +223,23 @@ function mergeJob(jobs, nextJob) {
   return merged.sort(compareJobs);
 }
 
-function compareJobs(a, b) {
-  return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
-}
-
-async function getHealthWithTimeout(timeoutMs) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await API.getHealth({ signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
+export function mergeJobSnapshotsForTest(currentJobs, nextJobs, { preserveMissing = false } = {}) {
+  const currentByName = new Map((currentJobs || []).map((job) => [jobName(job), job]));
+  const merged = (nextJobs || []).map((job) => {
+    const current = currentByName.get(jobName(job));
+    if (!current) return job;
+    const currentVersion = Number(current.state_version || 0);
+    const nextVersion = Number(job.state_version || 0);
+    if (currentVersion > 0 && (nextVersion === 0 || currentVersion > nextVersion)) return current;
+    return { ...current, ...job, files: job.files || current.files };
+  });
+  if (preserveMissing) {
+    const nextNames = new Set(merged.map((job) => jobName(job)));
+    for (const job of currentJobs || []) {
+      if (!nextNames.has(jobName(job))) merged.push(job);
+    }
   }
+  return merged.sort(compareJobs);
 }
 
 function pageShell() {
@@ -204,7 +259,7 @@ function pageShell() {
     `).join("")}</div>
     <div id="queue-panel"></div>
     <div id="health-banner"></div>
-    <div id="dashboard-jobs"><div class="grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div></div>
+    <div id="dashboard-jobs">${skeletonGrid(4)}</div>
   `;
 }
 
@@ -222,6 +277,7 @@ export function shouldUpdateQueueForTest(previousKey, nextKey, hasContent) {
 }
 
 function bindControls(update) {
+  let searchTimer = null;
   document.querySelectorAll("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       filter = button.dataset.filter;
@@ -237,6 +293,17 @@ function bindControls(update) {
       searchTimer = setTimeout(update, 200);
     });
   }
+  return () => clearTimeout(searchTimer);
+}
+
+function bindJobListActions(reload) {
+  const target = document.getElementById("dashboard-jobs");
+  if (!target) return () => {};
+  const handleClick = (event) => {
+    if (event.target.closest("[data-retry]")) reload();
+  };
+  target.addEventListener("click", handleClick);
+  return () => target.removeEventListener("click", handleClick);
 }
 
 function bindJobDelete(removeJob) {
@@ -262,7 +329,7 @@ function updateFilterButtons() {
 function updateJobs(jobs, projects = []) {
   const target = document.getElementById("dashboard-jobs");
   if (!target) return;
-  const key = `${filter}|${search}|${projects.map((project) => `${project.id}|${project.name}`).join("\n")}|${jobs.map((job) => `${job.job_dir}|${job.batch_id || ""}|${job.status}|${job.updated_at}|${job.stage_progress ?? ""}|${job.project_id || ""}`).join("\n")}`;
+  const key = `${filter}|${search}|${projects.map((project) => `${project.id}|${project.name}`).join("\n")}|${jobs.map((job) => `${job.job_dir}|${job.batch_id || ""}|${job.status}|${job.updated_at}|${job.state_version || 0}|${job.stage_progress ?? ""}|${job.project_id || ""}|${(job.files || []).length}`).join("\n")}`;
   if (key === lastJobsKey) return;
   lastJobsKey = key;
   target.innerHTML = renderDashboardJobsForTest(jobs, { filter, search, projects });
@@ -294,23 +361,24 @@ export function renderDashboardJobsForTest(jobs, state = {}) {
   });
   if (!visible.length) {
     if (jobs.length && (currentFilter !== "all" || currentSearch)) {
-      return `
-        <div class="empty dashboard-no-results">
-          <strong>${t("dashboard.no_matches_title")}</strong>
-          <p>${t("dashboard.no_matches")}</p>
-        </div>`;
+      return emptyState({
+        title: t("dashboard.no_matches_title"),
+        body: t("dashboard.no_matches"),
+        className: "dashboard-no-results"
+      });
     }
-    return `
-      <div class="empty onboarding-empty">
-        <strong>${t("dashboard.empty_title")}</strong>
-        <p>${t("dashboard.no_jobs")}</p>
+    return emptyState({
+      title: t("dashboard.empty_title"),
+      body: t("dashboard.no_jobs"),
+      className: "onboarding-empty",
+      contentHtml: `
         <div class="onboarding-steps" aria-label="${t("dashboard.empty_title")}">
           <a href="#/health"><span>1</span>${t("dashboard.empty_step_health")}</a>
           <a href="#/new"><span>2</span>${t("dashboard.empty_step_new")}</a>
           <span><span>3</span>${t("dashboard.empty_step_review")}</span>
-        </div>
-        <a class="button primary" href="#/new">+ ${t("dashboard.new_job")}</a>
-      </div>`;
+        </div>`,
+      actionHtml: `<a class="button primary" href="#/new">+ ${t("dashboard.new_job")}</a>`
+    });
   }
   const projectNames = new Map((state.projects || []).map((project) => [project.id, project.name]));
   if (currentFilter !== "all" || currentSearch) {
@@ -380,126 +448,6 @@ export function renderDashboardJobsForTest(jobs, state = {}) {
     </section>
     ${processingSection}
     ${history}`;
-}
-
-function groupedBatches(jobs) {
-  const batches = new Map();
-  jobs.forEach((job) => {
-    const batchId = String(job.batch_id || "").trim();
-    if (!batchId) return;
-    const batchJobs = batches.get(batchId) || [];
-    batchJobs.push(job);
-    batches.set(batchId, batchJobs);
-  });
-  for (const [batchId, batchJobs] of batches) {
-    if (batchJobs.length < 2) batches.delete(batchId);
-  }
-  return batches;
-}
-
-function renderJobCollection(jobs, projectNames = new Map()) {
-  const visibleJobs = jobs.slice(0, MAX_RENDERED_JOBS);
-  const batches = groupedBatches(visibleJobs);
-  const renderedBatches = new Set();
-  const entries = [];
-  visibleJobs.forEach((job) => {
-    const batchId = String(job.batch_id || "").trim();
-    const batchJobs = batches.get(batchId);
-    if (!batchJobs) {
-      entries.push(renderJobCard(job, projectNames));
-      return;
-    }
-    if (renderedBatches.has(batchId)) return;
-    renderedBatches.add(batchId);
-    entries.push(renderBatch(batchId, batchJobs, projectNames));
-  });
-  const remainder = jobs.length - visibleJobs.length;
-  return `<div class="dashboard-job-groups">${entries.join("")}</div>${remainder > 0 ? `<p class="muted dashboard-window-note">${t("dashboard.window_note").replace("{count}", String(remainder))}</p>` : ""}`;
-}
-
-function renderBatch(batchId, jobs, projectNames = new Map()) {
-  const ordered = jobs.slice().sort((a, b) => {
-    const indexA = Number(a.batch_index) || Number.MAX_SAFE_INTEGER;
-    const indexB = Number(b.batch_index) || Number.MAX_SAFE_INTEGER;
-    return indexA - indexB || compareJobs(a, b);
-  });
-  const progress = Math.round(ordered.reduce((total, job) => total + progressForJob(job), 0) / ordered.length);
-  const counts = new Map();
-  ordered.forEach((job) => {
-    const group = statusGroup(job.status);
-    counts.set(group, (counts.get(group) || 0) + 1);
-  });
-  const statusSummary = ["review", "failed", "processing", "done"]
-    .filter((group) => counts.has(group))
-    .map((group) => `${t(`status.${group}`)} ${counts.get(group)}`)
-    .join(" · ");
-  return `
-    <details class="dashboard-batch" data-batch-id="${escapeHtml(batchId)}">
-      <summary>
-        <span class="dashboard-batch-heading">
-          <strong>${t("dashboard.batch_title")}</strong>
-          <small>${ordered.length} ${t("dashboard.batch_items")} · ${statusSummary}</small>
-        </span>
-        <span class="dashboard-batch-progress">
-          <span class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="${t("dashboard.progress")}"><span style="width:${progress}%"></span></span>
-          <strong>${progress}%</strong>
-        </span>
-      </summary>
-      <div class="grid">${ordered.map((job) => renderJobCard(job, projectNames)).join("")}</div>
-    </details>`;
-}
-
-function renderJobCard(job, projectNames = new Map()) {
-  const group = statusGroup(job.status);
-  const name = jobName(job);
-  const sourceName = basename(job.source_path);
-  const files = fileMap(job);
-  const thumb = files.has("thumbnail.jpg") ? API.jobFileUrl(name, "thumbnail.jpg") : "";
-  const progress = progressForJob(job);
-  const projectName = projectNames.get(job.project_id) || t("projects.unassigned");
-  const actionKey = group === "review"
-    ? "dashboard.action_review"
-    : group === "failed"
-      ? "dashboard.action_fix"
-      : group === "done"
-        ? "dashboard.action_view"
-        : "dashboard.action_progress";
-  const canDelete = ["done", "failed"].includes(group);
-  const deleteControl = canDelete
-    ? `
-      <button
-        class="job-card-delete"
-        type="button"
-        data-delete-job="${escapeHtml(name)}"
-        aria-label="${t("dashboard.delete_job")}"
-        title="${t("dashboard.delete_job")}"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6"></path>
-        </svg>
-      </button>`
-    : "";
-  return `
-    <article class="card job-card ${canDelete ? "has-delete" : ""}">
-      <a class="job-card-link" href="#/jobs/${encodeURIComponent(name)}">
-        <div>
-          <h2 class="job-title">${escapeHtml(sourceName || name)} <span class="badge ${group}">${t(statusLabelKey(job.status))}</span></h2>
-          <div class="meta">
-            <div class="job-project">${escapeHtml(projectName)}</div>
-            <div>${t("common.created")}: ${escapeHtml(formatDate(job.created_at))}</div>
-          </div>
-          ${group === "processing" ? `
-            <div class="job-progress-row">
-              <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="${t("dashboard.progress")}"><span style="width:${progress}%"></span></div>
-              <strong>${progress}%</strong>
-            </div>` : ""}
-          <span class="job-next-action">${t(actionKey)} <span aria-hidden="true">→</span></span>
-        </div>
-        <div class="thumb">${thumb ? `<img src="${thumb}" alt="" loading="lazy" />` : ""}</div>
-      </a>
-      ${deleteControl}
-    </article>
-  `;
 }
 
 function compareActionableJobs(a, b) {

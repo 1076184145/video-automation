@@ -147,6 +147,10 @@ class Settings:
     whisper_initial_prompt: str
     whisper_timeout_min_seconds: int
     whisper_timeout_multiplier: float
+    transcribe_attempt_timeout_seconds: int
+    transcribe_no_progress_timeout_seconds: int
+    transcribe_backend_cooldown_seconds: int
+    transcribe_worker_log_max_bytes: int
     whisper_word_timestamps: bool
     whisper_vad_filter: bool
     faster_whisper_device: str
@@ -278,12 +282,16 @@ class Settings:
             high_quality_audio_enabled=_bool_env("HIGH_QUALITY_AUDIO_ENABLED", True),
             whisper_bin=Path(_env("WHISPER_BIN", "whisper")),
             whisper_backend=_env("WHISPER_BACKEND", "faster-whisper"),
-            whisper_model=_env("WHISPER_MODEL", "large-v3"),
-            whisper_model_fallbacks=_words_env("WHISPER_MODEL_FALLBACKS", "large-v3-turbo,medium"),
+            whisper_model=_env("WHISPER_MODEL", "medium"),
+            whisper_model_fallbacks=_words_env("WHISPER_MODEL_FALLBACKS", "small"),
             whisper_language=_env("WHISPER_LANGUAGE", "auto"),
             whisper_initial_prompt=_env("WHISPER_INITIAL_PROMPT", DEFAULT_WHISPER_INITIAL_PROMPT),
             whisper_timeout_min_seconds=_int_env("WHISPER_TIMEOUT_MIN_SECONDS", 300),
             whisper_timeout_multiplier=_float_env("WHISPER_TIMEOUT_MULTIPLIER", 10),
+            transcribe_attempt_timeout_seconds=max(30, _int_env("TRANSCRIBE_ATTEMPT_TIMEOUT_SECONDS", 900)),
+            transcribe_no_progress_timeout_seconds=max(15, _int_env("TRANSCRIBE_NO_PROGRESS_TIMEOUT_SECONDS", 300)),
+            transcribe_backend_cooldown_seconds=max(0, _int_env("TRANSCRIBE_BACKEND_COOLDOWN_SECONDS", 1800)),
+            transcribe_worker_log_max_bytes=max(1024, _int_env("TRANSCRIBE_WORKER_LOG_MAX_BYTES", 5 * 1024 * 1024)),
             whisper_word_timestamps=_bool_env("WHISPER_WORD_TIMESTAMPS", True),
             whisper_vad_filter=_bool_env("WHISPER_VAD_FILTER", True),
             faster_whisper_device=_env("FASTER_WHISPER_DEVICE", "cuda"),

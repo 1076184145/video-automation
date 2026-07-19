@@ -16,6 +16,107 @@ from video_automation.task_queue import QueueControlRequested
 
 
 class TranscribeFallbackTests(unittest.TestCase):
+    def test_backend_attempt_timeout_caps_legacy_duration_budget(self) -> None:
+        settings = SimpleNamespace(transcribe_attempt_timeout_seconds=1800)
+        with patch.object(transcribe, "_transcribe_timeout", return_value=12000):
+            self.assertEqual(transcribe._backend_attempt_timeout(settings, Path("audio.wav")), 1800)  # type: ignore[arg-type]
+
+    def test_model_reference_prefers_complete_project_local_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_model = root / "config" / "models" / "faster-whisper-small"
+            local_model.mkdir(parents=True)
+            (local_model / "config.json").write_text("{}", encoding="utf-8")
+            (local_model / "model.bin").write_bytes(b"model")
+
+            resolved = transcribe._resolve_model_reference(SimpleNamespace(root=root), "small")  # type: ignore[arg-type]
+
+        self.assertEqual(resolved, str(local_model))
+
+    def test_model_reference_ignores_incomplete_project_local_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_model = root / "config" / "models" / "faster-whisper-small"
+            local_model.mkdir(parents=True)
+            (local_model / "config.json").write_text("{}", encoding="utf-8")
+
+            resolved = transcribe._resolve_model_reference(SimpleNamespace(root=root), "small")  # type: ignore[arg-type]
+
+        self.assertEqual(resolved, "small")
+
+    def test_failed_primary_opens_circuit_and_next_job_skips_it(self) -> None:
+        backend = "test-primary-circuit"
+        settings = SimpleNamespace(transcribe_backend_cooldown_seconds=60)
+        primary_calls = 0
+
+        def primary() -> None:
+            nonlocal primary_calls
+            primary_calls += 1
+            raise WorkerInfrastructureError("worker stalled")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def fallback() -> None:
+                (root / "transcript.json").write_text(
+                    json.dumps({"backend": "fallback", "segments": []}),
+                    encoding="utf-8",
+                )
+
+            for _ in range(2):
+                transcribe._run_primary_with_fallback(
+                    settings,  # type: ignore[arg-type]
+                    root,
+                    root / "transcript.json",
+                    primary_backend=backend,
+                    primary_model="primary-model",
+                    primary=primary,
+                    fallback_backend="fallback",
+                    fallback_model="fallback-model",
+                    fallback=fallback,
+                )
+
+            attempts = json.loads((root / "transcription_attempts.json").read_text(encoding="utf-8"))["attempts"]
+
+        self.assertEqual(primary_calls, 1)
+        self.assertEqual([item["status"] for item in attempts], ["failed", "complete", "skipped", "complete"])
+        transcribe._reset_backend_circuit(backend)
+
+    def test_task_specific_primary_failure_does_not_open_circuit(self) -> None:
+        backend = "test-primary-task-error"
+        settings = SimpleNamespace(transcribe_backend_cooldown_seconds=60)
+        primary_calls = 0
+
+        def primary() -> None:
+            nonlocal primary_calls
+            primary_calls += 1
+            raise TranscriptionTaskError("bad input")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def fallback() -> None:
+                (root / "transcript.json").write_text(
+                    json.dumps({"backend": "fallback", "segments": []}),
+                    encoding="utf-8",
+                )
+
+            for _ in range(2):
+                transcribe._run_primary_with_fallback(
+                    settings,  # type: ignore[arg-type]
+                    root,
+                    root / "transcript.json",
+                    primary_backend=backend,
+                    primary_model="primary-model",
+                    primary=primary,
+                    fallback_backend="fallback",
+                    fallback_model="fallback-model",
+                    fallback=fallback,
+                )
+
+        self.assertEqual(primary_calls, 2)
+        self.assertEqual(transcribe._backend_circuit_remaining(backend), 0)
+
     def test_transcription_child_is_killed_when_queue_cancel_is_requested(self) -> None:
         started = time.monotonic()
         with self.assertRaisesRegex(QueueControlRequested, "canceled"):
@@ -27,6 +128,19 @@ class TranscribeFallbackTests(unittest.TestCase):
                 control_callback=lambda: "canceled",
             )
         self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_transcription_child_is_killed_when_heartbeat_stalls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            heartbeat_path = Path(temp_dir) / "heartbeat.json"
+            with self.assertRaisesRegex(WorkerInfrastructureError, "last phase: process_started"):
+                transcribe._run_transcription_process(
+                    [sys.executable, "-c", "import time; time.sleep(10)"],
+                    cwd=str(Path.cwd()),
+                    env=os.environ.copy(),
+                    timeout=30,
+                    heartbeat_path=heartbeat_path,
+                    no_progress_timeout=0.05,
+                )
 
     def test_faster_whisper_accepts_complete_outputs_after_cuda_child_exit_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,7 +298,7 @@ class TranscribeFallbackTests(unittest.TestCase):
         persistent.assert_called_once()
         one_shot.assert_not_called()
 
-    def test_funasr_infrastructure_failure_falls_back_to_one_shot_runner(self) -> None:
+    def test_funasr_infrastructure_failure_does_not_repeat_same_backend(self) -> None:
         settings = SimpleNamespace(funasr_persistent_worker=True)
         with (
             patch.object(
@@ -194,9 +308,10 @@ class TranscribeFallbackTests(unittest.TestCase):
             ),
             patch.object(transcribe, "_run_funasr_one_shot_subprocess") as one_shot,
         ):
-            transcribe._run_funasr_subprocess(settings, Path("audio.wav"), Path("job"))  # type: ignore[arg-type]
+            with self.assertRaisesRegex(WorkerInfrastructureError, "pipe closed"):
+                transcribe._run_funasr_subprocess(settings, Path("audio.wav"), Path("job"))  # type: ignore[arg-type]
 
-        one_shot.assert_called_once()
+        one_shot.assert_not_called()
 
     def test_funasr_timeout_does_not_start_a_fresh_one_shot_budget(self) -> None:
         settings = SimpleNamespace(funasr_persistent_worker=True)
@@ -210,7 +325,7 @@ class TranscribeFallbackTests(unittest.TestCase):
             patch.object(transcribe, "_run_funasr_persistent", side_effect=exhaust_budget),
             patch.object(transcribe, "_run_funasr_one_shot_subprocess") as one_shot,
         ):
-            with self.assertRaisesRegex(WorkerInfrastructureError, "budget exhausted"):
+            with self.assertRaisesRegex(WorkerInfrastructureError, "timed out"):
                 transcribe._run_funasr_subprocess(settings, Path("audio.wav"), Path("job"))  # type: ignore[arg-type]
 
         one_shot.assert_not_called()

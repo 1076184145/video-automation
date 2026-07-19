@@ -61,6 +61,34 @@ def _write_response(request: dict[str, Any], payload: dict[str, Any]) -> None:
 
 
 class PersistentTranscriptionWorkerTests(unittest.TestCase):
+    def test_no_progress_timeout_reports_last_worker_phase_without_repeating_inference(self) -> None:
+        processes: list[_FakeProcess] = []
+
+        def stall(_process: _FakeProcess, request: dict[str, Any]) -> None:
+            Path(request["heartbeat_path"]).write_text(
+                json.dumps({"phase": "transcribing"}),
+                encoding="utf-8",
+            )
+
+        def factory(*_args: object, **_kwargs: object) -> _FakeProcess:
+            process = _FakeProcess(stall)
+            processes.append(process)
+            return process
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = PersistentTranscriptionWorker(process_factory=factory, poll_interval=0.005)
+            with self.assertRaisesRegex(WorkerInfrastructureError, "last phase: transcribing"):
+                worker.run(
+                    command=["python"],
+                    signature=("model-a",),
+                    request={"audio_path": "audio.wav", "job_dir": temp_dir},
+                    timeout_seconds=0.2,
+                    no_progress_timeout_seconds=0.03,
+                )
+
+        self.assertEqual(len(processes), 1)
+        self.assertTrue(all(process.terminated for process in processes))
+
     def test_restart_attempts_share_one_timeout_budget(self) -> None:
         processes: list[_FakeProcess] = []
 

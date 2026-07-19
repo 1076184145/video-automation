@@ -98,11 +98,16 @@ Optional features:
 
 - AI covers, translation, titles, descriptions, and highlight suggestions
 - NVIDIA CUDA/NVENC acceleration
-- FunASR and faster-whisper local speech backends
+- Faster-Whisper local transcription (`medium` primary, `small` fallback by default); legacy FunASR configurations remain supported
 - Demucs audio separation
 - A separately configured publishing connector; manual packages remain the fallback
 
 AI features require a key from the provider you select. Add it in **Settings** or a private `.env` file. See [`.env.example`](.env.example) for available settings.
+
+Transcription runs in an isolated process with phase heartbeats, a no-progress
+timeout, process-tree cleanup, and a temporary backend circuit breaker. A failed
+model attempt therefore advances to the configured fallback instead of blocking
+the queue for the full duration-derived timeout.
 
 ## Important Outputs
 

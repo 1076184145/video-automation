@@ -15,7 +15,7 @@ Object.defineProperty(globalThis, "navigator", {
 
 globalThis.window = { addEventListener() {} };
 
-const { renderProjectsView } = await import("../web/js/projects.js");
+const { renderProjects, renderProjectsView } = await import("../web/js/projects.js");
 const { renderNewJobFormForTest } = await import("../web/js/new-job.js");
 const { API } = await import("../web/js/api.js");
 
@@ -62,5 +62,42 @@ test("API client exposes versioned project and creator-kit methods", () => {
     "createCreatorKit",
   ]) {
     assert.equal(typeof API[method], "function", method);
+  }
+});
+
+test("projects route cleanup removes delegated listeners from the persistent app root", async () => {
+  const originalDocument = globalThis.document;
+  const originalGetProjects = API.getProjects;
+  const originalGetCreatorKits = API.getCreatorKits;
+  const listeners = new Map();
+  const app = {
+    innerHTML: "",
+    addEventListener(type, listener) {
+      const values = listeners.get(type) || new Set();
+      values.add(listener);
+      listeners.set(type, values);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+  };
+  globalThis.document = {
+    getElementById(id) {
+      return id === "app" ? app : null;
+    },
+  };
+  API.getProjects = async () => ({ items: projects });
+  API.getCreatorKits = async () => ({ items: kits });
+  try {
+    const cleanup = await renderProjects(null, { signal: new AbortController().signal });
+    assert.equal(listeners.get("click")?.size, 1);
+    assert.equal(listeners.get("submit")?.size, 1);
+    cleanup();
+    assert.equal(listeners.get("click")?.size, 0);
+    assert.equal(listeners.get("submit")?.size, 0);
+  } finally {
+    API.getProjects = originalGetProjects;
+    API.getCreatorKits = originalGetCreatorKits;
+    globalThis.document = originalDocument;
   }
 });

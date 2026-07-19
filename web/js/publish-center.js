@@ -1,20 +1,27 @@
-import { API } from "./api.js";
+import { API, isAbortError } from "./api.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
+import { errorState, loadingState } from "./ui-states.js";
 import { basename, escapeHtml, formatDate } from "./utils.js";
 
 export async function renderPublishCenterPage(_match, { signal } = {}) {
   const app = document.getElementById("app");
-  app.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
+  app.innerHTML = loadingState(t("common.loading"));
   let state = { targets: [], attempts: [], packages: [] };
+  let disposed = false;
+  let loadVersion = 0;
+  let timer = null;
+  const isActive = () => !disposed && !signal?.aborted;
 
   async function load() {
+    const version = ++loadVersion;
     try {
       const [targets, attempts, packages] = await Promise.all([
         API.getPublishTargets({ signal }),
         API.getPublishAttempts({ signal }),
         API.getPublishPackages({ signal }),
       ]);
+      if (!isActive() || version !== loadVersion) return;
       state = {
         targets: targets.items || [],
         attempts: attempts.items || [],
@@ -22,8 +29,9 @@ export async function renderPublishCenterPage(_match, { signal } = {}) {
       };
       app.innerHTML = renderPublishCenter(state);
     } catch (error) {
-      app.innerHTML = `<div class="error">${escapeHtml(error.message || t("common.error"))} <button class="button" id="retry-publish">${t("common.retry")}</button></div>`;
-      document.getElementById("retry-publish")?.addEventListener("click", load);
+      if (!isActive() || version !== loadVersion || isAbortError(error, signal)) return;
+      app.innerHTML = errorState(error.message || t("common.error"), { retryLabel: t("common.retry") });
+      app.querySelector("[data-retry]")?.addEventListener("click", load);
     }
   }
 
@@ -42,10 +50,11 @@ export async function renderPublishCenterPage(_match, { signal } = {}) {
           access_token: data.get("access_token"),
           refresh_token: data.get("refresh_token"),
         });
+        if (!isActive()) return;
         credentialForm.reset();
         showToast(t("publish.credentials_saved"), "success");
       } catch (error) {
-        showToast(`${t("publish.action_failed")} ${error.message}`, "error");
+        if (isActive()) showToast(`${t("publish.action_failed")} ${error.message}`, "error");
       } finally {
         setButtonLoading(button, false);
       }
@@ -64,9 +73,10 @@ export async function renderPublishCenterPage(_match, { signal } = {}) {
           title: data.get("title"),
           description: data.get("description"),
         });
+        if (!isActive()) return;
         await load();
       } catch (error) {
-        showToast(`${t("publish.action_failed")} ${error.message}`, "error");
+        if (isActive()) showToast(`${t("publish.action_failed")} ${error.message}`, "error");
       } finally {
         setButtonLoading(button, false);
       }
@@ -82,25 +92,34 @@ export async function renderPublishCenterPage(_match, { signal } = {}) {
       if (action.dataset.publishAction === "start") await API.startPublishAttempt(id);
       if (action.dataset.publishAction === "retry") await API.retryPublishAttempt(id);
       if (action.dataset.publishAction === "sync") await API.syncPublishAttempt(id);
+      if (!isActive()) return;
       await load();
     } catch (error) {
-      showToast(`${t("publish.action_failed")} ${error.message}`, "error");
-      setButtonLoading(action, false);
+      if (isActive()) {
+        showToast(`${t("publish.action_failed")} ${error.message}`, "error");
+        setButtonLoading(action, false);
+      }
     }
   };
   app.addEventListener("submit", handler);
   app.addEventListener("click", handler);
   await load();
-  const timer = setInterval(() => {
+  if (!isActive()) return cleanupPublishCenter;
+  timer = setInterval(() => {
     if (document.visibilityState === "visible" && state.attempts.some((item) => ["uploading", "processing"].includes(item.status))) {
       load();
     }
   }, 3000);
-  return () => {
+  return cleanupPublishCenter;
+
+  function cleanupPublishCenter() {
+    if (disposed) return;
+    disposed = true;
+    loadVersion += 1;
     clearInterval(timer);
     app.removeEventListener("submit", handler);
     app.removeEventListener("click", handler);
-  };
+  }
 }
 
 export function renderPublishCenter({ targets = [], attempts = [], packages = [] } = {}) {
