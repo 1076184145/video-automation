@@ -87,7 +87,7 @@ Included in the local workflow:
 - Stage-aware progress, durable retries, and cooperative cancel/delete controls
 - Speech transcription with Whisper-compatible local backends
 - Silence, freeze, scene, and damaged-frame checks
-- Suggested cuts, transcript editing, and subtitle generation
+- Suggested cuts, transcript editing, line-bounded subtitles, and a horizontally scrollable clip editor
 - Browser preview plus full-quality `final.mp4`
 - Vertical `1080x1920` output and subtitle burn-in
 - Projects, reusable recipes, creator settings, and review revisions
