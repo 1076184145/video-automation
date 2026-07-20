@@ -1,0 +1,90 @@
+name: Auto Version & Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "docs/**"
+      - ".gitignore"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-release:
+    name: Auto Version & Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Get latest version
+        id: version
+        run: |
+          # 获取最新版本号
+          CURRENT_VERSION=$(grep '__version__' video_automation/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          
+          # 获取最后一次 release 标签
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          
+          # 检查是否有未发布的提交
+          COMMITS_SINCE=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || git rev-list --count HEAD)
+          echo "commits_since=$COMMITS_SINCE" >> $GITHUB_OUTPUT
+      
+      - name: Calculate new version
+        id: new_version
+        run: |
+          CURRENT=${{ steps.version.outputs.current_version }}
+          COMMITS=${{ steps.version.outputs.commits_since }}
+          
+          # 如果有新的提交且版本未更新，则自动增加补丁版本
+          if [ "$COMMITS" -gt 0 ]; then
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "should_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "version=$CURRENT" >> $GITHUB_OUTPUT
+            echo "should_update=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Update version
+        if: steps.new_version.outputs.should_update == 'true'
+        run: |
+          NEW_VERSION=${{ steps.new_version.outputs.version }}
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" video_automation/__init__.py
+          
+          # 提交版本更新
+          git add video_automation/__init__.py
+          git commit -m "chore: bump version to $NEW_VERSION"
+          git push
+      
+      - name: Create tag and release
+        run: |
+          VERSION=${{ steps.new_version.outputs.version }}
+          TAG="v${VERSION}"
+          
+          # 检查标签是否存在
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+          else
+            # 创建标签（使用最新提交）
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created tag: $TAG"
+          fi
