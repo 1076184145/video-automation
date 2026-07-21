@@ -33,17 +33,22 @@ jobs:
       - name: Get latest version
         id: version
         run: |
-          # 获取最新版本号
-          CURRENT_VERSION=$(grep '__version__' video_automation/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
-          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          # Import the package version so __all__ or comments cannot become
+          # extra lines in the GitHub Actions output file.
+          CURRENT_VERSION=$(python -c 'from video_automation import __version__; print(__version__)')
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid package version: $CURRENT_VERSION" >&2
+            exit 1
+          fi
+          printf 'current_version=%s\n' "$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           
           # 获取最后一次 release 标签
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          printf 'latest_tag=%s\n' "$LATEST_TAG" >> "$GITHUB_OUTPUT"
           
           # 检查是否有未发布的提交
           COMMITS_SINCE=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || git rev-list --count HEAD)
-          echo "commits_since=$COMMITS_SINCE" >> $GITHUB_OUTPUT
+          printf 'commits_since=%s\n' "$COMMITS_SINCE" >> "$GITHUB_OUTPUT"
       
       - name: Calculate new version
         id: new_version
