@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 globalThis.localStorage = { getItem() { return "zh"; }, setItem() {} };
@@ -59,6 +60,13 @@ test("settings exposes local preference export, clear, and health entry", () => 
   assert.match(html, /data-preferences-action="clear"/);
   assert.match(html, /#\/health/);
   assert.match(html, /Bilibili/i);
+});
+
+test("settings exposes a credential migration action without rendering secret values", async () => {
+  const source = await readFile(new URL("../web/js/settings.js", import.meta.url), "utf8");
+  assert.match(source, /migrateSettingsSecrets/);
+  assert.match(source, /legacy_secret_keys/);
+  assert.doesNotMatch(source, /security\.secret_values/);
 });
 
 test("API exposes quality gate and local preference controls", () => {

@@ -1,2 +1,2 @@
 -r requirements-core.txt
-openai-whisper>=20250625
+faster-whisper>=1.1.0

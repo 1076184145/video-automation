@@ -186,6 +186,7 @@ function renderSettingsPage(payload, message = "", preferences = {}, context = {
         <p class="page-subtitle">${t("settings.note")}</p>
       </div>
     </section>
+    ${renderCredentialMigration(payload.security || {})}
     <form class="panel settings-editor" id="settings-editor" novalidate>
       <div class="panel-head">
         <div>
@@ -214,7 +215,39 @@ function renderSettingsPage(payload, message = "", preferences = {}, context = {
     ${renderSettingsSnapshot(settings, checks)}
   `;
   bindSettingsEditor(context);
+  bindCredentialMigration(context);
   bindLocalPreferences(context);
+}
+
+export function renderCredentialMigration(security = {}) {
+  const keys = Array.isArray(security.legacy_secret_keys) ? security.legacy_secret_keys : [];
+  if (!keys.length) return "";
+  return `
+    <section class="panel settings-security-warning">
+      <div>
+        <h2>${t("settings.secret_migration_title")}</h2>
+        <p>${t("settings.secret_migration_note")}</p>
+        <code>${escapeHtml(keys.join(", "))}</code>
+      </div>
+      <button class="button primary" id="migrate-settings-secrets" type="button">${t("settings.secret_migration_button")}</button>
+    </section>`;
+}
+
+function bindCredentialMigration(context) {
+  const button = document.getElementById("migrate-settings-secrets");
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    setButtonLoading(button, true);
+    try {
+      const payload = await API.migrateSettingsSecrets();
+      if (!context.isActive?.()) return;
+      context.render?.(payload, t("settings.secret_migration_done"));
+    } catch (error) {
+      if (context.isActive?.()) showToast(`${t("settings.secret_migration_failed")} ${error.message}`, "error");
+    } finally {
+      if (button.isConnected) setButtonLoading(button, false);
+    }
+  });
 }
 
 export function renderLocalPreferences(preferences = {}) {

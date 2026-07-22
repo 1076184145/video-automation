@@ -338,13 +338,22 @@ function updateJobs(jobs, projects = []) {
 function updateHealth(health) {
   const target = document.getElementById("health-banner");
   if (!target) return;
-  if (!health || health.ok) {
+  if (!health) {
     target.innerHTML = "";
     return;
   }
   const missingChecks = (health.checks || []).filter((check) => !check.exists && !check.optional);
+  const warnings = Array.isArray(health.warnings) ? health.warnings : [];
   if (!missingChecks.length) {
-    target.innerHTML = "";
+    if (!warnings.length) {
+      target.innerHTML = "";
+      return;
+    }
+    const warning = warnings[0] || {};
+    const key = `health.warning.${String(warning.code || "")}`;
+    const localized = t(key);
+    const message = localized === key ? String(warning.message || warning.code || "") : localized;
+    target.innerHTML = `<div class="notice warning">${escapeHtml(message)} <a class="button" href="#/health">${t("nav.health")}</a></div>`;
     return;
   }
   const missing = missingChecks.map((check) => check.name).join(", ");

@@ -12,7 +12,8 @@ from pathlib import Path
 
 from video_automation.api import create_server
 from video_automation.config import Settings
-from video_automation.worker import bootstrap_dirs, health_payload
+from video_automation.health import health_payload
+from video_automation.worker import bootstrap_dirs
 
 
 APP_TITLE = "Video Automation"

@@ -35,6 +35,9 @@ def run_ffmpeg_with_progress(
     control_callback: ControlCallback | None = None,
     timeout: float | None = None,
 ) -> CommandResult:
+    initial_action = control_callback() if control_callback else None
+    if initial_action in {"paused", "canceled"}:
+        raise QueueControlRequested(initial_action)
     started_at = time.monotonic()
     process = subprocess.Popen(
         command,

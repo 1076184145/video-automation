@@ -34,6 +34,18 @@ class HostedAiRemovalTests(unittest.TestCase):
                 '"usage.official_title"',
                 '"usage.join_waitlist"',
             ),
+            ROOT / "web" / "js" / "i18n-zh.js": (
+                '"nav.usage"',
+                '"usage.title"',
+                '"usage.official_title"',
+                '"usage.join_waitlist"',
+            ),
+            ROOT / "web" / "js" / "i18n-en.js": (
+                '"nav.usage"',
+                '"usage.title"',
+                '"usage.official_title"',
+                '"usage.join_waitlist"',
+            ),
         }
 
         leftovers: list[str] = []

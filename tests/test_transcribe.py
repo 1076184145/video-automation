@@ -10,16 +10,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from video_automation import transcribe
+from video_automation import transcribe, transcribe_runtime
 from video_automation.transcribe_worker import TranscriptionTaskError, WorkerInfrastructureError
 from video_automation.task_queue import QueueControlRequested
 
 
 class TranscribeFallbackTests(unittest.TestCase):
+    def test_preexisting_cancel_does_not_spawn_transcription_child(self) -> None:
+        with patch.object(transcribe_runtime.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(QueueControlRequested, "canceled"):
+                transcribe._run_transcription_process(
+                    ["unused"],
+                    cwd=str(Path.cwd()),
+                    env=os.environ.copy(),
+                    timeout=30,
+                    control_callback=lambda: "canceled",
+                )
+        popen.assert_not_called()
+
     def test_backend_attempt_timeout_caps_legacy_duration_budget(self) -> None:
         settings = SimpleNamespace(transcribe_attempt_timeout_seconds=1800)
-        with patch.object(transcribe, "_transcribe_timeout", return_value=12000):
-            self.assertEqual(transcribe._backend_attempt_timeout(settings, Path("audio.wav")), 1800)  # type: ignore[arg-type]
+        with patch.object(transcribe_runtime, "_transcribe_timeout", return_value=12000):
+            self.assertEqual(transcribe_runtime._backend_attempt_timeout(settings, Path("audio.wav")), 1800)  # type: ignore[arg-type]
 
     def test_model_reference_prefers_complete_project_local_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -118,16 +130,33 @@ class TranscribeFallbackTests(unittest.TestCase):
         self.assertEqual(transcribe._backend_circuit_remaining(backend), 0)
 
     def test_transcription_child_is_killed_when_queue_cancel_is_requested(self) -> None:
-        started = time.monotonic()
-        with self.assertRaisesRegex(QueueControlRequested, "canceled"):
-            transcribe._run_transcription_process(
-                [sys.executable, "-c", "import time; time.sleep(10)"],
-                cwd=str(Path.cwd()),
-                env=os.environ.copy(),
-                timeout=30,
-                control_callback=lambda: "canceled",
-            )
-        self.assertLess(time.monotonic() - started, 1.5)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ready_path = Path(temp_dir) / "ready"
+            cancel_requested_at: float | None = None
+
+            def control() -> str | None:
+                nonlocal cancel_requested_at
+                if not ready_path.is_file():
+                    return None
+                cancel_requested_at = cancel_requested_at or time.monotonic()
+                return "canceled"
+
+            with self.assertRaisesRegex(QueueControlRequested, "canceled"):
+                transcribe._run_transcription_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        "from pathlib import Path; import sys, time; "
+                        "Path(sys.argv[1]).write_text('ready'); time.sleep(10)",
+                        str(ready_path),
+                    ],
+                    cwd=str(Path.cwd()),
+                    env=os.environ.copy(),
+                    timeout=30,
+                    control_callback=control,
+                )
+            self.assertIsNotNone(cancel_requested_at)
+            self.assertLess(time.monotonic() - float(cancel_requested_at), 1.5)
 
     def test_transcription_child_is_killed_when_heartbeat_stalls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -4,8 +4,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from video_automation import config
+from video_automation.credentials import MemoryCredentialStore
 
 
 class EnvConfigTests(unittest.TestCase):
@@ -71,6 +73,38 @@ class EnvConfigTests(unittest.TestCase):
         self.assertEqual(settings.llm_provider, "google")
         self.assertEqual(settings.cover_provider, "google")
 
+    def test_secret_reference_loads_from_os_credential_store(self) -> None:
+        self._remember_env("OPENAI_API_KEY", "OPENAI_API_KEY_REF", "VIDEO_AUTOMATION_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".env").write_text(
+                "OPENAI_API_KEY_REF=video-automation/config/openai-api-key\n",
+                encoding="utf-8",
+            )
+            store = MemoryCredentialStore()
+            store.set("video-automation/config/openai-api-key", "keyring-secret")
+            config.PROJECT_ROOT = root
+            config._ENV_FILE_CACHE.clear()
+
+            with patch.object(config, "SystemCredentialStore", return_value=store):
+                settings = config.Settings.load()
+
+        self.assertEqual(settings.openai_api_key, "keyring-secret")
+
+    def test_process_environment_secret_overrides_keyring_reference(self) -> None:
+        self._remember_env("OPENAI_API_KEY", "OPENAI_API_KEY_REF")
+        os.environ.update({
+            "OPENAI_API_KEY": "process-secret",
+            "OPENAI_API_KEY_REF": "video-automation/config/openai-api-key",
+        })
+        store = MemoryCredentialStore()
+        store.set("video-automation/config/openai-api-key", "keyring-secret")
+
+        with patch.object(config, "SystemCredentialStore", return_value=store):
+            settings = config.Settings.load()
+
+        self.assertEqual(settings.openai_api_key, "process-secret")
+
     def test_batch_and_upload_limits_load_from_environment(self) -> None:
         self._remember_env("API_BATCH_LIMIT", "RECORDING_UPLOAD_MAX_BYTES")
         os.environ.update({
@@ -82,6 +116,15 @@ class EnvConfigTests(unittest.TestCase):
 
         self.assertEqual(settings.api_batch_limit, 12)
         self.assertEqual(settings.recording_upload_max_bytes, 1048576)
+
+    def test_remote_api_binding_requires_explicit_configuration(self) -> None:
+        self._remember_env("API_HOST", "API_ALLOW_REMOTE")
+        os.environ.update({"API_HOST": "0.0.0.0", "API_ALLOW_REMOTE": "true"})
+
+        settings = config.Settings.load()
+
+        self.assertEqual(settings.api_host, "0.0.0.0")
+        self.assertTrue(settings.api_allow_remote)
 
     def test_native_waveform_enabled_loads_from_environment(self) -> None:
         self._remember_env("NATIVE_WAVEFORM_ENABLED")

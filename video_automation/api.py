@@ -16,11 +16,20 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .api_security import require_safe_api_binding
+from .api_settings import (
+    CredentialUpdateError,
+    apply_settings_updates,
+    migrate_legacy_secrets,
+    normalize_env_updates as _normalize_env_updates,
+    update_env_file as _update_env_file,
+)
 from .config import Settings
 from .covers import cover_manifest, generate_cover_candidates, mark_cover_generation_started, normalize_cover_options, select_cover
 from .cuts import update_cuts_from_editor
 from .events import configure_event_store, current_event_id, publish_event, wait_for_events
 from .hooks import generate_uvr_plan
+from .health import clear_health_cache, health_payload
 from .highlight_cut import generate_highlight_cut
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 from .jobs import Job, create_job, list_jobs, load_job, normalize_source_path
@@ -55,7 +64,7 @@ from .stage_runs import StageRunRepository
 from .task_queue import QueueControlRequested
 from .recovery import backup_database, ensure_database_ready, ensure_job_capacity
 from .transcribe import warm_transcription_backend
-from .worker import clear_health_cache, health_payload, process_job
+from .worker import process_job
 
 mimetypes.add_type("font/woff2", ".woff2")
 
@@ -66,76 +75,6 @@ TERMINAL_STATUSES = {"needs_review", "done", "failed", "canceled"}
 RERUN_STATUS = {name: spec.status for name, spec in PIPELINE_STAGE_SPECS.items()}
 TOOLS_INSTALL_LOCK = threading.Lock()
 TOOLS_INSTALL_STATE: dict[str, Any] = {"status": "idle", "message": "", "log_tail": []}
-EDITABLE_ENV_KEYS = {
-    "WHISPER_BACKEND",
-    "WHISPER_MODEL",
-    "WHISPER_MODEL_FALLBACKS",
-    "WHISPER_LANGUAGE",
-    "WHISPER_INITIAL_PROMPT",
-    "FASTER_WHISPER_DEVICE",
-    "FASTER_WHISPER_COMPUTE_TYPE",
-    "FASTER_WHISPER_BATCH_SIZE",
-    "WHISPER_WORD_TIMESTAMPS",
-    "WHISPER_VAD_FILTER",
-    "TRANSCRIBE_AUDIO_FILTER",
-    "SILENCE_THRESHOLD_DB",
-    "SILENCE_MIN_LENGTH_SECONDS",
-    "SILENCE_MIN_GAP_SECONDS",
-    "CUT_MIN_CLIP_SECONDS",
-    "CUT_MERGE_GAP_SECONDS",
-    "SCENE_THRESHOLD",
-    "SOURCE_INTEGRITY_SCAN_ENABLED",
-    "ASS_PRESET",
-    "ASS_FONT_NAME",
-    "ASS_FONT_SIZE",
-    "ASS_VERTICAL_FONT_SIZE",
-    "ASS_MAX_LINES",
-    "ASS_MARGIN_V",
-    "ASS_OUTLINE",
-    "ASS_SHADOW",
-    "SUBTITLE_CENSOR_REPLACEMENT",
-    "SUBTITLE_MIN_DURATION_SECONDS",
-    "RENDER_VIDEO_ENCODER",
-    "RENDER_OUTPUT_FPS",
-    "RENDER_X264_PRESET",
-    "RENDER_X264_CRF",
-    "RENDER_NVENC_PRESET",
-    "RENDER_NVENC_CQ",
-    "RENDER_NVENC_PREVIEW_PRESET",
-    "RENDER_NVENC_PREVIEW_CQ",
-    "WEB_PREVIEW_ENABLED",
-    "WEB_PREVIEW_MAX_WIDTH",
-    "WEB_PREVIEW_MAX_HEIGHT",
-    "WEB_PREVIEW_FPS",
-    "WEB_PREVIEW_VIDEO_BITRATE",
-    "BGM_VOLUME",
-    "SOURCE_AUDIO_VOLUME",
-    "COVER_PROVIDER",
-    "COVER_BASE_URL",
-    "COVER_MODEL",
-    "COVER_API_KEY",
-    "COVER_HTTP_REFERER",
-    "COVER_APP_TITLE",
-    "COVER_COUNT",
-    "COVER_QUALITY",
-    "COVER_OUTPUT_FORMAT",
-    "COVER_MODALITIES",
-    "LLM_PROVIDER",
-    "LLM_MODEL",
-    "OPENAI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_BASE_URL",
-    "API_BATCH_LIMIT",
-    "RECORDING_UPLOAD_MAX_BYTES",
-    "NATIVE_WAVEFORM_ENABLED",
-    "NATIVE_CUTS_ENABLED",
-    "HIGH_QUALITY_AUDIO_ENABLED",
-    "AUDIO_SEPARATION_ENGINE",
-    "DEMUCS_PATH",
-    "DEMUCS_MODEL",
-    "DEMUCS_DEVICE",
-    "AUDIO_SEPARATION_TIMEOUT_SECONDS",
-}
 
 
 class AutomationHTTPServer(ThreadingHTTPServer):
@@ -159,6 +98,7 @@ class AutomationHTTPServer(ThreadingHTTPServer):
 
 
 def create_server(settings: Settings, *, start_queue_worker: bool = True) -> ThreadingHTTPServer:
+    require_safe_api_binding(settings)
     database_path = library_database_path(settings)
     ensure_database_ready(database_path)
     configure_event_store(database_path)
@@ -251,9 +191,20 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 updates = _normalize_env_updates(raw_updates)
-                changed = _update_env_file(settings.root, updates)
+                changed = apply_settings_updates(settings.root, updates)
             except ValueError as exc:
                 self._json({"error": str(exc)}, status=400)
+                return
+            except CredentialUpdateError as exc:
+                self._json({
+                    "error": {
+                        "code": "credential_store_unavailable",
+                        "message": f"Unable to update secure credentials: {exc}",
+                    }
+                }, status=503)
+                return
+            except OSError as exc:
+                self._json({"error": f"Unable to update .env: {exc}"}, status=500)
                 return
             settings = Settings.load()
             allowed_origins = _allowed_api_origins(settings)
@@ -261,6 +212,25 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
             publish_event("settings", {"changed": sorted(changed)})
             response = health_payload(settings)
             response["changed"] = sorted(changed)
+            self._json(response)
+
+        def _migrate_settings_secrets(self) -> None:
+            nonlocal settings
+            try:
+                migrated = migrate_legacy_secrets(settings.root)
+            except CredentialUpdateError as exc:
+                self._json({
+                    "error": {
+                        "code": "credential_store_unavailable",
+                        "message": f"Unable to migrate secure credentials: {exc}",
+                    }
+                }, status=503)
+                return
+            settings = Settings.load()
+            clear_health_cache()
+            response = _health_response(settings)
+            response["migrated_secret_keys"] = sorted(migrated)
+            publish_event("settings", {"migrated_secret_keys": sorted(migrated)})
             self._json(response)
 
         def _install_health_tools(self) -> None:
@@ -445,6 +415,7 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
                 "job": lambda: self._send_job(job_name),
                 "install_tools": self._install_health_tools,
                 "update_settings": self._update_settings,
+                "migrate_settings_secrets": self._migrate_settings_secrets,
                 "upload_recording": lambda: self._upload_recording(query),
                 "approve_job": lambda: self._approve_job(job_name),
                 "cancel_job": lambda: self._cancel_job(job_name),
@@ -1212,28 +1183,6 @@ def _event_last_id(header_value: str | None, query: str) -> int:
     return 0
 
 
-def _normalize_env_updates(raw_updates: dict[str, Any]) -> dict[str, str]:
-    updates: dict[str, str] = {}
-    for raw_key, raw_value in raw_updates.items():
-        key = str(raw_key).strip().upper()
-        if key not in EDITABLE_ENV_KEYS:
-            raise ValueError(f"setting is not editable: {key}")
-        if raw_value is None:
-            value = ""
-        elif isinstance(raw_value, bool):
-            value = "true" if raw_value else "false"
-        else:
-            value = str(raw_value)
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"setting cannot contain newlines: {key}")
-        if any(ord(char) < 32 and char != "\t" for char in value):
-            raise ValueError(f"setting contains invalid control characters: {key}")
-        updates[key] = value.strip()
-    if not updates:
-        raise ValueError("no editable settings provided")
-    return updates
-
-
 def _health_response(settings: Settings) -> dict[str, Any]:
     payload = health_payload(settings)
     payload["tools_install"] = _tools_install_snapshot()
@@ -1363,35 +1312,6 @@ def _run_tools_install(settings: Settings, command: list[str]) -> None:
         returncode=returncode,
         message=f"Tool installation failed with exit code {returncode}",
     )
-
-
-def _update_env_file(root: Path, updates: dict[str, str]) -> set[str]:
-    env_path = root / ".env"
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
-    pending = dict(updates)
-    changed: set[str] = set()
-    output_lines: list[str] = []
-    for line in existing_lines:
-        match = key_re.match(line)
-        if not match:
-            output_lines.append(line)
-            continue
-        key = match.group(1).upper()
-        if key not in pending:
-            output_lines.append(line)
-            continue
-        output_lines.append(f"{key}={pending.pop(key)}")
-        changed.add(key)
-    if pending:
-        if output_lines and output_lines[-1].strip():
-            output_lines.append("")
-        output_lines.append("# Updated from Web Settings")
-        for key in sorted(pending):
-            output_lines.append(f"{key}={pending[key]}")
-            changed.add(key)
-    write_text_atomic(env_path, "\n".join(output_lines).rstrip() + "\n")
-    return changed
 
 
 def _format_sse(event_type: str, payload: dict[str, Any], *, event_id: int) -> str:

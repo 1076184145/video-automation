@@ -196,7 +196,10 @@ test("every current health settings key has a Chinese display label", () => {
       "back_color", "outline", "shadow", "alignment", "margin_v", "max_lines",
       "vertical_font_size", "censor_replacement", "replacements", "min_duration_seconds",
     ],
-    api: ["host", "port", "parallel_jobs", "batch_limit", "recording_upload_max_bytes", "allowed_origins"],
+    api: [
+      "host", "allow_remote", "port", "parallel_jobs", "batch_limit",
+      "recording_upload_max_bytes", "allowed_origins", "min_free_disk_bytes", "job_disk_multiplier",
+    ],
     exports: [
       "platforms", "render_video_encoder", "render_output_fps", "render_nvenc_preset",
       "render_nvenc_cq", "render_nvenc_preview_preset", "render_nvenc_preview_cq",
@@ -363,7 +366,10 @@ test("every current health setting receives a recommendation", () => {
       "back_color", "outline", "shadow", "alignment", "margin_v", "max_lines",
       "vertical_font_size", "censor_replacement", "replacements", "min_duration_seconds",
     ],
-    api: ["host", "port", "parallel_jobs", "batch_limit", "recording_upload_max_bytes", "allowed_origins"],
+    api: [
+      "host", "allow_remote", "port", "parallel_jobs", "batch_limit",
+      "recording_upload_max_bytes", "allowed_origins", "min_free_disk_bytes", "job_disk_multiplier",
+    ],
     exports: [
       "platforms", "render_video_encoder", "render_output_fps", "render_nvenc_preset",
       "render_nvenc_cq", "render_nvenc_preview_preset", "render_nvenc_preview_cq",

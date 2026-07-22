@@ -166,12 +166,20 @@ export function renderHealthPayloadForTest(payload = {}) {
   const requiredChecks = checks.filter((check) => !isOptionalCheck(check));
   const requiredMissing = requiredChecks.filter((check) => !check.exists);
   const optionalMissing = checks.filter((check) => isOptionalCheck(check) && !check.exists);
-  const ready = requiredMissing.length === 0;
+  const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+  const canStart = requiredMissing.length === 0;
+  const ready = canStart && warnings.length === 0;
   const readyCount = requiredChecks.length - requiredMissing.length;
   const title = ready
     ? t("health.overview_ready_title")
-    : template(t("health.overview_missing_title"), { count: requiredMissing.length });
-  const note = ready ? t("health.overview_ready_note") : t("health.overview_missing_note");
+    : requiredMissing.length
+      ? template(t("health.overview_missing_title"), { count: requiredMissing.length })
+      : template(t("health.overview_warning_title"), { count: warnings.length });
+  const note = ready
+    ? t("health.overview_ready_note")
+    : requiredMissing.length
+      ? t("health.overview_missing_note")
+      : t("health.overview_warning_note");
   const missingList = requiredMissing.length
     ? `
       <div class="health-missing-list">
@@ -191,7 +199,7 @@ export function renderHealthPayloadForTest(payload = {}) {
     <section class="panel health-overview ${ready ? "ready" : "needs-attention"}">
       <div class="health-overview-icon" aria-hidden="true">${ready ? "✓" : "!"}</div>
       <div class="health-overview-copy">
-        <span class="eyebrow">${ready ? t("health.ready") : t("health.missing")}</span>
+        <span class="eyebrow">${ready ? t("health.ready") : requiredMissing.length ? t("health.missing") : t("health.attention")}</span>
         <h2>${escapeHtml(title)}</h2>
         <p>${escapeHtml(note)}</p>
         <div class="health-summary-badges">
@@ -200,12 +208,60 @@ export function renderHealthPayloadForTest(payload = {}) {
         </div>
         ${missingList}
       </div>
-      ${ready ? `<a class="button primary health-start-action" href="#/new">${t("health.start_job")}</a>` : ""}
+      ${canStart ? `<a class="button primary health-start-action" href="#/new">${t("health.start_job")}</a>` : ""}
     </section>
+    ${renderHealthWarnings(warnings)}
+    ${renderStorageStatus(payload.storage || {})}
     ${renderInstallPanel(payload)}
     ${renderRecoveryPanel(payload)}
     ${renderHealthDetails(checks)}
   `;
+}
+
+function renderHealthWarnings(warnings) {
+  if (!warnings.length) return "";
+  return `
+    <section class="panel health-warning-panel">
+      <div class="panel-head">
+        <div>
+          <h2>${t("health.warning_title")}</h2>
+          <p>${t("health.warning_note")}</p>
+        </div>
+      </div>
+      <div class="health-warning-list">
+        ${warnings.map((warning) => {
+          const code = String(warning?.code || "");
+          const key = `health.warning.${code}`;
+          const localized = t(key);
+          const message = localized === key ? String(warning?.message || code) : localized;
+          return `<div class="notice warning"><strong>${escapeHtml(message)}</strong></div>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
+function renderStorageStatus(storage) {
+  if (!storage || storage.available !== true) return "";
+  const free = formatBytes(storage.free_bytes);
+  const total = formatBytes(storage.total_bytes);
+  const reserve = formatBytes(storage.min_free_bytes);
+  return `
+    <section class="panel health-storage ${storage.low_space ? "needs-attention" : ""}">
+      <div>
+        <h2>${t("health.storage_title")}</h2>
+        <p>${escapeHtml(template(t("health.storage_note"), { free, total, reserve }))}</p>
+      </div>
+      <code>${escapeHtml(storage.path || "")}</code>
+    </section>`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const amount = bytes / (1024 ** index);
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function renderInstallPanel(payload) {
@@ -280,7 +336,7 @@ function renderRecoveryPanel(payload) {
   const whisperCliReady = checks.some((check) => check.name === "whisper_bin" && check.exists);
   const backend = String(payload.settings?.whisper?.backend || "");
   const missingNames = missingTranscription.map((check) => healthCheckLabel(check.name)).join(", ");
-  const installCommand = "python -m pip install -r requirements-optional.txt";
+  const installCommand = "python -m pip install -r requirements-transcription-faster.txt";
   const cliAction = whisperCliReady && backend !== "cli"
     ? `<button class="button" id="switch-whisper-cli" type="button">${t("health.switch_to_cli")}</button>`
     : "";
