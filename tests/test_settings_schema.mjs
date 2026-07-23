@@ -187,6 +187,9 @@ test("every current health settings key has a Chinese display label", () => {
     detection: [
       "silence_threshold_db", "silence_min_length", "silence_min_gap",
       "cut_min_clip_seconds", "cut_merge_gap_seconds", "freeze_noise_db",
+      "clip_refinement_enabled", "clip_refinement_max_attempts",
+      "clip_refinement_time_budget_seconds", "clip_refinement_boundary_tolerance_seconds",
+      "clip_refinement_max_shift_seconds",
       "freeze_min_duration", "scene_threshold", "source_integrity_scan_enabled",
       "source_integrity_scan_timeout_multiplier", "source_integrity_scan_max_errors",
       "visual_detect_keyframes_only", "visual_detect_fps", "visual_detect_width",
@@ -357,6 +360,9 @@ test("every current health setting receives a recommendation", () => {
     detection: [
       "silence_threshold_db", "silence_min_length", "silence_min_gap",
       "cut_min_clip_seconds", "cut_merge_gap_seconds", "freeze_noise_db",
+      "clip_refinement_enabled", "clip_refinement_max_attempts",
+      "clip_refinement_time_budget_seconds", "clip_refinement_boundary_tolerance_seconds",
+      "clip_refinement_max_shift_seconds",
       "freeze_min_duration", "scene_threshold", "source_integrity_scan_enabled",
       "source_integrity_scan_timeout_multiplier", "source_integrity_scan_max_errors",
       "visual_detect_keyframes_only", "visual_detect_fps", "visual_detect_width",

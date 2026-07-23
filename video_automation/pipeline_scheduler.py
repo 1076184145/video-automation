@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .io_utils import write_json_atomic
 from .jobs import Job
+from .pipeline_context import PipelineContext
 from .pipeline_spec import PIPELINE_STAGE_SELECTION_DEPENDENCIES
 from .stage_runs import StageRunRepository
 from .task_queue import QueueControlRequested
@@ -35,7 +36,7 @@ class PipelineStage:
     name: str
     status: str
     enabled: bool
-    run: Callable[[dict[str, Any]], None]
+    run: Callable[[PipelineContext], None]
     dependencies: frozenset[str] = frozenset()
     exclusive_resources: frozenset[str] = frozenset()
 
@@ -109,7 +110,7 @@ def _execute_pipeline_stage(
     progress: ProgressReporter,
     job: Job,
     stage: PipelineStage,
-    context: dict[str, Any],
+    context: PipelineContext,
     *,
     stage_number: int,
     total_stages: int,
@@ -264,35 +265,25 @@ def _execute_pipeline_stage(
     return timing, None
 
 
-def _take_stage_metrics(context: dict[str, Any], stage_name: str) -> dict[str, float]:
-    metrics_by_stage = context.get("_stage_metrics")
-    if not isinstance(metrics_by_stage, dict):
-        return {}
-    raw = metrics_by_stage.pop(stage_name, None)
-    if not isinstance(raw, dict):
-        return {}
-    metrics: dict[str, float] = {}
-    for key in ("resource_wait_seconds", "execution_seconds"):
-        value = raw.get(key)
-        if isinstance(value, (int, float)):
-            metrics[key] = round(max(0.0, float(value)), 3)
-    return metrics
+def _take_stage_metrics(
+    context: PipelineContext,
+    stage_name: str,
+) -> dict[str, float]:
+    return context.take_stage_metrics(stage_name)
 
 
 def run_pipeline(
     progress: ProgressReporter,
     job: Job,
     stages: list[PipelineStage],
-    context: dict[str, Any],
+    context: PipelineContext,
     *,
     control_callback: Callable[[], str | None] | None = None,
     stage_repository: StageRunRepository | None = None,
 ) -> None:
     total_stages = len(stages)
     if stage_repository is None:
-        candidate = context.get("_stage_repository")
-        if isinstance(candidate, StageRunRepository):
-            stage_repository = candidate
+        stage_repository = context.stage_repository
     job_name = Path(job.job_dir).name
     pipeline_run_id = (
         stage_repository.start_pipeline(job_name, total_stages=total_stages)
@@ -314,7 +305,7 @@ def run_pipeline(
         source_path=str(job.source_path),
         total_stages=total_stages,
     )
-    max_parallel_stages = max(1, int(context.get("_max_parallel_stages", 1)))
+    max_parallel_stages = max(1, int(context.max_parallel_stages))
     batches = build_pipeline_batches(stages, max_parallel_stages=max_parallel_stages)
     stage_numbers = {stage.name: index for index, stage in enumerate(stages, start=1)}
     for batch in batches:

@@ -197,6 +197,11 @@ class Settings:
     silence_min_gap_seconds: float
     cut_min_clip_seconds: float
     cut_merge_gap_seconds: float
+    clip_refinement_enabled: bool
+    clip_refinement_max_attempts: int
+    clip_refinement_time_budget_seconds: float
+    clip_refinement_boundary_tolerance_seconds: float
+    clip_refinement_max_shift_seconds: float
     silence_threshold_db: float
     freeze_noise_db: float
     freeze_min_duration_seconds: float
@@ -341,6 +346,17 @@ class Settings:
             silence_min_gap_seconds=_float_env("SILENCE_MIN_GAP_SECONDS", 0.35),
             cut_min_clip_seconds=_float_env("CUT_MIN_CLIP_SECONDS", 2.0),
             cut_merge_gap_seconds=_float_env("CUT_MERGE_GAP_SECONDS", 1.5),
+            clip_refinement_enabled=_bool_env("CLIP_REFINEMENT_ENABLED", True),
+            clip_refinement_max_attempts=max(1, _int_env("CLIP_REFINEMENT_MAX_ATTEMPTS", 3)),
+            clip_refinement_time_budget_seconds=max(
+                0.05, _float_env("CLIP_REFINEMENT_TIME_BUDGET_SECONDS", 5.0)
+            ),
+            clip_refinement_boundary_tolerance_seconds=max(
+                0.0, _float_env("CLIP_REFINEMENT_BOUNDARY_TOLERANCE_SECONDS", 0.08)
+            ),
+            clip_refinement_max_shift_seconds=max(
+                0.0, _float_env("CLIP_REFINEMENT_MAX_SHIFT_SECONDS", 0.75)
+            ),
             silence_threshold_db=_float_env("SILENCE_THRESHOLD_DB", -35),
             freeze_noise_db=_float_env("FREEZE_NOISE_DB", -60),
             freeze_min_duration_seconds=_float_env("FREEZE_MIN_DURATION_SECONDS", 2),

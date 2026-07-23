@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from .clip_refinement import refine_clip_boundaries
 from .config import Settings
 from .crop import generate_vertical_crop_plan
 from .cuts import generate_cuts
@@ -23,6 +24,7 @@ from .media import (
     probe_media,
 )
 from .pipeline_scheduler import PipelineStage, ProgressReporter, expand_stage_selection, run_pipeline
+from .pipeline_context import PipelineContext
 from .pipeline_spec import PIPELINE_STAGE_DEPENDENCIES, PIPELINE_STAGE_SPECS
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
 from .render import generate_render_preview, render_final_video, render_review_video, render_web_preview
@@ -106,52 +108,52 @@ def process_job(
                 existing_manifest = candidate if isinstance(candidate, dict) else None
             except (OSError, ValueError):
                 existing_manifest = None
-        context: dict[str, Any] = {
-            "audio_path": audio_path,
-            "audio_hq_path": audio_hq_path,
-            "manifest": existing_manifest,
-        }
+        context = PipelineContext(
+            audio_path=audio_path,
+            high_quality_audio_path=audio_hq_path,
+            manifest=existing_manifest,
+        )
 
-        def probe_stage(stage_context: dict[str, Any]) -> None:
+        def probe_stage(stage_context: PipelineContext) -> None:
             manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=force)
             if manifest["audio_stream_count"] < 1:
                 raise RuntimeError("source has no audio stream")
-            stage_context["manifest"] = manifest
+            stage_context.manifest = manifest
             if manifest.get("video_stream_count", 0) > 0:
                 generate_thumbnail(settings, job.source_path, job.job_dir / "thumbnail.jpg", manifest["duration_seconds"], force=force)
 
-        def extract_audio_stage(stage_context: dict[str, Any]) -> None:
-            if not stage_context.get("media_outputs_prepared"):
+        def extract_audio_stage(stage_context: PipelineContext) -> None:
+            if not stage_context.media_outputs_prepared:
                 extract_audio_outputs(
                     settings,
                     job.source_path,
-                    stage_context["audio_path"],
-                    stage_context["audio_hq_path"],
+                    stage_context.audio_path,
+                    stage_context.high_quality_audio_path,
                     force=force,
                 )
-            generate_waveform(settings, stage_context["audio_path"], job.job_dir / "waveform.json", force=force)
+            generate_waveform(settings, stage_context.audio_path, job.job_dir / "waveform.json", force=force)
 
-        def corruption_stage(stage_context: dict[str, Any]) -> None:
-            manifest = stage_context["manifest"]
+        def corruption_stage(stage_context: PipelineContext) -> None:
+            manifest = _require_manifest(stage_context)
             if manifest.get("video_stream_count", 0) < 1:
                 return
             integrity = extract_audio_outputs(
                 settings,
                 job.source_path,
-                stage_context["audio_path"],
-                stage_context["audio_hq_path"],
+                stage_context.audio_path,
+                stage_context.high_quality_audio_path,
                 integrity_output_path=job.job_dir / "corrupt.json",
                 duration=manifest["duration_seconds"],
                 force=force,
             )
-            stage_context["media_outputs_prepared"] = True
+            stage_context.media_outputs_prepared = True
             _raise_for_severe_source_corruption(settings, integrity)
 
-        def transcribe_stage(stage_context: dict[str, Any]) -> None:
+        def transcribe_stage(stage_context: PipelineContext) -> None:
             if skip_transcribe:
                 create_empty_transcripts(job.job_dir, force=force)
             else:
-                manifest = stage_context.get("manifest") or {}
+                manifest = stage_context.manifest or {}
                 duration = float(manifest.get("duration_seconds") or 0)
                 estimated_seconds = max(settings.whisper_timeout_min_seconds, duration * settings.whisper_timeout_multiplier)
                 backend_label = _transcription_backend_label(settings.whisper_backend)
@@ -194,7 +196,7 @@ def process_job(
                     transcribe_settings = replace(settings, whisper_language=whisper_language) if whisper_language else settings
                     transcribe_audio(
                         transcribe_settings,
-                        stage_context["audio_path"],
+                        stage_context.audio_path,
                         job.job_dir,
                         force=force,
                         resource_wait_callback=on_resource_wait,
@@ -208,21 +210,22 @@ def process_job(
                     if wait_started is not None:
                         resource_timing["wait_seconds"] += time.monotonic() - wait_started
                     elapsed = time.monotonic() - started_at
-                    stage_context.setdefault("_stage_metrics", {})["transcribe"] = {
-                        "resource_wait_seconds": round(float(resource_timing["wait_seconds"]), 3),
-                        "execution_seconds": round(
-                            max(0.0, elapsed - float(resource_timing["wait_seconds"])), 3
+                    stage_context.record_stage_metrics(
+                        "transcribe",
+                        resource_wait_seconds=float(resource_timing["wait_seconds"]),
+                        execution_seconds=max(
+                            0.0, elapsed - float(resource_timing["wait_seconds"])
                         ),
-                    }
+                    )
 
-        def silence_stage(stage_context: dict[str, Any]) -> None:
+        def silence_stage(stage_context: PipelineContext) -> None:
             logger.info("Detecting silence")
-            manifest = stage_context["manifest"]
-            detect_silence(settings, stage_context["audio_path"], manifest["duration_seconds"], job.job_dir / "silence.json", force=force)
+            manifest = _require_manifest(stage_context)
+            detect_silence(settings, stage_context.audio_path, manifest["duration_seconds"], job.job_dir / "silence.json", force=force)
 
-        def freeze_stage(stage_context: dict[str, Any]) -> None:
+        def freeze_stage(stage_context: PipelineContext) -> None:
             logger.info("Detecting freeze")
-            manifest = stage_context["manifest"]
+            manifest = _require_manifest(stage_context)
             detect_visual_events(
                 settings,
                 job.source_path,
@@ -231,13 +234,13 @@ def process_job(
                 job.job_dir / "scene.json" if detect_scenes_enabled else None,
                 force=force,
             )
-            stage_context["visual_events_prepared"] = True
+            stage_context.visual_events_prepared = True
 
-        def scenes_stage(stage_context: dict[str, Any]) -> None:
+        def scenes_stage(stage_context: PipelineContext) -> None:
             logger.info("Detecting scene changes")
-            if stage_context.get("visual_events_prepared"):
+            if stage_context.visual_events_prepared:
                 return
-            manifest = stage_context["manifest"]
+            manifest = _require_manifest(stage_context)
             detect_visual_events(
                 settings,
                 job.source_path,
@@ -247,8 +250,8 @@ def process_job(
                 force=force,
             )
 
-        def cuts_stage(stage_context: dict[str, Any]) -> None:
-            manifest = stage_context["manifest"]
+        def cuts_stage(stage_context: PipelineContext) -> None:
+            manifest = _require_manifest(stage_context)
             generate_cuts(
                 job.job_dir,
                 manifest["duration_seconds"],
@@ -257,17 +260,29 @@ def process_job(
                 merge_gap_seconds=settings.cut_merge_gap_seconds,
             )
 
-        def subtitles_stage(stage_context: dict[str, Any]) -> None:
+        def refine_cuts_stage(stage_context: PipelineContext) -> None:
+            result = refine_clip_boundaries(
+                settings,
+                job.job_dir,
+                force=force,
+                control_callback=control_callback,
+            )
+            if result.get("status") != "accepted":
+                stage_context.require_review(
+                    str(result.get("stop_reason") or "clip_refinement_required")
+                )
+
+        def subtitles_stage(stage_context: PipelineContext) -> None:
             generate_ass_subtitles(settings, job.job_dir, force=force)
             generate_clipped_ass_subtitles(settings, job.job_dir, force=force)
 
-        def crop_stage(stage_context: dict[str, Any]) -> None:
+        def crop_stage(stage_context: PipelineContext) -> None:
             generate_vertical_crop_plan(settings, job.job_dir, force=force)
 
-        def uvr_stage(stage_context: dict[str, Any]) -> None:
+        def uvr_stage(stage_context: PipelineContext) -> None:
             generate_uvr_plan(settings, job.job_dir, force=force)
 
-        def render_preview_stage(stage_context: dict[str, Any]) -> None:
+        def render_preview_stage(stage_context: PipelineContext) -> None:
             generate_render_preview(settings, job.job_dir, job.source_path, force=force)
             generate_platform_export_plan(settings, job.job_dir, force=force)
             generate_bgm_mix_plan(settings, job.job_dir, force=force)
@@ -275,7 +290,7 @@ def process_job(
 
         def run_render_stage(
             stage_name: str,
-            stage_context: dict[str, Any],
+            stage_context: PipelineContext,
             render: Callable[[Callable[[float], None], Callable[[], None], Callable[[], None]], None],
         ) -> None:
             stop_heartbeat = threading.Event()
@@ -329,14 +344,15 @@ def process_job(
                 if wait_started is not None:
                     resource_timing["wait_seconds"] += time.monotonic() - wait_started
                 elapsed = time.monotonic() - started_at
-                stage_context.setdefault("_stage_metrics", {})[stage_name] = {
-                    "resource_wait_seconds": round(float(resource_timing["wait_seconds"]), 3),
-                    "execution_seconds": round(
-                        max(0.0, elapsed - float(resource_timing["wait_seconds"])), 3
+                stage_context.record_stage_metrics(
+                    stage_name,
+                    resource_wait_seconds=float(resource_timing["wait_seconds"]),
+                    execution_seconds=max(
+                        0.0, elapsed - float(resource_timing["wait_seconds"])
                     ),
-                }
+                )
 
-        def render_review_stage(stage_context: dict[str, Any]) -> None:
+        def render_review_stage(stage_context: PipelineContext) -> None:
             run_render_stage(
                 "render_review",
                 stage_context,
@@ -353,7 +369,7 @@ def process_job(
                 ),
             )
 
-        def render_final_stage(stage_context: dict[str, Any]) -> None:
+        def render_final_stage(stage_context: PipelineContext) -> None:
             run_render_stage(
                 "render_final",
                 stage_context,
@@ -372,7 +388,7 @@ def process_job(
                 ),
             )
 
-        def render_web_preview_stage(stage_context: dict[str, Any]) -> None:
+        def render_web_preview_stage(stage_context: PipelineContext) -> None:
             final_source = job.job_dir / "final.mp4"
             source = final_source if render_final_enabled or final_source.is_file() else job.job_dir / "review.mp4"
             run_render_stage(
@@ -410,6 +426,7 @@ def process_job(
             PipelineStage("detect_freeze", PIPELINE_STAGE_SPECS["detect_freeze"].status, enabled("detect_freeze", detect_freeze_enabled), freeze_stage),
             PipelineStage("detect_scenes", PIPELINE_STAGE_SPECS["detect_scenes"].status, enabled("detect_scenes", detect_scenes_enabled), scenes_stage),
             PipelineStage("plan_cuts", PIPELINE_STAGE_SPECS["plan_cuts"].status, enabled("plan_cuts", True), cuts_stage),
+            PipelineStage("refine_cuts", PIPELINE_STAGE_SPECS["refine_cuts"].status, enabled("refine_cuts", getattr(settings, "clip_refinement_enabled", True)), refine_cuts_stage),
             PipelineStage("plan_crop", PIPELINE_STAGE_SPECS["plan_crop"].status, enabled("plan_crop", plan_crop_enabled or vertical_enabled), crop_stage),
             PipelineStage("style_subtitles", PIPELINE_STAGE_SPECS["style_subtitles"].status, enabled("style_subtitles", (not skip_transcribe) or burn_subtitles_enabled), subtitles_stage),
             PipelineStage("plan_uvr", PIPELINE_STAGE_SPECS["plan_uvr"].status, enabled("plan_uvr", plan_uvr_enabled), uvr_stage),
@@ -446,13 +463,18 @@ def process_job(
             else Path(job.job_dir).parent.parent / "library.sqlite3"
         )
         stage_repository = StageRunRepository(database_path)
-        context["_stage_repository"] = stage_repository
-        context["_max_parallel_stages"] = 3
+        context.stage_repository = stage_repository
+        context.max_parallel_stages = 3
         if control_callback is None:
             run_pipeline(progress, job, stages, context)
         else:
             run_pipeline(progress, job, stages, context, control_callback=control_callback)
-        job.set_status(completion_status or ("done" if render_final_enabled else "needs_review"))
+        final_status = completion_status or (
+            "done" if render_final_enabled else "needs_review"
+        )
+        if context.requires_review:
+            final_status = "needs_review"
+        job.set_status(final_status)
         progress.emit(
             "pipeline:complete",
             job_dir=str(job.job_dir),
@@ -491,6 +513,12 @@ def _stage_exclusive_resources(settings: Settings, stage_name: str) -> frozenset
     if stage_name == "plan_uvr" and str(getattr(settings, "demucs_device", "")).lower().startswith("cuda"):
         return frozenset({"gpu"})
     return frozenset()
+
+
+def _require_manifest(context: PipelineContext) -> dict[str, Any]:
+    if not isinstance(context.manifest, dict):
+        raise RuntimeError("pipeline manifest is unavailable")
+    return context.manifest
 
 
 def _high_quality_audio_path(settings: Settings, job: Job, *, plan_uvr_enabled: bool) -> Path | None:

@@ -132,6 +132,32 @@ class QualityGateTests(unittest.TestCase):
             result = evaluate_quality_gate(job_dir, {})
             self.assertIn("render_missing", {item["code"] for item in result["blocking"]})
 
+    def test_unresolved_clip_refinement_is_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            (job_dir / "final.mp4").write_bytes(b"video")
+            (job_dir / "manifest.json").write_text(
+                '{"duration_seconds":10,"width":1920,"height":1080}',
+                encoding="utf-8",
+            )
+            (job_dir / "clip_refinement.json").write_text(
+                json.dumps(
+                    {
+                        "status": "needs_review",
+                        "stop_reason": "manual_review_required",
+                        "final_report": {"score": "invalid-local-state"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = evaluate_quality_gate(job_dir, {})
+
+            self.assertIn(
+                "clip_refinement_required",
+                {item["code"] for item in result["blocking"]},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

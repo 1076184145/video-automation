@@ -95,6 +95,7 @@ Included in the local workflow:
 - Speech transcription with Whisper-compatible local backends
 - Silence, freeze, scene, and damaged-frame checks
 - Suggested cuts, transcript editing, line-bounded subtitles, and a horizontally scrollable clip editor
+- Bounded local clip-boundary refinement that avoids partial words without increasing invalid-media coverage
 - Browser preview plus full-quality `final.mp4`
 - Vertical `1080x1920` output and subtitle burn-in
 - Projects, reusable recipes, creator settings, and review revisions
@@ -130,6 +131,7 @@ Each job is stored under `processing/jobs/<job-name>/`.
 | `web_preview.mp4` | Smaller browser preview |
 | `transcript.txt` / `.srt` | Transcript and subtitles |
 | `cuts.json` | Suggested or edited clip ranges |
+| `clip_refinement.json` | Deterministic boundary-check attempts, scores, and recovery state |
 | `cover_*.jpg` | Generated or selected covers |
 | `publish_packages/` | Files and text for manual upload |
 | `project_exports/` | Premiere Pro or Jianying/CapCut handoff files |

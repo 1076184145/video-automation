@@ -382,7 +382,7 @@ class AudioExtractionTests(unittest.TestCase):
             )
 
             def run_prepare_stages(_progress, _job, stages, context):
-                context["manifest"] = {"duration_seconds": 120.0, "video_stream_count": 1}
+                context.manifest = {"duration_seconds": 120.0, "video_stream_count": 1}
                 next(stage for stage in stages if stage.name == "detect_corruption").run(context)
                 next(stage for stage in stages if stage.name == "extract_audio").run(context)
 
@@ -643,7 +643,7 @@ class VisualDetectionTests(unittest.TestCase):
             )
 
             def run_visual_stages(_progress, _job, stages, context):
-                context["manifest"] = {"duration_seconds": 120.0, "video_stream_count": 1}
+                context.manifest = {"duration_seconds": 120.0, "video_stream_count": 1}
                 next(stage for stage in stages if stage.name == "detect_freeze").run(context)
                 next(stage for stage in stages if stage.name == "detect_scenes").run(context)
 

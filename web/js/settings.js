@@ -51,6 +51,11 @@ const editableGroups = [
       { env: "SILENCE_MIN_GAP_SECONDS", path: ["detection", "silence_min_gap"], type: "number", min: 0, step: 0.1 },
       { env: "CUT_MIN_CLIP_SECONDS", path: ["detection", "cut_min_clip_seconds"], type: "number", min: 0, step: 0.1 },
       { env: "CUT_MERGE_GAP_SECONDS", path: ["detection", "cut_merge_gap_seconds"], type: "number", min: 0, step: 0.1 },
+      { env: "CLIP_REFINEMENT_ENABLED", path: ["detection", "clip_refinement_enabled"], type: "checkbox" },
+      { env: "CLIP_REFINEMENT_MAX_ATTEMPTS", path: ["detection", "clip_refinement_max_attempts"], type: "number", min: 1, step: 1 },
+      { env: "CLIP_REFINEMENT_TIME_BUDGET_SECONDS", path: ["detection", "clip_refinement_time_budget_seconds"], type: "number", min: 0.05, step: 0.05 },
+      { env: "CLIP_REFINEMENT_BOUNDARY_TOLERANCE_SECONDS", path: ["detection", "clip_refinement_boundary_tolerance_seconds"], type: "number", min: 0, step: 0.01 },
+      { env: "CLIP_REFINEMENT_MAX_SHIFT_SECONDS", path: ["detection", "clip_refinement_max_shift_seconds"], type: "number", min: 0, step: 0.05 },
       { env: "SCENE_THRESHOLD", path: ["detection", "scene_threshold"], type: "number", min: 0, max: 1, step: 0.05 },
       { env: "SOURCE_INTEGRITY_SCAN_ENABLED", path: ["detection", "source_integrity_scan_enabled"], type: "checkbox" }
     ]

@@ -3,7 +3,13 @@ import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatDate } from "./utils.js";
 
-const BASE_RECIPE_STAGES = ["transcribe", "plan_cuts", "style_subtitles", "plan_render"];
+const BASE_RECIPE_STAGES = [
+  "transcribe",
+  "plan_cuts",
+  "refine_cuts",
+  "style_subtitles",
+  "plan_render",
+];
 
 export function legacyProfilesToRecipes(profiles = []) {
   return profiles
@@ -76,7 +82,7 @@ function renderQueueItem(item, index, total) {
         ${status === "paused" ? `<button class="button compact-button" type="button" data-queue-action="resume">${t("queue.resume")}</button>` : ""}
         ${status === "failed" ? `
           <select class="compact-select" data-retry-stage-for="${escapeHtml(item.id)}" aria-label="${t("queue.retry_stage")}">
-            ${["probe", "extract_audio", "transcribe", "detect_silence", "plan_cuts", "style_subtitles", "render_final"].map((stage) => `<option value="${stage}">${t(`stage.${stage}`)}</option>`).join("")}
+            ${["probe", "extract_audio", "transcribe", "detect_silence", "plan_cuts", "refine_cuts", "style_subtitles", "render_final"].map((stage) => `<option value="${stage}">${t(`stage.${stage}`)}</option>`).join("")}
           </select>
           <button class="button compact-button" type="button" data-queue-action="retry-stage">${t("queue.retry")}</button>` : ""}
         ${canceling

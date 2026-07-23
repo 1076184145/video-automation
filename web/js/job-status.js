@@ -33,6 +33,7 @@ function stageComplete(stage, job, files) {
     detect_freeze: "freeze.json",
     detect_scenes: "scene.json",
     plan_cuts: "cuts.json",
+    refine_cuts: "clip_refinement.json",
     style_subtitles: "subtitles.ass",
     plan_crop: "crop_plan.json",
     plan_uvr: "uvr_plan.json",
