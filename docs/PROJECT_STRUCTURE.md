@@ -40,7 +40,8 @@ Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of sour
 | Transcription and subtitles | `transcribe.py`, `transcribe_runtime.py`, `transcribe_runner.py`, `transcribe_worker.py`, `subtitles.py`, `profanity.py` | Backend selection, supervised subprocess runtime, persistent worker protocol, transcript files, ASS subtitles, text cleanup |
 | Cut planning | `cuts.py`, `profiles.py` | Invalid segment logic, clip scoring, workflow profiles |
 | Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, LLM metadata/highlights, publish package, old job cleanup |
-| HTTP and diagnostics | `api.py`, `api_security.py`, `api_settings.py`, `routing.py`, `health.py` | Local HTTP server, bind safety, secure settings updates, route registry, health/security/storage reporting |
+| HTTP routing | `api.py`, `api_context.py`, `routing.py`, `api_routes_base.py`, `api_routes_system.py`, `api_routes_jobs.py`, `api_routes_enhancements.py` | Thin server composition root, thread-safe runtime context, declarative route registry, and domain route handlers |
+| API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind safety, secure settings updates, and health reporting |
 | Entrypoints | `worker.py` | CLI worker and pipeline orchestration |
 
 ## Web Dashboard

@@ -115,10 +115,10 @@ class LibraryHttpApiTests(unittest.TestCase):
             )
             cuts = {"clips": [{"start": 0, "end": 2, "label": "保留"}]}
             with (
-                patch("video_automation.api.update_cuts_from_editor", return_value=cuts),
-                patch("video_automation.api.generate_clipped_ass_subtitles"),
-                patch("video_automation.api.generate_render_preview"),
-                patch("video_automation.api._remove_render_outputs"),
+                patch("video_automation.api_routes_jobs.update_cuts_from_editor", return_value=cuts),
+                patch("video_automation.api_routes_jobs.generate_clipped_ass_subtitles"),
+                patch("video_automation.api_routes_jobs.generate_render_preview"),
+                patch("video_automation.api_routes_jobs.remove_render_outputs"),
             ):
                 server = create_server(settings, start_queue_worker=False)
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
