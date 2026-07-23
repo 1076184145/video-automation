@@ -320,11 +320,20 @@ def _subtitle_events_for_segment(
     play_res_x: int,
     max_lines: int,
 ) -> list[dict[str, Any]]:
-    text = " ".join(str(segment["text"]).split())
+    text = _normalize_subtitle_text(str(segment["text"]))
     if not text:
         return []
+    max_lines = max(1, int(max_lines))
     max_units = _max_chars_per_line(style, play_res_x)
-    chunks = _split_text_chunks(text, max_units * max_lines)
+    # ASR backends and manual overrides can return a very long segment. Build
+    # the final visual lines first, then group them into bounded events. This is
+    # the last line-limit invariant before ASS serialization and deliberately
+    # preserves all text instead of clipping lines that do not fit.
+    visual_lines = _wrap_subtitle_lines(text, max_units)
+    chunks = [
+        "\n".join(visual_lines[index:index + max_lines])
+        for index in range(0, len(visual_lines), max_lines)
+    ]
     if not chunks:
         return []
 
@@ -339,28 +348,15 @@ def _subtitle_events_for_segment(
             chunk_end = end
         else:
             chunk_end = min(end, offset + duration * (max(1, _visual_width(chunk)) / total_weight))
-        wrapped = _wrap_subtitle_text(chunk, style, play_res_x, max_lines)
-        if wrapped and chunk_end > offset:
-            events.append({"start": round(offset, 3), "end": round(chunk_end, 3), "text": wrapped})
+        if chunk and chunk_end > offset:
+            events.append({"start": round(offset, 3), "end": round(chunk_end, 3), "text": chunk})
         offset = chunk_end
     return events
 
 
-def _split_text_chunks(text: str, max_chars: int) -> list[str]:
-    max_chars = max(8, max_chars)
-    if _visual_width(text) <= max_chars:
-        return [text]
-    chunks = []
-    remaining = text
-    while _visual_width(remaining) > max_chars:
-        split_at = _best_split_index(remaining, max_chars)
-        chunk = remaining[:split_at].strip()
-        if chunk:
-            chunks.append(chunk)
-        remaining = remaining[split_at:].strip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
+def _normalize_subtitle_text(text: str) -> str:
+    """Normalize ASR text and neutralize embedded ASS line-break commands."""
+    return " ".join(text.replace(r"\N", " ").replace(r"\n", " ").split())
 
 
 def _style_values(settings: Settings, play_res: tuple[int, int]) -> dict[str, Any]:
@@ -440,24 +436,26 @@ def _max_chars_per_line(style: dict[str, Any], play_res_x: int) -> int:
 
 
 def _wrap_subtitle_text(text: str, style: dict[str, Any], play_res_x: int, max_lines: int) -> str:
-    value = " ".join(text.split())
+    value = _normalize_subtitle_text(text)
     if not value:
         return ""
     max_chars = _max_chars_per_line(style, play_res_x)
-    if _visual_width(value) <= max_chars:
-        return value
+    return "\n".join(_wrap_subtitle_lines(value, max_chars)[:max(1, max_lines)])
 
-    lines = []
-    remaining = value
-    while _visual_width(remaining) > max_chars:
-        split_at = _best_split_index(remaining, max_chars)
+
+def _wrap_subtitle_lines(text: str, max_units: int) -> list[str]:
+    """Wrap normalized subtitle text without dropping overflowing lines."""
+    lines: list[str] = []
+    remaining = text
+    while _visual_width(remaining) > max_units:
+        split_at = _best_split_index(remaining, max_units)
         chunk = remaining[:split_at].strip()
         if chunk:
             lines.append(chunk)
         remaining = remaining[split_at:].strip()
     if remaining:
         lines.append(remaining)
-    return "\n".join(lines[:max_lines])
+    return lines
 
 
 def _best_split_index(text: str, max_units: int) -> int:

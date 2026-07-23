@@ -77,7 +77,7 @@ test("missing transcription modules prioritize Faster-Whisper installation with 
   assert.match(html, /medium 主模型与 small 回退模型/);
   assert.match(html, /id="switch-whisper-cli"/);
   assert.match(html, /临时切换到 Whisper CLI/);
-  assert.match(html, /python -m pip install -r requirements-optional\.txt/);
+  assert.match(html, /python -m pip install -r requirements-transcription-faster\.txt/);
 });
 
 test("optional components do not block the ready state", () => {
@@ -115,4 +115,28 @@ test("health diagnostics keep wide tables inside their own mobile scroller", () 
   assert.match(css, /\.health-details\s*\{[^}]*min-width:\s*0/s);
   assert.match(css, /\.health-table-wrap\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.health-table-wrap \.table\s*\{[^}]*min-width:\s*720px/s);
+});
+
+test("health page keeps remote exposure and disk warnings visible", () => {
+  const html = renderHealthPayloadForTest({
+    checks: [{ name: "ffmpeg_path", exists: true, optional: false }],
+    warnings: [
+      { code: "remote_api_exposed", severity: "warning" },
+      { code: "low_disk_space", severity: "warning" },
+    ],
+    storage: {
+      available: true,
+      path: "D:/video-automation/processing/jobs",
+      total_bytes: 100 * 1024 ** 3,
+      free_bytes: 512 * 1024 ** 2,
+      min_free_bytes: 1024 ** 3,
+      low_space: true,
+    },
+  });
+
+  assert.match(html, /health-warning-panel/);
+  assert.match(html, /API_ALLOW_REMOTE/);
+  assert.match(html, /health-storage needs-attention/);
+  assert.match(html, /512 MiB/);
+  assert.match(html, /href="#\/new"/);
 });

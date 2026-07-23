@@ -184,7 +184,21 @@ def terminate_process_tree(process: Any, *, timeout: float = 5.0) -> None:
                 process.kill()
             except OSError:
                 pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
     try:
-        process.wait(timeout=max(0.1, min(1.0, timeout)))
-    except (OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=max(0.1, min(0.5, timeout)))
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=max(0.1, min(0.5, timeout)))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
         pass

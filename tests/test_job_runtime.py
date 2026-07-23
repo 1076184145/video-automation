@@ -19,7 +19,7 @@ class JobRuntimeStateTests(unittest.TestCase):
         self.assertTrue(runtime["can_cancel"])
         self.assertTrue(runtime["can_delete"])
 
-    @patch("video_automation.api._pid_is_alive", return_value=True)
+    @patch("video_automation.api_job_utils.pid_is_alive", return_value=True)
     def test_live_queue_worker_keeps_running_job_protected(self, _alive) -> None:
         runtime = _job_runtime_state(
             "transcribing",

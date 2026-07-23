@@ -219,6 +219,9 @@ export const API = {
   async updateSettings(payload) {
     return postJson("/settings", payload, 30000);
   },
+  async migrateSettingsSecrets() {
+    return postJson("/settings/migrate-secrets", {}, 30000);
+  },
   openEvents() {
     return new EventSource("/events");
   },

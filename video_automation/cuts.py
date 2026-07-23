@@ -10,6 +10,14 @@ from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 
 logger = logging.getLogger(__name__)
 
+
+def write_cuts_payload(job_dir: Path, payload: dict[str, Any]) -> None:
+    """Persist the canonical cuts artifacts as one logical operation."""
+    markdown = _render_markdown(payload)
+    write_json_atomic(job_dir / "cuts.json", payload)
+    write_text_atomic(job_dir / "cuts.md", markdown)
+
+
 def generate_cuts(
     job_dir: Path,
     duration: float,
@@ -103,8 +111,7 @@ def generate_cuts(
             "Scene changes now contribute to content_score, but they do not remove media by themselves.",
         ],
     }
-    write_json_atomic(cuts_json, payload)
-    write_text_atomic(cuts_md, _render_markdown(payload))
+    write_cuts_payload(job_dir, payload)
     return payload
 
 
@@ -154,8 +161,9 @@ def update_cuts_from_editor(job_dir: Path, clips: list[dict[str, Any]]) -> dict[
     if "Clips were edited in the Web UI." not in notes:
         notes.append("Clips were edited in the Web UI.")
     payload["notes"] = notes
-    write_json_atomic(cuts_json, payload)
-    write_text_atomic(job_dir / "cuts.md", _render_markdown(payload))
+    (job_dir / "clip_refinement.json").unlink(missing_ok=True)
+    payload.pop("refinement", None)
+    write_cuts_payload(job_dir, payload)
     return payload
 
 

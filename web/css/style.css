@@ -821,9 +821,41 @@ canvas.timeline.is-panning { cursor: grabbing; }
 .table tbody tr.selected-row { background: hsla(var(--accent-hue), 100%, 42%, 0.16); }
 
 /* Clip Editor */
+.clip-editor-horizontal-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.clip-editor-scroll-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.clip-editor-horizontal-scroll {
+  min-width: 0;
+  height: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: var(--accent) var(--bg-elevated);
+  scrollbar-width: auto;
+}
+.clip-editor-horizontal-scroll::-webkit-scrollbar { height: 12px; }
+.clip-editor-horizontal-scroll::-webkit-scrollbar-track {
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+}
+.clip-editor-horizontal-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bg-elevated);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+.clip-editor-horizontal-track { width: 1080px; height: 1px; }
 .clip-editor-wrapper {
   max-height: min(72vh, 760px);
   overflow: auto;
+  scrollbar-gutter: stable;
   container: clip-editor / inline-size;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -1486,6 +1518,23 @@ details[open] > summary .settings-disclosure {
   font-weight: 700;
 }
 .health-missing-list { margin-top: 18px; }
+.health-warning-panel,
+.settings-security-warning,
+.health-storage {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+.health-warning-panel { display: block; border-color: var(--warning-border); background: var(--warning-bg); }
+.health-warning-list { display: grid; gap: 10px; }
+.settings-security-warning { border-color: var(--warning-border); background: var(--warning-bg); }
+.settings-security-warning h2,
+.health-storage h2 { margin: 0 0 8px; }
+.settings-security-warning p,
+.health-storage p { margin: 0; color: var(--text-secondary); line-height: 1.6; }
+.settings-security-warning code { display: inline-block; margin-top: 10px; }
+.health-storage.needs-attention { border-color: var(--warning-border); background: var(--warning-bg); }
 .health-missing-list > strong {
   display: block;
   margin-bottom: 8px;

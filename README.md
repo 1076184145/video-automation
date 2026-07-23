@@ -41,8 +41,7 @@ git clone https://github.com/1076184145/video-automation.git
 cd video-automation
 py -m venv venv
 .\venv\Scripts\python.exe -m pip install --upgrade pip
-.\venv\Scripts\python.exe -m pip install -r requirements.txt
-.\venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+.\venv\Scripts\python.exe -m pip install -r requirements-transcription-faster.txt
 .\venv\Scripts\python.exe .\run_worker.py --serve
 ```
 
@@ -53,10 +52,18 @@ git clone https://github.com/1076184145/video-automation.git
 cd video-automation
 python3 -m venv venv
 ./venv/bin/python -m pip install --upgrade pip
-./venv/bin/python -m pip install -r requirements.txt
-./venv/bin/python -m pip install -r requirements-optional.txt
+./venv/bin/python -m pip install -r requirements-transcription-faster.txt
 ./venv/bin/python run_worker.py --serve
 ```
+
+The recommended command installs the leaner Faster-Whisper runtime used by the
+default configuration. `requirements.txt` keeps the compatible OpenAI Whisper
+CLI fallback. FunASR with Faster-Whisper fallback uses
+`requirements-transcription-funasr.txt`; desktop packaging, Pillow, Demucs, and
+all other extras remain in `requirements-optional.txt`.
+
+Create a separate Linux virtual environment inside WSL. A Windows `venv` under
+`D:\` cannot be reused by WSL Python.
 
 Open [http://127.0.0.1:8765/#/](http://127.0.0.1:8765/#/) in your browser. Keep the terminal window open while using the app.
 
@@ -87,7 +94,8 @@ Included in the local workflow:
 - Stage-aware progress, durable retries, and cooperative cancel/delete controls
 - Speech transcription with Whisper-compatible local backends
 - Silence, freeze, scene, and damaged-frame checks
-- Suggested cuts, transcript editing, and subtitle generation
+- Suggested cuts, transcript editing, line-bounded subtitles, and a horizontally scrollable clip editor
+- Bounded local clip-boundary refinement that avoids partial words without increasing invalid-media coverage
 - Browser preview plus full-quality `final.mp4`
 - Vertical `1080x1920` output and subtitle burn-in
 - Projects, reusable recipes, creator settings, and review revisions
@@ -102,7 +110,11 @@ Optional features:
 - Demucs audio separation
 - A separately configured publishing connector; manual packages remain the fallback
 
-AI features require a key from the provider you select. Add it in **Settings** or a private `.env` file. See [`.env.example`](.env.example) for available settings.
+AI features require a key from the provider you select. Keys entered in
+**Settings** are stored in the operating-system credential store; the private
+`.env` contains only a reference. Existing plaintext `.env` keys can be migrated
+from the warning shown in **Settings**. See [`.env.example`](.env.example) for
+available settings.
 
 Transcription runs in an isolated process with phase heartbeats, a no-progress
 timeout, process-tree cleanup, and a temporary backend circuit breaker. A failed
@@ -119,6 +131,7 @@ Each job is stored under `processing/jobs/<job-name>/`.
 | `web_preview.mp4` | Smaller browser preview |
 | `transcript.txt` / `.srt` | Transcript and subtitles |
 | `cuts.json` | Suggested or edited clip ranges |
+| `clip_refinement.json` | Deterministic boundary-check attempts, scores, and recovery state |
 | `cover_*.jpg` | Generated or selected covers |
 | `publish_packages/` | Files and text for manual upload |
 | `project_exports/` | Premiere Pro or Jianying/CapCut handoff files |
@@ -165,11 +178,20 @@ Open `processing/jobs/`. Do not commit this folder, `.env`, logs, private videos
 # Process one local file
 .\venv\Scripts\python.exe .\run_worker.py --once "D:\path\video.mp4" --profile douyin --progress
 
+# Preview old completed-job cleanup without deleting anything
+.\venv\Scripts\python.exe .\run_worker.py --cleanup-days 30 --cleanup-mode intermediates --dry-run
+
+# Reclaim only audio caches and temporary files from completed jobs
+.\venv\Scripts\python.exe .\run_worker.py --cleanup-days 30 --cleanup-mode intermediates
+
 # Run Python tests
 .\venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-The local Web server binds to `127.0.0.1:8765` by default. Do not expose it publicly without authentication, network controls, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
+The local Web server binds to `127.0.0.1:8765` by default. Non-loopback bindings
+are rejected unless `API_ALLOW_REMOTE=true` is set explicitly. That flag is not
+authentication: remote use still requires a firewall, authenticated reverse
+proxy, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Privacy and Boundaries
 

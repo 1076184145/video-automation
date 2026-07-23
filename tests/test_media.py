@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from video_automation import api, media, worker
+from video_automation import api, media, pipeline_executor
 from video_automation.config import Settings
 from video_automation.jobs import Job
 from video_automation.media import (
@@ -85,12 +85,12 @@ class AudioExtractionTests(unittest.TestCase):
     def test_severe_source_corruption_stops_pipeline_before_expensive_stages(self) -> None:
         settings = SimpleNamespace(source_integrity_scan_max_errors=40)
         with self.assertRaisesRegex(RuntimeError, "70358 decode errors"):
-            worker._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
+            pipeline_executor._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
                 settings,  # type: ignore[arg-type]
                 {"status": "corrupt", "error_count": 70358},
             )
 
-        worker._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
+        pipeline_executor._raise_for_severe_source_corruption(  # type: ignore[attr-defined]
             settings,  # type: ignore[arg-type]
             {"status": "corrupt", "error_count": 3},
         )
@@ -242,12 +242,12 @@ class AudioExtractionTests(unittest.TestCase):
                 next(stage for stage in stages if stage.name == "extract_audio").run(context)
 
             with (
-                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
-                patch.object(worker, "run_pipeline", side_effect=run_audio_stage),
-                patch.object(worker, "extract_audio_outputs", create=True) as joint,
-                patch.object(worker, "generate_waveform"),
+                patch.object(pipeline_executor, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(pipeline_executor, "run_pipeline", side_effect=run_audio_stage),
+                patch.object(pipeline_executor, "extract_audio_outputs", create=True) as joint,
+                patch.object(pipeline_executor, "generate_waveform"),
             ):
-                worker.process_job(
+                pipeline_executor.process_job(
                     settings,  # type: ignore[arg-type]
                     job,  # type: ignore[arg-type]
                     force=False,
@@ -288,12 +288,12 @@ class AudioExtractionTests(unittest.TestCase):
                 next(stage for stage in stages if stage.name == "extract_audio").run(context)
 
             with (
-                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
-                patch.object(worker, "run_pipeline", side_effect=run_audio_stage),
-                patch.object(worker, "extract_audio_outputs", create=True) as joint,
-                patch.object(worker, "generate_waveform"),
+                patch.object(pipeline_executor, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(pipeline_executor, "run_pipeline", side_effect=run_audio_stage),
+                patch.object(pipeline_executor, "extract_audio_outputs", create=True) as joint,
+                patch.object(pipeline_executor, "generate_waveform"),
             ):
-                worker.process_job(
+                pipeline_executor.process_job(
                     settings,  # type: ignore[arg-type]
                     job,  # type: ignore[arg-type]
                     force=False,
@@ -334,12 +334,12 @@ class AudioExtractionTests(unittest.TestCase):
                 next(stage for stage in stages if stage.name == "extract_audio").run(context)
 
             with (
-                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
-                patch.object(worker, "run_pipeline", side_effect=run_audio_stage),
-                patch.object(worker, "extract_audio_outputs", create=True) as joint,
-                patch.object(worker, "generate_waveform"),
+                patch.object(pipeline_executor, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(pipeline_executor, "run_pipeline", side_effect=run_audio_stage),
+                patch.object(pipeline_executor, "extract_audio_outputs", create=True) as joint,
+                patch.object(pipeline_executor, "generate_waveform"),
             ):
-                worker.process_job(
+                pipeline_executor.process_job(
                     settings,  # type: ignore[arg-type]
                     job,  # type: ignore[arg-type]
                     force=False,
@@ -382,17 +382,17 @@ class AudioExtractionTests(unittest.TestCase):
             )
 
             def run_prepare_stages(_progress, _job, stages, context):
-                context["manifest"] = {"duration_seconds": 120.0, "video_stream_count": 1}
+                context.manifest = {"duration_seconds": 120.0, "video_stream_count": 1}
                 next(stage for stage in stages if stage.name == "detect_corruption").run(context)
                 next(stage for stage in stages if stage.name == "extract_audio").run(context)
 
             with (
-                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
-                patch.object(worker, "run_pipeline", side_effect=run_prepare_stages),
-                patch.object(worker, "extract_audio_outputs", create=True) as joint,
-                patch.object(worker, "generate_waveform"),
+                patch.object(pipeline_executor, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(pipeline_executor, "run_pipeline", side_effect=run_prepare_stages),
+                patch.object(pipeline_executor, "extract_audio_outputs", create=True) as joint,
+                patch.object(pipeline_executor, "generate_waveform"),
             ):
-                worker.process_job(
+                pipeline_executor.process_job(
                     settings,  # type: ignore[arg-type]
                     job,  # type: ignore[arg-type]
                     force=False,
@@ -428,8 +428,8 @@ class AudioExtractionTests(unittest.TestCase):
             settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
 
             with (
-                patch.object(worker, "extract_audio_outputs", create=True) as joint,
-                patch.object(worker, "generate_waveform"),
+                patch.object(pipeline_executor, "extract_audio_outputs", create=True) as joint,
+                patch.object(pipeline_executor, "generate_waveform"),
             ):
                 api._run_single_stage(settings, job, "extract_audio", {})  # type: ignore[arg-type]
 
@@ -449,7 +449,7 @@ class AudioExtractionTests(unittest.TestCase):
             job = Job(source_path=root / "source.mp4", job_dir=job_dir, status="queued")
             settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
 
-            with patch.object(worker, "render_final_video") as render_final:
+            with patch.object(pipeline_executor, "render_final_video") as render_final:
                 api._run_single_stage(settings, job, "render_final", {})  # type: ignore[arg-type]
 
             self.assertFalse(render_final.call_args.kwargs["refresh_web_preview"])
@@ -463,7 +463,7 @@ class AudioExtractionTests(unittest.TestCase):
             job = Job(source_path=root / "source.mp4", job_dir=job_dir, status="queued")
             settings = replace(Settings.load(), root=root, jobs_dir=root / "jobs")
 
-            with patch.object(worker, "render_web_preview") as render_preview:
+            with patch.object(pipeline_executor, "render_web_preview") as render_preview:
                 api._run_single_stage(settings, job, "render_web_preview", {})  # type: ignore[arg-type]
 
             self.assertEqual(render_preview.call_args.kwargs["source_path"], job_dir / "final.mp4")
@@ -643,16 +643,16 @@ class VisualDetectionTests(unittest.TestCase):
             )
 
             def run_visual_stages(_progress, _job, stages, context):
-                context["manifest"] = {"duration_seconds": 120.0, "video_stream_count": 1}
+                context.manifest = {"duration_seconds": 120.0, "video_stream_count": 1}
                 next(stage for stage in stages if stage.name == "detect_freeze").run(context)
                 next(stage for stage in stages if stage.name == "detect_scenes").run(context)
 
             with (
-                patch.object(worker, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
-                patch.object(worker, "run_pipeline", side_effect=run_visual_stages),
-                patch.object(worker, "detect_visual_events", create=True) as joint,
+                patch.object(pipeline_executor, "configure_job_logger", return_value=SimpleNamespace(info=lambda *_args: None, exception=lambda *_args: None)),
+                patch.object(pipeline_executor, "run_pipeline", side_effect=run_visual_stages),
+                patch.object(pipeline_executor, "detect_visual_events", create=True) as joint,
             ):
-                worker.process_job(
+                pipeline_executor.process_job(
                     settings,  # type: ignore[arg-type]
                     job,  # type: ignore[arg-type]
                     force=False,

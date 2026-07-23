@@ -1,0 +1,2 @@
+-r requirements-transcription-faster.txt
+funasr>=1.3.1

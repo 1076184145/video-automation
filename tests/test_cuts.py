@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from video_automation.cuts import (
@@ -9,8 +11,10 @@ from video_automation.cuts import (
     _summarize_segments,
     _validate_editor_clips,
     build_invalid_segments,
+    update_cuts_from_editor,
 )
 from video_automation import cuts
+from video_automation.io_utils import write_json_atomic
 
 
 class CutPlanningTests(unittest.TestCase):
@@ -80,6 +84,46 @@ class CutPlanningTests(unittest.TestCase):
             duration=5.0,
         )
         self.assertEqual([(clip["start"], clip["end"]) for clip in clips], [(0.0, 2.0), (4.0, 5.0)])
+
+    def test_manual_cut_edit_invalidates_automated_refinement_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_dir = Path(temp_dir)
+            write_json_atomic(
+                job_dir / "cuts.json",
+                {
+                    "source": "source.mp4",
+                    "duration_seconds": 5.0,
+                    "invalid_segments": [],
+                    "highlight_signals": {"scene_count": 0, "scenes": []},
+                    "transcript_segments": [],
+                    "clips": [
+                        {
+                            "start": 0.0,
+                            "end": 5.0,
+                            "duration": 5.0,
+                            "keep": True,
+                            "reason": "tail",
+                        }
+                    ],
+                    "notes": [],
+                    "refinement": {"status": "accepted"},
+                },
+            )
+            (job_dir / "clip_refinement.json").write_text("{}", encoding="utf-8")
+
+            settings_stub = type(
+                "SettingsStub",
+                (),
+                {"native_cuts_enabled": False},
+            )()
+            with patch.object(cuts.Settings, "load", return_value=settings_stub):
+                payload = update_cuts_from_editor(
+                    job_dir,
+                    [{"start": 0.0, "end": 4.0, "keep": True, "reason": "manual"}],
+                )
+
+            self.assertFalse((job_dir / "clip_refinement.json").exists())
+            self.assertNotIn("refinement", payload)
 
 
 class NativeCutsTests(unittest.TestCase):

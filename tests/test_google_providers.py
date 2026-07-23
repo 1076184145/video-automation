@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from video_automation import covers, llm_tools
 from video_automation.config import Settings
-from video_automation.worker import _cover_runtime_checks, _optional_module_checks
+from video_automation.health import _cover_runtime_checks, _optional_module_checks
 
 
 class _JsonResponse:

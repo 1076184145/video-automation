@@ -187,6 +187,9 @@ test("every current health settings key has a Chinese display label", () => {
     detection: [
       "silence_threshold_db", "silence_min_length", "silence_min_gap",
       "cut_min_clip_seconds", "cut_merge_gap_seconds", "freeze_noise_db",
+      "clip_refinement_enabled", "clip_refinement_max_attempts",
+      "clip_refinement_time_budget_seconds", "clip_refinement_boundary_tolerance_seconds",
+      "clip_refinement_max_shift_seconds",
       "freeze_min_duration", "scene_threshold", "source_integrity_scan_enabled",
       "source_integrity_scan_timeout_multiplier", "source_integrity_scan_max_errors",
       "visual_detect_keyframes_only", "visual_detect_fps", "visual_detect_width",
@@ -196,7 +199,10 @@ test("every current health settings key has a Chinese display label", () => {
       "back_color", "outline", "shadow", "alignment", "margin_v", "max_lines",
       "vertical_font_size", "censor_replacement", "replacements", "min_duration_seconds",
     ],
-    api: ["host", "port", "parallel_jobs", "batch_limit", "recording_upload_max_bytes", "allowed_origins"],
+    api: [
+      "host", "allow_remote", "port", "parallel_jobs", "batch_limit",
+      "recording_upload_max_bytes", "allowed_origins", "min_free_disk_bytes", "job_disk_multiplier",
+    ],
     exports: [
       "platforms", "render_video_encoder", "render_output_fps", "render_nvenc_preset",
       "render_nvenc_cq", "render_nvenc_preview_preset", "render_nvenc_preview_cq",
@@ -354,6 +360,9 @@ test("every current health setting receives a recommendation", () => {
     detection: [
       "silence_threshold_db", "silence_min_length", "silence_min_gap",
       "cut_min_clip_seconds", "cut_merge_gap_seconds", "freeze_noise_db",
+      "clip_refinement_enabled", "clip_refinement_max_attempts",
+      "clip_refinement_time_budget_seconds", "clip_refinement_boundary_tolerance_seconds",
+      "clip_refinement_max_shift_seconds",
       "freeze_min_duration", "scene_threshold", "source_integrity_scan_enabled",
       "source_integrity_scan_timeout_multiplier", "source_integrity_scan_max_errors",
       "visual_detect_keyframes_only", "visual_detect_fps", "visual_detect_width",
@@ -363,7 +372,10 @@ test("every current health setting receives a recommendation", () => {
       "back_color", "outline", "shadow", "alignment", "margin_v", "max_lines",
       "vertical_font_size", "censor_replacement", "replacements", "min_duration_seconds",
     ],
-    api: ["host", "port", "parallel_jobs", "batch_limit", "recording_upload_max_bytes", "allowed_origins"],
+    api: [
+      "host", "allow_remote", "port", "parallel_jobs", "batch_limit",
+      "recording_upload_max_bytes", "allowed_origins", "min_free_disk_bytes", "job_disk_multiplier",
+    ],
     exports: [
       "platforms", "render_video_encoder", "render_output_fps", "render_nvenc_preset",
       "render_nvenc_cq", "render_nvenc_preview_preset", "render_nvenc_preview_cq",

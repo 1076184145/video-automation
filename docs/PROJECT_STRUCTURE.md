@@ -20,6 +20,9 @@ D:\video-automation
 ├── README.md               English manual
 ├── README.zh-CN.md         Chinese manual
 ├── requirements.txt        Required Python dependencies
+├── requirements-core.txt   Minimal Web/API runtime dependencies
+├── requirements-transcription-faster.txt Lean Faster-Whisper runtime
+├── requirements-transcription-funasr.txt FunASR plus Faster-Whisper fallback
 ├── requirements-optional.txt Optional Python dependencies
 └── .env.example            Configuration template
 ```
@@ -32,12 +35,15 @@ Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of sour
 
 | Area | Modules | Responsibility |
 |---|---|---|
-| Configuration and state | `config.py`, `jobs.py`, `io_utils.py` | Settings, job lifecycle, atomic file helpers |
+| Configuration and state | `config.py`, `credentials.py`, `jobs.py`, `io_utils.py` | Settings, OS credential references, job lifecycle, atomic file helpers |
 | Media processing | `media.py`, `crop.py`, `render.py`, `progress.py`, `covers.py`, `segments.py` | ffprobe/ffmpeg operations, vertical framing, rendering, progress parsing, AI cover candidates, platform video segments |
-| Transcription and subtitles | `transcribe.py`, `transcribe_runner.py`, `subtitles.py`, `profanity.py` | Whisper/faster-whisper, transcript files, ASS subtitles, text cleanup |
-| Cut planning | `cuts.py`, `profiles.py` | Invalid segment logic, clip scoring, workflow profiles |
+| Transcription and subtitles | `transcribe.py`, `transcribe_runtime.py`, `transcribe_runner.py`, `transcribe_worker.py`, `subtitles.py`, `profanity.py` | Backend selection, supervised subprocess runtime, persistent worker protocol, transcript files, ASS subtitles, text cleanup |
+| Cut planning and refinement | `cuts.py`, `profiles.py`, `clip_state.py`, `clip_evaluator.py`, `agent_policy.py`, `clip_operations.py`, `clip_refinement.py` | Invalid segment logic, clip scoring, typed refinement state, pure evaluation/policy, isolated side effects, and bounded orchestration |
 | Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, LLM metadata/highlights, publish package, old job cleanup |
-| Entrypoints | `worker.py`, `api.py` | CLI worker, pipeline orchestration, local HTTP API/Web server |
+| HTTP routing | `api.py`, `api_context.py`, `routing.py`, `api_routes_base.py`, `api_routes_system.py`, `api_routes_jobs.py`, `api_routes_enhancements.py` | Thin server composition root, thread-safe runtime context, declarative route registry, and domain route handlers |
+| API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind safety, secure settings updates, and health reporting |
+| Pipeline execution | `pipeline_context.py`, `pipeline_spec.py`, `pipeline_scheduler.py`, `pipeline_executor.py`, `stage_runs.py` | Typed run context, stage contracts and dependencies, generic dependency scheduler, job-specific stage construction, and durable run state |
+| Entrypoints | `worker.py` | CLI argument handling, batch execution, resume, and file watching |
 
 ## Web Dashboard
 
@@ -53,6 +59,8 @@ web/
     ├── router.js
     ├── api.js
     ├── i18n.js
+    ├── i18n-zh.js
+    ├── i18n-en.js
     ├── utils.js
     ├── dashboard.js
     ├── new-job.js
@@ -65,7 +73,7 @@ web/
 | Area | Files | Responsibility |
 |---|---|---|
 | App shell and routing | `app.js`, `router.js` | Navigation, route registration, language switch rendering |
-| Shared support | `api.js`, `i18n.js`, `utils.js` | Fetch wrapper, translations, formatting/status helpers |
+| Shared support | `api.js`, `i18n.js`, `i18n-zh.js`, `i18n-en.js`, `utils.js` | Fetch wrapper, language runtime, split translation dictionaries, formatting/status helpers |
 | Pages | `dashboard.js`, `new-job.js`, `job-detail.js`, `settings.js`, `health.js` | Dashboard, task creation, review/editing, settings, health checks |
 | Visualization | `timeline.js` | Canvas timeline, marks, waveform rendering, tooltip behavior |
 | Styling | `css/style.css` | Layout, controls, responsive behavior, dark theme |

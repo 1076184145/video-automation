@@ -72,6 +72,7 @@ test("legacy browser profiles convert to idempotent server recipes", () => {
   assert.equal(recipes[0].name, "旧 B站配置");
   assert.equal(recipes[0].options.detect_silence, true);
   assert.ok(recipes[0].stages.includes("detect_silence"));
+  assert.ok(recipes[0].stages.includes("refine_cuts"));
   assert.ok(recipes[0].stages.includes("render_final"));
 });
 

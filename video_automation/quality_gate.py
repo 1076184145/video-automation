@@ -58,6 +58,41 @@ def evaluate_quality_gate(job_dir: Path | str, policy: dict[str, Any] | None = N
     advisory: list[dict[str, Any]] = []
     passed: list[dict[str, Any]] = []
 
+    refinement_path = root / "clip_refinement.json"
+    if refinement_path.is_file():
+        refinement = _read_json(refinement_path)
+        refinement_status = str(refinement.get("status") or "invalid")
+        final_report = (
+            refinement.get("final_report")
+            if isinstance(refinement.get("final_report"), dict)
+            else {}
+        )
+        try:
+            refinement_score = float(final_report.get("score") or 0.0)
+        except (TypeError, ValueError):
+            refinement_score = 0.0
+        details = {
+            "status": refinement_status,
+            "stop_reason": str(refinement.get("stop_reason") or ""),
+            "score": refinement_score,
+        }
+        if refinement_status == "accepted":
+            passed.append(
+                _item(
+                    "clip_refinement_passed",
+                    "Clip-boundary checks passed.",
+                    **details,
+                )
+            )
+        else:
+            blocking.append(
+                _item(
+                    "clip_refinement_required",
+                    "Clip-boundary checks require manual review.",
+                    **details,
+                )
+            )
+
     output = root / "final.mp4"
     if not output.is_file():
         output = root / "review.mp4"

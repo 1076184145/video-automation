@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from video_automation.worker import PipelineStage, ProgressReporter, build_pipeline_batches, run_pipeline
+from video_automation.pipeline_context import PipelineContext
+from video_automation.pipeline_scheduler import PipelineStage, ProgressReporter, build_pipeline_batches, run_pipeline
 
 
 def _stage(
@@ -84,7 +85,12 @@ class PipelineSchedulerTests(unittest.TestCase):
             )
             stages = [_stage("audio", run=run_stage("audio")), _stage("visual", run=run_stage("visual"))]
 
-            run_pipeline(ProgressReporter(False), job, stages, {"_max_parallel_stages": 2})
+            context = PipelineContext(
+                audio_path=root / "audio.wav",
+                high_quality_audio_path=None,
+                max_parallel_stages=2,
+            )
+            run_pipeline(ProgressReporter(False), job, stages, context)
 
             self.assertCountEqual(entered, ["audio", "visual"])
             self.assertEqual(started, ["audio"])

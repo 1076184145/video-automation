@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .credentials import SystemCredentialStore
+
 
 def _project_root() -> Path:
     override = os.environ.get("VIDEO_AUTOMATION_ROOT")
@@ -80,6 +82,21 @@ def _env(name: str, default: str = "") -> str:
     if env_value is not None:
         return env_value
     return file_values.get(name) or default
+
+
+def _secret_env(name: str, default: str = "") -> str:
+    environment_value = os.environ.get(name)
+    if environment_value is not None:
+        return environment_value
+    reference = _env(f"{name}_REF", "").strip()
+    if reference:
+        try:
+            stored = SystemCredentialStore().get(reference)
+        except Exception:
+            stored = None
+        if stored is not None:
+            return stored
+    return _env(name, default)
 
 
 def _portable_tool_path(root: Path, env_name: str, portable_name: str, fallback_name: str) -> Path:
@@ -180,6 +197,11 @@ class Settings:
     silence_min_gap_seconds: float
     cut_min_clip_seconds: float
     cut_merge_gap_seconds: float
+    clip_refinement_enabled: bool
+    clip_refinement_max_attempts: int
+    clip_refinement_time_budget_seconds: float
+    clip_refinement_boundary_tolerance_seconds: float
+    clip_refinement_max_shift_seconds: float
     silence_threshold_db: float
     freeze_noise_db: float
     freeze_min_duration_seconds: float
@@ -203,11 +225,14 @@ class Settings:
     ass_max_lines: int
     ass_vertical_font_size: int
     api_host: str
+    api_allow_remote: bool
     api_port: int
     api_parallel_jobs: int
     api_batch_limit: int
     api_allowed_origins: tuple[str, ...]
     recording_upload_max_bytes: int
+    min_free_disk_bytes: int
+    job_disk_multiplier: float
     llm_provider: str
     llm_model: str
     llm_translation_batch_size: int
@@ -321,6 +346,17 @@ class Settings:
             silence_min_gap_seconds=_float_env("SILENCE_MIN_GAP_SECONDS", 0.35),
             cut_min_clip_seconds=_float_env("CUT_MIN_CLIP_SECONDS", 2.0),
             cut_merge_gap_seconds=_float_env("CUT_MERGE_GAP_SECONDS", 1.5),
+            clip_refinement_enabled=_bool_env("CLIP_REFINEMENT_ENABLED", True),
+            clip_refinement_max_attempts=max(1, _int_env("CLIP_REFINEMENT_MAX_ATTEMPTS", 3)),
+            clip_refinement_time_budget_seconds=max(
+                0.05, _float_env("CLIP_REFINEMENT_TIME_BUDGET_SECONDS", 5.0)
+            ),
+            clip_refinement_boundary_tolerance_seconds=max(
+                0.0, _float_env("CLIP_REFINEMENT_BOUNDARY_TOLERANCE_SECONDS", 0.08)
+            ),
+            clip_refinement_max_shift_seconds=max(
+                0.0, _float_env("CLIP_REFINEMENT_MAX_SHIFT_SECONDS", 0.75)
+            ),
             silence_threshold_db=_float_env("SILENCE_THRESHOLD_DB", -35),
             freeze_noise_db=_float_env("FREEZE_NOISE_DB", -60),
             freeze_min_duration_seconds=_float_env("FREEZE_MIN_DURATION_SECONDS", 2),
@@ -344,16 +380,19 @@ class Settings:
             ass_max_lines=max(1, _int_env("ASS_MAX_LINES", 2)),
             ass_vertical_font_size=max(0, _int_env("ASS_VERTICAL_FONT_SIZE", 44)),
             api_host=_env("API_HOST", "127.0.0.1"),
+            api_allow_remote=_bool_env("API_ALLOW_REMOTE", False),
             api_port=_int_env("API_PORT", 8765),
             api_parallel_jobs=max(1, _int_env("API_PARALLEL_JOBS", 2)),
             api_batch_limit=max(1, _int_env("API_BATCH_LIMIT", 30)),
             api_allowed_origins=_words_env("API_ALLOWED_ORIGINS", ""),
             recording_upload_max_bytes=max(0, _int_env("RECORDING_UPLOAD_MAX_BYTES", 20 * 1024 * 1024 * 1024)),
+            min_free_disk_bytes=max(0, _int_env("MIN_FREE_DISK_BYTES", 1024 * 1024 * 1024)),
+            job_disk_multiplier=max(1.0, _float_env("JOB_DISK_MULTIPLIER", 2.0)),
             llm_provider=_env("LLM_PROVIDER", "openai"),
             llm_model=_env("LLM_MODEL", ""),
             llm_translation_batch_size=max(1, _int_env("LLM_TRANSLATION_BATCH_SIZE", 24)),
             llm_translation_batch_chars=max(500, _int_env("LLM_TRANSLATION_BATCH_CHARS", 6000)),
-            google_api_key=_env("GOOGLE_API_KEY", ""),
+            google_api_key=_secret_env("GOOGLE_API_KEY", ""),
             google_base_url=_env("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             publish_enabled=_bool_env("PUBLISH_ENABLED", False),
             publish_providers=_words_env("PUBLISH_PROVIDERS", ""),
@@ -394,11 +433,11 @@ class Settings:
             cover_output_format=_env("COVER_OUTPUT_FORMAT", "jpeg"),
             cover_title_font=_env("COVER_TITLE_FONT", "Microsoft YaHei"),
             cover_base_url=_env("COVER_BASE_URL", "https://api.openai.com/v1"),
-            cover_api_key=_env("COVER_API_KEY", ""),
+            cover_api_key=_secret_env("COVER_API_KEY", ""),
             cover_http_referer=_env("COVER_HTTP_REFERER", ""),
             cover_app_title=_env("COVER_APP_TITLE", "Video Automation"),
             cover_modalities=_words_env("COVER_MODALITIES", "image,text"),
-            openai_api_key=_env("OPENAI_API_KEY", ""),
+            openai_api_key=_secret_env("OPENAI_API_KEY", ""),
             audio_separation_engine=_env("AUDIO_SEPARATION_ENGINE", "plan"),
             demucs_path=_portable_tool_path(root, "DEMUCS_PATH", "demucs.exe", "demucs"),
             demucs_model=_env("DEMUCS_MODEL", "htdemucs"),

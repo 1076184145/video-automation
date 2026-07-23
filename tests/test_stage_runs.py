@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from video_automation.pipeline_context import PipelineContext
 from video_automation.stage_runs import StageRunRepository
-from video_automation.worker import PipelineStage, ProgressReporter, run_pipeline
+from video_automation.pipeline_scheduler import PipelineStage, ProgressReporter, run_pipeline
 
 
 class StageRunRepositoryTests(unittest.TestCase):
@@ -30,7 +31,10 @@ class StageRunRepositoryTests(unittest.TestCase):
                 ProgressReporter(False),
                 job,
                 stages,
-                {},
+                PipelineContext(
+                    audio_path=root / "audio.wav",
+                    high_quality_audio_path=None,
+                ),
                 stage_repository=repository,
             )
             runs = repository.list_for_job("job-one")

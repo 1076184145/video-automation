@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+CONFIG_SECRET_REFERENCES = {
+    "COVER_API_KEY": "video-automation/config/cover-api-key",
+    "OPENAI_API_KEY": "video-automation/config/openai-api-key",
+    "GOOGLE_API_KEY": "video-automation/config/google-api-key",
+}
+
 
 class CredentialStoreUnavailable(RuntimeError):
     pass
@@ -14,7 +20,7 @@ class CredentialStore(Protocol):
 
 
 class SystemCredentialStore:
-    """Stores publish credentials through the operating-system credential backend."""
+    """Stores provider and publishing credentials in the operating-system backend."""
 
     def __init__(self, service_name: str = "video-automation"):
         self.service_name = service_name

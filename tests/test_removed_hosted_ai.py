@@ -25,10 +25,42 @@ class HostedAiRemovalTests(unittest.TestCase):
                 "ai_waitlist.json",
                 "usage_waitlist",
             ),
+            ROOT / "video_automation" / "api_routes_base.py": (
+                "/usage/waitlist",
+                "_join_ai_waitlist",
+                "usage_waitlist",
+            ),
+            ROOT / "video_automation" / "api_routes_system.py": (
+                "/usage/waitlist",
+                "_join_ai_waitlist",
+                "usage_waitlist",
+            ),
+            ROOT / "video_automation" / "api_routes_jobs.py": (
+                "/usage/waitlist",
+                "_join_ai_waitlist",
+                "usage_waitlist",
+            ),
+            ROOT / "video_automation" / "api_routes_enhancements.py": (
+                "/usage/waitlist",
+                "_join_ai_waitlist",
+                "usage_waitlist",
+            ),
             ROOT / "web" / "css" / "style.css": (
                 ".waitlist-form",
             ),
             ROOT / "web" / "js" / "i18n.js": (
+                '"nav.usage"',
+                '"usage.title"',
+                '"usage.official_title"',
+                '"usage.join_waitlist"',
+            ),
+            ROOT / "web" / "js" / "i18n-zh.js": (
+                '"nav.usage"',
+                '"usage.title"',
+                '"usage.official_title"',
+                '"usage.join_waitlist"',
+            ),
+            ROOT / "web" / "js" / "i18n-en.js": (
                 '"nav.usage"',
                 '"usage.title"',
                 '"usage.official_title"',

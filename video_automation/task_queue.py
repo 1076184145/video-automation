@@ -288,27 +288,29 @@ class QueueRepository:
         return self.get(queue_id)
 
     def cancel(self, queue_id: str) -> dict[str, Any] | None:
-        current = self.get(queue_id)
-        if current is None:
-            return None
+        now = _now()
         with self._connect() as connection:
-            if current["status"] == "running":
-                connection.execute(
-                    """
-                    UPDATE task_queue SET cancel_requested = 1, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (_now(), queue_id),
-                )
-            elif current["status"] in {"pending", "paused", "failed"}:
+            running = connection.execute(
+                """
+                UPDATE task_queue SET cancel_requested = 1, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (now, queue_id),
+            )
+            if running.rowcount == 0:
                 connection.execute(
                     """
                     UPDATE task_queue SET status = 'canceled', cancel_requested = 1,
-                        updated_at = ?, completed_at = ? WHERE id = ?
+                        updated_at = ?, completed_at = ?
+                    WHERE id = ? AND status IN ('pending', 'paused', 'failed')
                     """,
-                    (_now(), _now(), queue_id),
+                    (now, now, queue_id),
                 )
-        return self.get(queue_id)
+            current = connection.execute(
+                "SELECT * FROM task_queue WHERE id = ?", (queue_id,)
+            ).fetchone()
+            result = self._payload(current) if current else None
+        return result
 
     def retry_stage(
         self,

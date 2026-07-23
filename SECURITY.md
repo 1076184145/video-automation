@@ -33,8 +33,10 @@ outputs, or `.env` files in a public issue.
 Video Automation is a local-first tool. By default, the Web API binds to
 `127.0.0.1`, which is intended for local use on your own machine.
 
-If you change the API host to `0.0.0.0`, expose it on a LAN, or put it behind a
-public domain, you are responsible for adding appropriate protection such as:
+Non-loopback binding is rejected unless `API_ALLOW_REMOTE=true` is configured
+explicitly. This switch is a safety acknowledgement, not authentication. If you
+expose the API on a LAN or behind a public domain, you are responsible for adding
+appropriate protection such as:
 
 - Firewall rules.
 - Reverse-proxy authentication.
@@ -53,6 +55,10 @@ Keep the following files and data private:
 
 The repository `.gitignore` excludes common local runtime directories such as
 `input/`, `processing/`, `logs/`, `dist/`, and `.env`.
+
+AI keys entered through the Settings page are stored in the operating-system
+credential store. Existing plaintext `.env` keys remain compatible and can be
+migrated from the Settings warning without exposing their values to the browser.
 
 ## Updates
 

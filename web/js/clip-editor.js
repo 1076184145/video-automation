@@ -20,7 +20,13 @@ export function renderClips(cuts, feedback) {
       <button class="button primary" id="save-cuts" type="button">${t("job.save_cuts")}</button>
       <div id="clip-editor-message"></div>
     </div>
-    <div class="clip-editor-wrapper">
+    <div class="clip-editor-horizontal-control">
+      <span class="clip-editor-scroll-hint">${t("job.horizontal_scroll")} →</span>
+      <div class="clip-editor-horizontal-scroll" data-clip-horizontal-scroll tabindex="0" aria-label="${t("job.horizontal_scroll")}">
+        <div class="clip-editor-horizontal-track"></div>
+      </div>
+    </div>
+    <div class="clip-editor-wrapper" data-clip-editor-scroll>
     <table class="table clip-editor"><thead><tr><th><input type="checkbox" id="select-all-clips" aria-label="${t("job.select_all_clips")}" /></th><th>#</th><th>${t("job.keep")}</th><th>${t("job.start")}</th><th>${t("job.end")}</th><th>${t("common.duration")}</th><th>${t("job.score")}</th><th>${t("job.scenes")}</th><th>${t("job.reason")}</th><th>${t("job.content")}</th><th>${t("job.actions")}</th></tr></thead><tbody id="clip-editor-body">
     ${clips.map((clip, index) => renderClipRow(clip, index, feedbackByClip.get(clipKey(clip)))).join("")}
   </tbody></table></div>`;
@@ -75,6 +81,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     draftSaver.schedule();
     setClipMessage(t("job.undo_redo_changed"));
   });
+  const disposeHorizontalScroll = bindClipHorizontalScroll(root);
   const handler = async (e) => {
     const selectBox = e.target?.closest?.("[data-clip-select]");
     if (selectBox) {
@@ -250,7 +257,32 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     root.removeEventListener("dragover", dragOver);
     root.removeEventListener("drop", drop);
     root.removeEventListener("dragend", dragEnd);
+    disposeHorizontalScroll();
     draftSaver.dispose();
+  };
+}
+
+export function bindClipHorizontalScroll(root) {
+  if (!root?.addEventListener || !root?.querySelector) return () => {};
+
+  let syncing = false;
+  const handleScroll = (event) => {
+    const source = event.target;
+    const isRail = source?.matches?.("[data-clip-horizontal-scroll]");
+    const isEditor = source?.matches?.("[data-clip-editor-scroll]");
+    if (!isRail && !isEditor) return;
+    const target = root.querySelector(isRail ? "[data-clip-editor-scroll]" : "[data-clip-horizontal-scroll]");
+    if (!target || syncing || target.scrollLeft === source.scrollLeft) return;
+    syncing = true;
+    target.scrollLeft = source.scrollLeft;
+    syncing = false;
+  };
+  // The detail shell binds before asynchronous job data inserts the table, so
+  // capture scrolls at the stable root instead of binding transient elements.
+  root.addEventListener("scroll", handleScroll, true);
+
+  return () => {
+    root.removeEventListener("scroll", handleScroll, true);
   };
 }
 

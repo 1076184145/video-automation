@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from video_automation.pipeline_context import PipelineContext
 from video_automation.task_queue import QueueControlRequested
-from video_automation.worker import PipelineStage, ProgressReporter, _transcription_backend_label, run_pipeline
+from video_automation.pipeline_executor import _transcription_backend_label
+from video_automation.pipeline_scheduler import PipelineStage, ProgressReporter, run_pipeline
 
 
 class StageTimingTests(unittest.TestCase):
@@ -31,7 +33,15 @@ class StageTimingTests(unittest.TestCase):
                 PipelineStage("detect_freeze", "detecting_freeze", False, lambda _context: None),
             ]
 
-            run_pipeline(ProgressReporter(False), job, stages, {})
+            run_pipeline(
+                ProgressReporter(False),
+                job,
+                stages,
+                PipelineContext(
+                    audio_path=root / "audio.wav",
+                    high_quality_audio_path=None,
+                ),
+            )
 
             payload = json.loads((job.job_dir / "stage_timings.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "complete")
@@ -55,13 +65,17 @@ class StageTimingTests(unittest.TestCase):
                 start_stage=lambda *_args, **_kwargs: None,
                 complete_stage=lambda: None,
             )
-            context = {}
+            context = PipelineContext(
+                audio_path=root / "audio.wav",
+                high_quality_audio_path=None,
+            )
 
-            def run_stage(stage_context):
-                stage_context.setdefault("_stage_metrics", {})["transcribe"] = {
-                    "resource_wait_seconds": 1.25,
-                    "execution_seconds": 2.5,
-                }
+            def run_stage(stage_context: PipelineContext) -> None:
+                stage_context.record_stage_metrics(
+                    "transcribe",
+                    resource_wait_seconds=1.25,
+                    execution_seconds=2.5,
+                )
 
             run_pipeline(
                 ProgressReporter(False),
@@ -83,7 +97,13 @@ class StageTimingTests(unittest.TestCase):
             stage = PipelineStage("probe", "probing", True, lambda _context: called.append(True))
             with self.assertRaises(QueueControlRequested) as raised:
                 run_pipeline(
-                    ProgressReporter(False), job, [stage], {},
+                    ProgressReporter(False),
+                    job,
+                    [stage],
+                    PipelineContext(
+                        audio_path=root / "audio.wav",
+                        high_quality_audio_path=None,
+                    ),
                     control_callback=lambda: "paused",
                 )
             self.assertEqual(raised.exception.action, "paused")

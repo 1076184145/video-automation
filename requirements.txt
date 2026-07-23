@@ -1,4 +1,2 @@
-watchdog>=6.0.0
+-r requirements-core.txt
 openai-whisper>=20250625
-xxhash>=3.5.0
-keyring>=25.0,<26

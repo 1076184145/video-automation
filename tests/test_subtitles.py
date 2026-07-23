@@ -9,6 +9,7 @@ from video_automation.subtitles import (
     _ass_time,
     _escape_ass_text,
     _remap_segments_to_clips,
+    _subtitle_events_for_segment,
     _visual_width,
     _wrap_subtitle_text,
     play_resolution,
@@ -73,6 +74,23 @@ class SubtitleTests(unittest.TestCase):
         self.assertEqual(_visual_width("\u4f60\u597d"), 4)
         wrapped = _wrap_subtitle_text("hello world this is a subtitle line", {"font_size": 80}, 480, 2)
         self.assertIn("\n", wrapped)
+
+    def test_long_asr_segment_is_split_without_exceeding_line_limit(self) -> None:
+        source = ("这是一个很长的语音转写片段，需要拆成多条字幕事件，" * 12) + r"\N还包含后端传入的换行命令。"
+        events = _subtitle_events_for_segment(
+            {"start": 0.0, "end": 24.0, "text": source},
+            {"font_size": 52},
+            1080,
+            2,
+        )
+
+        self.assertGreater(len(events), 1)
+        self.assertTrue(all(len(event["text"].splitlines()) <= 2 for event in events))
+        actual = "".join("".join(event["text"].split()) for event in events)
+        expected = "".join(source.replace(r"\N", " ").split())
+        self.assertEqual(actual, expected)
+        self.assertEqual(events[0]["start"], 0.0)
+        self.assertEqual(events[-1]["end"], 24.0)
 
     def test_play_resolution_prefers_crop_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
