@@ -11,6 +11,7 @@ on:
       - ".gitignore"
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -79,7 +80,8 @@ jobs:
           git commit -m "chore: bump version to $NEW_VERSION"
           git push
       
-      - name: Create tag and release
+      - name: Create release tag
+        id: release_tag
         run: |
           VERSION=${{ steps.new_version.outputs.version }}
           TAG="v${VERSION}"
@@ -87,9 +89,21 @@ jobs:
           # 检查标签是否存在
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists"
+            printf 'created=false\n' >> "$GITHUB_OUTPUT"
           else
             # 创建标签（使用最新提交）
             git tag "$TAG"
             git push origin "$TAG"
             echo "Created tag: $TAG"
+            printf 'created=true\n' >> "$GITHUB_OUTPUT"
           fi
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+
+      # Tag pushes made with GITHUB_TOKEN do not trigger another workflow.
+      # workflow_dispatch is an explicit exception supported by GitHub Actions.
+      - name: Dispatch desktop release build
+        if: steps.release_tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        run: gh workflow run release.yml --ref main -f tag="$RELEASE_TAG"
