@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from video_automation.worker import PipelineStage, ProgressReporter, build_pipeline_batches, run_pipeline
+from video_automation.pipeline_scheduler import PipelineStage, ProgressReporter, build_pipeline_batches, run_pipeline
 
 
 def _stage(

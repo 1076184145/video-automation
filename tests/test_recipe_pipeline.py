@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from video_automation.worker import expand_stage_selection
+from video_automation.pipeline_scheduler import expand_stage_selection
 
 
 class RecipePipelineTests(unittest.TestCase):

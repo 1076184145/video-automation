@@ -84,7 +84,7 @@ from .runtime_config import apply_runtime_settings_snapshot
 from .task_queue import QueueControlRequested
 from .recovery import backup_database, ensure_database_ready, ensure_job_capacity
 from .transcribe import warm_transcription_backend
-from .worker import process_job
+from .pipeline_executor import process_job
 
 RERUN_STATUS = {name: spec.status for name, spec in PIPELINE_STAGE_SPECS.items()}
 

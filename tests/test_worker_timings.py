@@ -7,7 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from video_automation.task_queue import QueueControlRequested
-from video_automation.worker import PipelineStage, ProgressReporter, _transcription_backend_label, run_pipeline
+from video_automation.pipeline_executor import _transcription_backend_label
+from video_automation.pipeline_scheduler import PipelineStage, ProgressReporter, run_pipeline
 
 
 class StageTimingTests(unittest.TestCase):

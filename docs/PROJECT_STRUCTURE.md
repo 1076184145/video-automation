@@ -42,7 +42,8 @@ Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of sour
 | Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, LLM metadata/highlights, publish package, old job cleanup |
 | HTTP routing | `api.py`, `api_context.py`, `routing.py`, `api_routes_base.py`, `api_routes_system.py`, `api_routes_jobs.py`, `api_routes_enhancements.py` | Thin server composition root, thread-safe runtime context, declarative route registry, and domain route handlers |
 | API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind safety, secure settings updates, and health reporting |
-| Entrypoints | `worker.py` | CLI worker and pipeline orchestration |
+| Pipeline execution | `pipeline_spec.py`, `pipeline_scheduler.py`, `pipeline_executor.py`, `stage_runs.py` | Stage contracts and dependencies, generic dependency scheduler, job-specific stage construction, and durable run state |
+| Entrypoints | `worker.py` | CLI argument handling, batch execution, resume, and file watching |
 
 ## Web Dashboard
 
