@@ -2,23 +2,55 @@ import { API } from "./api.js";
 import { renderAiDisclosure } from "./ai-disclosure.js";
 import { fileIcon } from "./download-section.js";
 import { t } from "./i18n.js";
+import { providerErrorMessageKey } from "./provider-errors.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatTime } from "./utils.js";
 export function renderEnhancements(jobName, files, payload) {
-  const settings = payload.health?.settings?.optional_modules || {};
-  const llmConfigured = Boolean(settings.llm_model) && payload.health?.settings?.covers?.openai_api_key_configured !== false;
+  const llmStatus = llmConfigurationStatus(payload.health?.settings || {});
+  const llmConfigured = llmStatus.configured;
   return `
     <div class="enhancement-grid">
       ${renderSegmentsPanel(jobName, files, payload.segments)}
-      ${renderMetadataPanel(payload.metadata, llmConfigured)}
-      ${renderHighlightsPanel(payload.highlights, llmConfigured)}
+      ${renderMetadataPanel(payload.metadata, llmStatus)}
+      ${renderHighlightsPanel(payload.highlights, llmStatus)}
       ${renderHighlightCutPanel(jobName, payload.highlightCut, payload.highlightRender, files)}
-      ${renderSubtitleTranslationPanel(jobName, files, llmConfigured)}
+      ${renderSubtitleTranslationPanel(jobName, files, llmStatus)}
       ${renderPublishPanel(jobName, files, payload.publishPackage)}
       ${renderProjectExportPanel(jobName, files, payload.projectExport)}
     </div>
     <div id="enhancement-message"></div>
   `;
+}
+
+export function llmConfigurationStatus(settings = {}) {
+  const optional = settings.optional_modules || {};
+  const covers = settings.covers || {};
+  const provider = String(optional.llm_provider || "openai").trim().toLowerCase();
+  if (provider === "local") {
+    const modelConfigured = Boolean(
+      String(optional.llm_model || "").trim()
+      || String(optional.local_llm_model_path || "").trim()
+    );
+    return modelConfigured
+      ? { configured: true, code: "", messageKey: "", local: true }
+      : { configured: false, code: "model_missing", messageKey: "ai.error.llm_model_missing", local: true };
+  }
+  if (!String(optional.llm_model || "").trim()) {
+    return { configured: false, code: "model_missing", messageKey: "ai.error.llm_model_missing" };
+  }
+  if (provider === "google") {
+    const keyConfigured = optional.google_api_key_configured === true || covers.google_api_key_configured === true;
+    return keyConfigured
+      ? { configured: true, code: "", messageKey: "" }
+      : { configured: false, code: "credentials_missing", messageKey: "ai.error.credentials_missing_google" };
+  }
+  if (provider === "openai") {
+    const keyConfigured = covers.openai_api_key_configured === true || optional.openai_api_key_configured === true;
+    return keyConfigured
+      ? { configured: true, code: "", messageKey: "" }
+      : { configured: false, code: "credentials_missing", messageKey: "ai.error.credentials_missing_openai" };
+  }
+  return { configured: false, code: "provider_unsupported", messageKey: "ai.error.provider_unsupported" };
 }
 
 function renderPlatformChecks(idPrefix = "enhance") {
@@ -51,13 +83,14 @@ function renderSegmentsPanel(jobName, files, segments) {
   `;
 }
 
-function renderMetadataPanel(metadata, llmConfigured) {
+function renderMetadataPanel(metadata, llmStatus) {
+  const llmConfigured = llmStatus.configured;
   const value = escapeHtml(JSON.stringify(metadata || metadataTemplate(), null, 2));
   return `
     <article class="enhancement-card">
       <h3>${t("enhance.metadata")}</h3>
-      <p class="muted">${llmConfigured ? t("enhance.metadata_note") : t("enhance.llm_missing")}</p>
-      ${llmConfigured ? renderAiDisclosure("text") : ""}
+      <p class="muted">${llmConfigured ? t("enhance.metadata_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
+      ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
       <div class="field compact">
         <label for="metadata-platform">${t("enhance.platform")}</label>
         <select id="metadata-platform">
@@ -73,13 +106,14 @@ function renderMetadataPanel(metadata, llmConfigured) {
   `;
 }
 
-function renderHighlightsPanel(highlights, llmConfigured) {
+function renderHighlightsPanel(highlights, llmStatus) {
+  const llmConfigured = llmStatus.configured;
   const items = highlights?.highlights || [];
   return `
     <article class="enhancement-card">
       <h3>${t("enhance.highlights")}</h3>
-      <p class="muted">${llmConfigured ? t("enhance.highlights_note") : t("enhance.llm_missing")}</p>
-      ${llmConfigured ? renderAiDisclosure("text") : ""}
+      <p class="muted">${llmConfigured ? t("enhance.highlights_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
+      ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
       <button class="button" id="generate-highlights" type="button" ${llmConfigured ? "" : "disabled"}>${t("enhance.generate_highlights")}</button>
       ${highlights?.summary ? `<p>${escapeHtml(highlights.summary)}</p>` : ""}
       ${items.length ? renderCompactMiniList(items, (item) => `
@@ -129,7 +163,8 @@ function renderHighlightCutPanel(jobName, highlightCut, highlightRender, files) 
   `;
 }
 
-function renderSubtitleTranslationPanel(jobName, files, llmConfigured) {
+function renderSubtitleTranslationPanel(jobName, files, llmStatus) {
+  const llmConfigured = llmStatus.configured;
   const languages = ["zh", "en", "ko", "ja"];
   const renderableTargets = languages.filter((language) => files.has(`subtitles_translated_${language}_clipped.ass`));
   const translatedFiles = Array.from(files.keys())
@@ -139,8 +174,8 @@ function renderSubtitleTranslationPanel(jobName, files, llmConfigured) {
   return `
     <article class="enhancement-card">
       <h3>${t("enhance.subtitle_translation")}</h3>
-      <p class="muted">${llmConfigured ? t("enhance.subtitle_translation_note") : t("enhance.llm_missing")}</p>
-      ${llmConfigured ? renderAiDisclosure("text") : ""}
+      <p class="muted">${llmConfigured ? t("enhance.subtitle_translation_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
+      ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
       <div class="field compact">
         <label for="subtitle-translation-target">${t("enhance.subtitle_translation_target")}</label>
         <select id="subtitle-translation-target">
@@ -156,6 +191,12 @@ function renderSubtitleTranslationPanel(jobName, files, llmConfigured) {
         : `<div class="empty">${t("enhance.no_subtitle_translation")}</div>`}
     </article>
   `;
+}
+
+function renderLlmDisclosure(llmStatus) {
+  return llmStatus?.local
+    ? `<div class="notice ai-disclosure">${t("ai.local_text")}</div>`
+    : renderAiDisclosure("text");
 }
 
 function renderPublishPanel(jobName, files, publishPackage) {
@@ -364,8 +405,10 @@ async function runEnhancement(button, action, reload, successKey) {
     showToast(t(successKey), "success");
     await reload();
   } catch (error) {
-    setEnhancementMessage(escapeHtml(error.message), true);
-    showToast(error.message, "error");
+    const messageKey = providerErrorMessageKey(error.message);
+    const message = messageKey ? t(messageKey) : error.message;
+    setEnhancementMessage(escapeHtml(message), true);
+    showToast(message, "error");
   } finally {
     setButtonLoading(button, false);
   }

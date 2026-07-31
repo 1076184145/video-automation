@@ -58,6 +58,104 @@ class HighlightCutTests(unittest.TestCase):
             self.assertEqual([clip["start"] for clip in preview["clips"]], [10, 30])
             self.assertTrue((job_dir / "highlight_render_preview.json").exists())
 
+    def test_prefers_precise_semantic_intervals_over_whole_structural_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_dir = Path(temp_dir)
+            write_json_atomic(job_dir / "cuts.json", {
+                "duration_seconds": 240,
+                "clips": [
+                    {
+                        "start": 0,
+                        "end": 183,
+                        "duration": 183,
+                        "keep": True,
+                        "final_score": 98,
+                        "content_score": 45,
+                    },
+                ],
+            })
+            write_json_atomic(job_dir / "highlights.json", {
+                "status": "ready",
+                "summary": "挑战成功",
+                "highlights": [
+                    {
+                        "start": 72,
+                        "end": 88,
+                        "score": 96,
+                        "reason": "完成高难度挑战后大笑",
+                        "recommended_use": "开场爆点",
+                    },
+                ],
+            })
+            write_json_atomic(job_dir / "transcript.json", {
+                "segments": [
+                    {"start": 70, "end": 80, "text": "再试一次"},
+                    {"start": 80, "end": 90, "text": "成功了，太好笑了"},
+                ],
+            })
+
+            manifest = generate_highlight_cut(job_dir, target_seconds=60, force=True)
+
+            self.assertEqual(manifest["selection"]["candidate_source"], "semantic_highlights")
+            self.assertEqual(manifest["duration_seconds"], 16)
+            self.assertEqual(manifest["clips"][0]["start"], 72)
+            self.assertEqual(manifest["clips"][0]["end"], 88)
+            self.assertIn("成功了", manifest["clips"][0]["transcript_text"])
+
+    def test_trims_an_oversized_structural_fallback_to_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_dir = Path(temp_dir)
+            write_json_atomic(job_dir / "cuts.json", {
+                "duration_seconds": 240,
+                "clips": [
+                    {
+                        "start": 0,
+                        "end": 183,
+                        "duration": 183,
+                        "keep": True,
+                        "final_score": 98,
+                        "content_score": 98,
+                    },
+                ],
+            })
+
+            manifest = generate_highlight_cut(job_dir, target_seconds=60, force=True)
+
+            self.assertEqual(manifest["selection"]["candidate_source"], "structural_clips")
+            self.assertEqual(manifest["duration_seconds"], 60)
+            self.assertTrue(manifest["clips"][0]["trimmed_to_target"])
+            self.assertEqual(manifest["clips"][0]["start"], 61.5)
+            self.assertEqual(manifest["clips"][0]["end"], 121.5)
+
+    def test_ignores_sub_three_second_noise_before_oversized_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_dir = Path(temp_dir)
+            write_json_atomic(job_dir / "cuts.json", {
+                "duration_seconds": 240,
+                "clips": [
+                    {
+                        "start": 188.036,
+                        "end": 188.632,
+                        "duration": 0.596,
+                        "keep": True,
+                        "final_score": 23.4,
+                    },
+                    {
+                        "start": 0,
+                        "end": 183.427,
+                        "duration": 183.427,
+                        "keep": True,
+                        "final_score": 10.6,
+                    },
+                ],
+            })
+
+            manifest = generate_highlight_cut(job_dir, target_seconds=60, force=True)
+
+            self.assertEqual(manifest["duration_seconds"], 60)
+            self.assertTrue(manifest["clips"][0]["trimmed_to_target"])
+            self.assertGreater(manifest["clips"][0]["start"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

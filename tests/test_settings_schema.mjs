@@ -40,7 +40,7 @@ test("editable settings use creator-facing Chinese labels", () => {
   assert.equal(settingEnvLabel("COVER_API_KEY"), "封面 API Key");
   assert.equal(
     t("settings.edit_ai_note"),
-    "这里配置字幕翻译、语义高光、标题简介等文本 AI 的 LLM_MODEL，也配置封面生成。所有 AI 功能仅使用你自行配置的第三方 API Key。",
+    "这里配置文本 AI 与封面 AI。选择“本地 Hugging Face”后，转写文本和参考帧只在本机处理；选择第三方服务商时，仅使用你自行配置的 API Key。",
   );
 });
 
@@ -159,6 +159,8 @@ test("select options are localized without changing their stored values", () => 
   assert.equal(settingOptionLabel("COVER_PROVIDER", "openrouter"), "OpenRouter");
   assert.equal(settingOptionLabel("COVER_PROVIDER", "google"), "Google Gemini");
   assert.equal(settingOptionLabel("LLM_PROVIDER", "google"), "Google Gemini");
+  assert.equal(settingOptionLabel("LLM_PROVIDER", "local"), "本地 Hugging Face");
+  assert.equal(settingOptionLabel("COVER_PROVIDER", "local"), "本地 Hugging Face");
   assert.equal(settingOptionLabel("RENDER_VIDEO_ENCODER", "h264_nvenc"), "NVIDIA NVENC 硬件编码");
 });
 
@@ -212,6 +214,10 @@ test("every current health settings key has a Chinese display label", () => {
     ],
     optional_modules: [
       "llm_provider", "llm_model",
+      "local_models_dir", "local_llm_server_path", "local_llm_model_path",
+      "local_llm_base_url", "local_llm_context_size", "local_llm_gpu_layers",
+      "local_llm_threads", "local_llm_startup_timeout_seconds",
+      "local_llm_request_timeout_seconds",
       "google_base_url", "google_api_key_configured",
       "native_waveform_enabled", "native_cuts_enabled", "high_quality_audio_enabled",
       "llm_translation_batch_size", "llm_translation_batch_chars",
@@ -222,7 +228,9 @@ test("every current health settings key has a Chinese display label", () => {
     covers: [
       "provider", "base_url", "model", "count", "aspects", "quality", "output_format",
       "title_font", "cover_api_key_configured", "openai_api_key_configured",
-      "http_referer", "app_title", "modalities",
+      "http_referer", "app_title", "modalities", "local_model_path", "local_device",
+      "local_quantization", "local_max_side", "local_steps", "local_guidance_scale",
+      "local_seed", "local_max_sequence_length",
     ],
   };
 
@@ -311,6 +319,26 @@ test("missing optional tools produce install-or-disable guidance", () => {
   assert.match(recommendation.text, /健康|安装|未检测/);
 });
 
+test("local AI providers are recommended without third-party API keys", () => {
+  const llm = settingRecommendation({
+    group: "optional_modules",
+    key: "llm_provider",
+    value: "local",
+    checks: [],
+  });
+  const cover = settingRecommendation({
+    group: "covers",
+    key: "provider",
+    value: "local",
+    checks: [{ name: "cover_api_key", exists: false }],
+  });
+
+  assert.equal(llm.recommended, "local");
+  assert.equal(cover.recommended, "local");
+  assert.equal(cover.matches, true);
+  assert.match(cover.text, /不需要 API Key/);
+});
+
 test("recommendations preserve content-specific user dictionaries and prompts", () => {
   const prompt = "忽略背景音乐，只转写主要说话人";
   const promptRecommendation = settingRecommendation({
@@ -385,6 +413,10 @@ test("every current health setting receives a recommendation", () => {
     ],
     optional_modules: [
       "llm_provider", "llm_model",
+      "local_models_dir", "local_llm_server_path", "local_llm_model_path",
+      "local_llm_base_url", "local_llm_context_size", "local_llm_gpu_layers",
+      "local_llm_threads", "local_llm_startup_timeout_seconds",
+      "local_llm_request_timeout_seconds",
       "google_base_url", "google_api_key_configured",
       "llm_translation_batch_size", "llm_translation_batch_chars",
       "audio_separation_engine", "demucs_model", "demucs_device",
@@ -394,7 +426,9 @@ test("every current health setting receives a recommendation", () => {
     covers: [
       "provider", "base_url", "model", "count", "aspects", "quality", "output_format",
       "title_font", "cover_api_key_configured", "openai_api_key_configured",
-      "http_referer", "app_title", "modalities",
+      "http_referer", "app_title", "modalities", "local_model_path", "local_device",
+      "local_quantization", "local_max_side", "local_steps", "local_guidance_scale",
+      "local_seed", "local_max_sequence_length",
     ],
   };
 

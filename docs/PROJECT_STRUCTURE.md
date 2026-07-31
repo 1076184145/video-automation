@@ -5,7 +5,7 @@ This document describes the current file layout. It is a maintenance map only; t
 ## Root
 
 ```text
-D:\video-automation
+video-automation/
 ├── video_automation/       Python workflow package
 ├── web/                    Local Web dashboard served by --serve
 ├── docs/                   Project documentation
@@ -23,11 +23,12 @@ D:\video-automation
 ├── requirements-core.txt   Minimal Web/API runtime dependencies
 ├── requirements-transcription-faster.txt Lean Faster-Whisper runtime
 ├── requirements-transcription-funasr.txt FunASR plus Faster-Whisper fallback
+├── requirements-local-ai.txt Optional configurable local Hugging Face runtime
 ├── requirements-optional.txt Optional Python dependencies
 └── .env.example            Configuration template
 ```
 
-Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of source cleanup. They are local runtime state.
+Do not move `input/`, `processing/`, `logs/`, `models/`, `venv/`, or `.env` as part of source cleanup. They are local runtime state.
 
 ## Python Package
 
@@ -39,7 +40,7 @@ Do not move `input/`, `processing/`, `logs/`, `venv/`, or `.env` as part of sour
 | Media processing | `media.py`, `crop.py`, `render.py`, `progress.py`, `covers.py`, `segments.py` | ffprobe/ffmpeg operations, vertical framing, rendering, progress parsing, AI cover candidates, platform video segments |
 | Transcription and subtitles | `transcribe.py`, `transcribe_runtime.py`, `transcribe_runner.py`, `transcribe_worker.py`, `subtitles.py`, `profanity.py` | Backend selection, supervised subprocess runtime, persistent worker protocol, transcript files, ASS subtitles, text cleanup |
 | Cut planning and refinement | `cuts.py`, `profiles.py`, `clip_state.py`, `clip_evaluator.py`, `agent_policy.py`, `clip_operations.py`, `clip_refinement.py` | Invalid segment logic, clip scoring, typed refinement state, pure evaluation/policy, isolated side effects, and bounded orchestration |
-| Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, LLM metadata/highlights, publish package, old job cleanup |
+| Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `local_ai.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, external or local LLM metadata/highlights, local Hugging Face covers, publish package, old job cleanup |
 | HTTP routing | `api.py`, `api_context.py`, `routing.py`, `api_routes_base.py`, `api_routes_system.py`, `api_routes_jobs.py`, `api_routes_enhancements.py` | Thin server composition root, thread-safe runtime context, declarative route registry, and domain route handlers |
 | API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind safety, secure settings updates, and health reporting |
 | Pipeline execution | `pipeline_context.py`, `pipeline_spec.py`, `pipeline_scheduler.py`, `pipeline_executor.py`, `stage_runs.py` | Typed run context, stage contracts and dependencies, generic dependency scheduler, job-specific stage construction, and durable run state |

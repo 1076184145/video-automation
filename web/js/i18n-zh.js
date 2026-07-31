@@ -106,6 +106,7 @@ export const zh = {
   "common.stage": "当前阶段",
   "common.path": "路径",
   "common.version": "版本",
+  "common.technical_details": "技术详情",
   "file.video": "视频",
   "file.subtitle": "字幕",
   "file.audio": "音频",
@@ -383,8 +384,8 @@ Object.assign(zh, {
   "cover.key_missing_openai": "未配置 OPENAI_API_KEY 或 COVER_API_KEY。请先在 .env 中填写后重启服务。",
   "cover.key_missing_openrouter": "未配置 COVER_API_KEY。使用 OpenRouter 生成封面时需要填写自己的 OpenRouter Key。",
   "cover.key_missing_google": "未配置 GOOGLE_API_KEY 或 COVER_API_KEY。使用 Google 生成封面时需要填写自己的 Google Key。",
-  "cover.usage_note": "生成封面会调用所选服务商的图片接口；候选数量越多，API 用量越高。",
-  "cover.confirm_generate": "确认开始生成 AI 封面候选图？这会调用所选服务商的图片接口。",
+  "cover.usage_note": "生成封面会调用所选服务商的图片接口；使用 OpenRouter 时，还会发送从多个高分语义时刻中选出的一张清晰本地参考帧。",
+  "cover.confirm_generate": "确认开始生成 AI 封面候选图？这会发送封面提示；使用 OpenRouter 时还会发送一张选定的参考帧。",
   "settings.covers": "AI 封面"
 });
 
@@ -419,6 +420,19 @@ Object.assign(zh, {
   "enhance.publish_ready": "发布包已生成。",
   "enhance.platform": "目标平台",
   "enhance.llm_missing": "未配置 LLM_MODEL 或 OPENAI_API_KEY；此功能保持关闭。",
+  "ai.error.credentials_missing": "所选 AI 服务商没有可用的 API Key。请在设置中填写并重启服务。",
+  "ai.error.credentials_missing_openai": "未配置 OPENAI_API_KEY。请在设置中填写并重启服务。",
+  "ai.error.credentials_missing_google": "未配置 GOOGLE_API_KEY。请在设置中填写并重启服务。",
+  "ai.error.credentials_invalid": "服务商拒绝了当前凭据。请更换或重新连接 API Key 后再试。",
+  "ai.error.model_missing": "尚未选择 AI 模型。请先在设置中配置当前功能所需的模型。",
+  "ai.error.llm_model_missing": "尚未选择语义 AI 模型。请先在设置中配置 LLM_MODEL。",
+  "ai.error.model_unavailable": "所选模型不支持当前服务商或接口，请改用兼容模型。",
+  "ai.error.provider_unsupported": "当前功能不支持所选 AI 服务商。",
+  "ai.error.quota_exhausted": "服务商账号没有可用额度。请补充余额、恢复计费或切换到有额度的项目。",
+  "ai.error.rate_limited": "服务商正在限流。请稍等片刻后重试。",
+  "ai.error.network_error": "暂时无法连接 AI 服务商。请检查网络和服务状态后重试。",
+  "ai.error.response_invalid": "服务商没有返回可用结果，请确认所选模型支持当前功能。",
+  "ai.error.provider_error": "AI 服务商拒绝了请求，可展开技术详情查看原始响应。",
   "enhance.invalid_json": "元数据 JSON 格式错误：",
   "enhance.started": "操作已完成。",
   "enhance.saved": "已保存。",
@@ -640,9 +654,9 @@ Object.assign(zh, {
 
 Object.assign(zh, {
   "ai.disclosure_text": "此操作会把转写文本、剪辑摘要或字幕内容发送到你配置的 AI 服务；请确认素材允许外发。",
-  "ai.disclosure_image": "此操作会把封面标题、内容摘要和缩略图信息发送到你配置的图片生成服务；请确认素材允许外发。",
+  "ai.disclosure_image": "此操作会把封面标题和内容摘要发送到你配置的图片服务；使用 OpenRouter 时还会发送一张本地抽取的参考帧。请确认素材允许外发。",
   "ai.usage_text": "预计消耗：1 次或多次文本模型调用，长字幕会分批处理。",
-  "ai.usage_image": "预计消耗：每个比例 × 候选数量的图片生成调用。"
+  "ai.usage_image": "预计计费图片数：所选画幅数量 × 候选数量。"
 });
 
 Object.assign(zh, {
@@ -684,9 +698,9 @@ Object.assign(zh, {
 
 Object.assign(zh, {
   "ai.disclosure_text": "此操作会把转写文本、剪辑摘要或字幕内容发送到你配置的 AI 服务；请确认素材允许外发。",
-  "ai.disclosure_image": "此操作会把封面标题、内容摘要和缩略图信息发送到你配置的图片生成服务；请确认素材允许外发。",
+  "ai.disclosure_image": "此操作会把封面标题和内容摘要发送到你配置的图片服务；使用 OpenRouter 时还会发送一张本地抽取的参考帧。请确认素材允许外发。",
   "ai.usage_text": "预计消耗：1 次或多次文本模型调用，长字幕会分批处理。",
-  "ai.usage_image": "预计消耗：每个比例 × 候选数量的图片生成调用。",
+  "ai.usage_image": "预计计费图片数：所选画幅数量 × 候选数量。",
   "job.feedback_accept": "采纳这个推荐片段",
   "job.feedback_reject": "拒绝这个推荐片段",
   "job.feedback_accept_short": "采纳",
@@ -965,7 +979,39 @@ Object.assign(zh, {
   "health.check.llm_api_key": "LLM API Key",
   "health.check.llm_google_api_key": "Google Gemini API Key",
   "health.check.llm_openai_api_key": "OpenAI API Key",
-  "health.check.demucs": "Demucs 音频分离"
+  "health.check.demucs": "Demucs 音频分离",
+  "health.check.local_llm_model": "本地文本模型",
+  "health.check.local_llm_server": "本地 llama.cpp 服务",
+  "health.check.local_cover_model": "本地图像模型",
+  "health.check.local_cover_transformers": "本地图像 Transformers 运行库",
+  "health.check.local_cover_diffusers": "本地图像 Diffusers 运行库",
+  "health.check.local_cover_accelerate": "本地图像 Accelerate 运行库",
+  "health.check.local_cover_bitsandbytes": "本地图像 BitsAndBytes 量化库",
+  "settings.edit_ai_note": "这里配置文本 AI 与封面 AI。选择“本地 Hugging Face”后，转写文本和参考帧只在本机处理；选择第三方服务商时，仅使用你自行配置的 API Key。",
+  "cover.usage_note_local": "本地模式会使用这台电脑上配置的图像模型编辑参考帧；首次运行需要把模型载入显存，等待时间会更长。",
+  "ai.local_text": "本地模式：转写文本、片段摘要和字幕由已配置的文本模型通过仅监听本机的 llama.cpp 服务处理，不会发送给外部 AI 服务商。",
+  "ai.local_image": "本地模式：标题、内容摘要和选中的参考帧由已配置的图像模型在本机处理，不会发送给外部 AI 服务商。",
+  "settings.key.local_models_dir": "本地模型目录",
+  "settings.key.local_llm_server_path": "llama.cpp 服务程序路径",
+  "settings.key.local_llm_model_path": "本地 GGUF 模型路径",
+  "settings.key.local_llm_base_url": "本地 LLM 回环地址",
+  "settings.key.local_llm_context_size": "本地 LLM 上下文长度",
+  "settings.key.local_llm_gpu_layers": "本地 LLM 显卡层数",
+  "settings.key.local_llm_threads": "本地 LLM 处理器线程数",
+  "settings.key.local_llm_startup_timeout_seconds": "本地 LLM 启动超时（秒）",
+  "settings.key.local_llm_request_timeout_seconds": "本地 LLM 请求超时（秒）",
+  "settings.key.local_model_path": "本地图像模型路径",
+  "settings.key.local_device": "本地封面运行设备",
+  "settings.key.local_quantization": "本地封面量化方式",
+  "settings.key.local_max_side": "本地封面最大边长",
+  "settings.key.local_steps": "本地封面推理步数",
+  "settings.key.local_guidance_scale": "本地封面引导强度",
+  "settings.key.local_seed": "本地封面随机种子",
+  "settings.key.local_max_sequence_length": "本地封面提示词长度",
+  "settings.option.local": "本地 Hugging Face",
+  "settings.option.nf4": "NF4 四比特（推荐）",
+  "settings.option.none": "不量化",
+  "settings.recommendation.reason.local_ai": "所选服务商在本机运行，不需要 API Key。"
 });
 
 export default zh;

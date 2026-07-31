@@ -186,6 +186,13 @@ class EnvConfigTests(unittest.TestCase):
         self.assertEqual(settings.render_x264_preset, "veryfast")
         self.assertEqual(settings.render_x264_crf, 23)
 
+    def test_example_configuration_uses_auto_language_detection(self) -> None:
+        example_path = Path(__file__).resolve().parents[1] / ".env.example"
+        values = config._parse_env_text(example_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(values["WHISPER_LANGUAGE"], "auto")
+        self.assertEqual(values["WHISPER_INITIAL_PROMPT"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

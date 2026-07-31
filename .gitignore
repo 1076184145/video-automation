@@ -25,6 +25,19 @@ dist/
 .playwright-cli/
 native/**/target/
 
+# Local AI weights, download caches, manifests, and machine-only state.
+models/
+.cache/
+*.gguf
+*.safetensors
+*.ckpt
+*.pth
+*.onnx
+local-models.json
+local-ai-benchmark/
+semantic-cover-debug/
+
+# Runtime logs, generated media, evaluations, and UI-saved configuration.
 logs/
 logs-runtime/
 processing/

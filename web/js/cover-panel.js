@@ -1,6 +1,7 @@
 import { API } from "./api.js";
 import { renderAiDisclosure } from "./ai-disclosure.js";
 import { t } from "./i18n.js";
+import { providerErrorMessageKey } from "./provider-errors.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { basename, escapeHtml } from "./utils.js";
 
@@ -9,11 +10,12 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
   const defaultTitle = escapeHtml(state.title || defaultCoverTitle(manifest, cuts, transcript));
   const status = state.status || "idle";
   const coverSettings = health?.settings?.covers || {};
+  const localProvider = String(coverSettings.provider || "").trim().toLowerCase() === "local";
   const keyStatus = coverKeyStatus(health?.settings || {});
   const missingKey = keyStatus.missing;
   const message = [
     missingKey ? `<div class="notice">${t(keyStatus.messageKey)}</div>` : "",
-    state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : status === "generating" ? `<div class="notice">${t("cover.generating")}</div>` : ""
+    state.error ? renderCoverProviderError(state) : status === "generating" ? `<div class="notice">${t("cover.generating")}</div>` : ""
   ].join("");
   const candidateHtml = ["9:16", "16:9"].map((aspect) => renderCoverAspect(jobName, files, state, aspect)).join("");
   return `
@@ -40,8 +42,8 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
         <label class="check"><input id="cover-aspect-landscape" type="checkbox" value="16:9" ${(state.aspects || ["9:16", "16:9"]).includes("16:9") ? "checked" : ""} /> ${t("cover.landscape")}</label>
         <button class="button primary" id="generate-covers" type="button" ${status === "generating" || missingKey ? "disabled" : ""}>${status === "generating" ? t("common.loading") : t("cover.generate")}</button>
       </div>
-      <p class="muted">${t("cover.usage_note")}</p>
-      ${renderAiDisclosure("image")}
+      <p class="muted">${t(localProvider ? "cover.usage_note_local" : "cover.usage_note")}</p>
+      ${localProvider ? `<div class="notice ai-disclosure">${t("ai.local_image")}</div>` : renderAiDisclosure("image")}
       <div id="cover-message">${message}</div>
     </div>
     <div class="cover-grid">${candidateHtml || `<div class="empty">${t("cover.no_candidates")}</div>`}</div>
@@ -55,6 +57,12 @@ export function coverKeyStatus(settings = {}) {
   const coverKey = covers.cover_api_key_configured === true;
   const openaiKey = covers.openai_api_key_configured === true || optional.openai_api_key_configured === true;
   const googleKey = covers.google_api_key_configured === true || optional.google_api_key_configured === true;
+  if (provider === "local") {
+    return {
+      missing: false,
+      messageKey: ""
+    };
+  }
   if (provider === "google") {
     return {
       missing: !(googleKey || coverKey),
@@ -71,6 +79,20 @@ export function coverKeyStatus(settings = {}) {
     missing: !(openaiKey || coverKey),
     messageKey: "cover.key_missing_openai"
   };
+}
+
+export function renderCoverProviderError(state = {}) {
+  const raw = String(state.error || "").trim();
+  if (!raw) return "";
+  const messageKey = providerErrorMessageKey(raw, state.error_code);
+  if (!messageKey) return `<div class="error">${escapeHtml(raw)}</div>`;
+  return `
+    <div class="error">${t(messageKey)}</div>
+    <details class="enhancement-result-details">
+      <summary>${t("common.technical_details")}</summary>
+      <div class="technical-error">${escapeHtml(raw)}</div>
+    </details>
+  `;
 }
 
 export function bindCoverActions(root, jobName, reload) {

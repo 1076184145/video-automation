@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -40,6 +41,8 @@ from .transcribe_worker import (
 _FUNASR_PERSISTENT_WORKER = PersistentTranscriptionWorker()
 _BACKEND_CIRCUIT_LOCK = threading.Lock()
 _BACKEND_UNHEALTHY_UNTIL: dict[str, float] = {}
+_MAX_ASR_CHARACTER_RUN = 4
+_SPACED_ASR_CHARACTER_RUN = re.compile(r"(?P<char>[^\s\d])(?:\s+(?P=char)){4,}")
 
 
 def transcribe_audio(
@@ -642,7 +645,28 @@ def _segment_words(segment: Any, settings: Settings) -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 pass
         words.append(payload)
-    return words
+    return _bound_repeated_asr_words(words)
+
+
+def _bound_repeated_asr_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cap repeated single-character word tokens while preserving their time span."""
+    bounded: list[dict[str, Any]] = []
+    repeated_token = ""
+    run_length = 0
+    for word in words:
+        token = str(word.get("word") or "").strip()
+        is_single_character = len(token) == 1 and not token.isdigit()
+        if is_single_character and token == repeated_token:
+            run_length += 1
+            if run_length > _MAX_ASR_CHARACTER_RUN:
+                if bounded and word.get("end") is not None:
+                    bounded[-1] = {**bounded[-1], "end": word["end"]}
+                continue
+        else:
+            repeated_token = token if is_single_character else ""
+            run_length = 1 if is_single_character else 0
+        bounded.append(word)
+    return bounded
 
 
 def _run_faster_whisper_subprocess(
@@ -1044,8 +1068,30 @@ def _srt_time(seconds: float) -> str:
 
 
 def _postprocess_text(text: str, settings: Settings) -> str:
-    replaced = apply_replacements(text, settings.subtitle_replacements)
+    replaced = apply_replacements(_sanitize_asr_text(text), settings.subtitle_replacements)
     return censor_text(replaced, settings.profanity_words, replacement=settings.subtitle_censor_replacement)
+
+
+def _sanitize_asr_text(text: str) -> str:
+    """Remove invalid decoder output and bound obvious single-character loops."""
+    sanitized = []
+    previous = ""
+    run_length = 0
+    for character in text:
+        if character == "\ufffd":
+            continue
+        if character == previous and not character.isspace() and not character.isdigit():
+            run_length += 1
+            if run_length > _MAX_ASR_CHARACTER_RUN:
+                continue
+        else:
+            previous = character
+            run_length = 1
+        sanitized.append(character)
+    return _SPACED_ASR_CHARACTER_RUN.sub(
+        lambda match: " ".join(match.group("char") for _ in range(_MAX_ASR_CHARACTER_RUN)),
+        "".join(sanitized),
+    )
 
 
 def _copy_text_if_exists(source: Path, dest: Path, settings: Settings) -> None:
@@ -1068,7 +1114,10 @@ def _copy_json_if_exists(source: Path, dest: Path, settings: Settings) -> None:
 def _replace_transcript_payload(payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
     replaced = dict(payload)
     if isinstance(replaced.get("text"), str):
-        replaced["text"] = apply_replacements(replaced["text"], settings.subtitle_replacements)
+        replaced["text"] = apply_replacements(
+            _sanitize_asr_text(replaced["text"]),
+            settings.subtitle_replacements,
+        )
     segments = replaced.get("segments")
     if isinstance(segments, list):
         next_segments = []
@@ -1078,7 +1127,27 @@ def _replace_transcript_payload(payload: dict[str, Any], settings: Settings) -> 
                 continue
             value = dict(segment)
             if isinstance(value.get("text"), str):
-                value["text"] = apply_replacements(value["text"], settings.subtitle_replacements)
+                value["text"] = apply_replacements(
+                    _sanitize_asr_text(value["text"]),
+                    settings.subtitle_replacements,
+                )
+            words = value.get("words")
+            if isinstance(words, list):
+                value["words"] = _bound_repeated_asr_words(
+                    [
+                        {
+                            **word,
+                            "word": apply_replacements(
+                                _sanitize_asr_text(word["word"]),
+                                settings.subtitle_replacements,
+                            ),
+                        }
+                        if isinstance(word, dict) and isinstance(word.get("word"), str)
+                        else word
+                        for word in words
+                        if isinstance(word, dict)
+                    ]
+                )
             next_segments.append(value)
         replaced["segments"] = next_segments
     return replaced

@@ -235,6 +235,15 @@ class Settings:
     job_disk_multiplier: float
     llm_provider: str
     llm_model: str
+    local_models_dir: Path
+    local_llm_server_path: Path
+    local_llm_model_path: Path
+    local_llm_base_url: str
+    local_llm_context_size: int
+    local_llm_gpu_layers: int
+    local_llm_threads: int
+    local_llm_startup_timeout_seconds: int
+    local_llm_request_timeout_seconds: int
     llm_translation_batch_size: int
     llm_translation_batch_chars: int
     google_api_key: str
@@ -276,6 +285,14 @@ class Settings:
     cover_http_referer: str
     cover_app_title: str
     cover_modalities: tuple[str, ...]
+    local_cover_model_path: Path
+    local_cover_device: str
+    local_cover_quantization: str
+    local_cover_max_side: int
+    local_cover_steps: int
+    local_cover_guidance_scale: float
+    local_cover_seed: int
+    local_cover_max_sequence_length: int
     openai_api_key: str
     audio_separation_engine: str
     demucs_path: Path
@@ -294,6 +311,7 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         root = Path(_env("VIDEO_AUTOMATION_ROOT", str(PROJECT_ROOT))).expanduser()
+        local_models_dir = Path(_env("LOCAL_MODELS_DIR", str(root / "models"))).expanduser()
         return cls(
             root=root,
             input_recordings_dir=Path(_env("INPUT_RECORDINGS_DIR", str(root / "input" / "recordings"))),
@@ -390,6 +408,24 @@ class Settings:
             job_disk_multiplier=max(1.0, _float_env("JOB_DISK_MULTIPLIER", 2.0)),
             llm_provider=_env("LLM_PROVIDER", "openai"),
             llm_model=_env("LLM_MODEL", ""),
+            local_models_dir=local_models_dir,
+            local_llm_server_path=Path(_env("LOCAL_LLM_SERVER_PATH", "llama-server")).expanduser(),
+            local_llm_model_path=Path(
+                _env(
+                    "LOCAL_LLM_MODEL_PATH",
+                    str(local_models_dir / "local-text" / "model.gguf"),
+                )
+            ).expanduser(),
+            local_llm_base_url=_env("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8766/v1"),
+            local_llm_context_size=max(4096, _int_env("LOCAL_LLM_CONTEXT_SIZE", 16384)),
+            local_llm_gpu_layers=max(0, _int_env("LOCAL_LLM_GPU_LAYERS", 99)),
+            local_llm_threads=max(1, _int_env("LOCAL_LLM_THREADS", 12)),
+            local_llm_startup_timeout_seconds=max(
+                30, _int_env("LOCAL_LLM_STARTUP_TIMEOUT_SECONDS", 300)
+            ),
+            local_llm_request_timeout_seconds=max(
+                30, _int_env("LOCAL_LLM_REQUEST_TIMEOUT_SECONDS", 900)
+            ),
             llm_translation_batch_size=max(1, _int_env("LLM_TRANSLATION_BATCH_SIZE", 24)),
             llm_translation_batch_chars=max(500, _int_env("LLM_TRANSLATION_BATCH_CHARS", 6000)),
             google_api_key=_secret_env("GOOGLE_API_KEY", ""),
@@ -437,6 +473,23 @@ class Settings:
             cover_http_referer=_env("COVER_HTTP_REFERER", ""),
             cover_app_title=_env("COVER_APP_TITLE", "Video Automation"),
             cover_modalities=_words_env("COVER_MODALITIES", "image,text"),
+            local_cover_model_path=Path(
+                _env(
+                    "LOCAL_COVER_MODEL_PATH",
+                    str(local_models_dir / "local-cover"),
+                )
+            ).expanduser(),
+            local_cover_device=_env("LOCAL_COVER_DEVICE", "cuda"),
+            local_cover_quantization=_env("LOCAL_COVER_QUANTIZATION", "nf4"),
+            local_cover_max_side=max(512, _int_env("LOCAL_COVER_MAX_SIDE", 1024)),
+            local_cover_steps=max(1, _int_env("LOCAL_COVER_STEPS", 4)),
+            local_cover_guidance_scale=max(
+                0.0, _float_env("LOCAL_COVER_GUIDANCE_SCALE", 1.0)
+            ),
+            local_cover_seed=_int_env("LOCAL_COVER_SEED", 42),
+            local_cover_max_sequence_length=max(
+                64, _int_env("LOCAL_COVER_MAX_SEQUENCE_LENGTH", 512)
+            ),
             openai_api_key=_secret_env("OPENAI_API_KEY", ""),
             audio_separation_engine=_env("AUDIO_SEPARATION_ENGINE", "plan"),
             demucs_path=_portable_tool_path(root, "DEMUCS_PATH", "demucs.exe", "demucs"),

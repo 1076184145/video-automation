@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -9,10 +10,29 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
+from .provider_errors import (
+    provider_configuration_error,
+    provider_error_code,
+    provider_http_error,
+    provider_network_error,
+)
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 ALLOWED_METADATA_KEYS = {"titles", "descriptions", "tags", "hashtags", "cover_titles", "platform_notes"}
+HIGHLIGHT_MIN_SECONDS = 3.0
+HIGHLIGHT_MAX_SECONDS = 60.0
+HIGHLIGHT_MAX_COUNT = 12
+LOCAL_HIGHLIGHT_GLOBAL_MAX_SPANS = 12
+HIGHLIGHT_SYSTEM_PROMPT = (
+    "You are a senior short-video editor analyzing livestream recordings. "
+    "The transcript may be Korean, Chinese, English, or mixed. Understand the original meaning, "
+    "but write the summary, reasons, and recommended uses in concise Simplified Chinese. "
+    "Select self-contained moments with a clear hook and payoff: surprise, conflict, reveal, "
+    "challenge success or failure, comedy, strong opinion, or an emotional shift. "
+    "Reject greetings, subscription thanks, routine notices, repetitive filler, contextless fragments, "
+    "silence, and music-only passages. Use only supplied timestamps and cite concrete transcript evidence."
+)
 
 
 def generate_metadata(settings: Settings, job_dir: Path, *, platform: str = "douyin", force: bool = False) -> dict[str, Any]:
@@ -63,13 +83,29 @@ def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = Fals
         cached = read_json_file(output_path)
         if cached is not None:
             return cached
-    payload = _call_structured_llm(
-        settings,
-        system="You find semantic highlights in livestream recordings. Use only the provided timestamps.",
-        user=_highlights_prompt(job_dir),
-        schema=_highlights_schema(),
-        schema_name="semantic_highlights",
-    )
+    attempt_path = job_dir / "highlights_attempt.json"
+    started_at = datetime.now().isoformat(timespec="seconds")
+    attempt = {
+        "status": "running",
+        "provider": settings.llm_provider,
+        "model": settings.llm_model,
+        "started_at": started_at,
+        "completed_at": "",
+        "error_code": "",
+        "error": "",
+    }
+    write_json_atomic(attempt_path, attempt)
+    try:
+        payload = analyze_highlights(settings, job_dir)
+    except Exception as exc:
+        write_json_atomic(attempt_path, {
+            **attempt,
+            "status": "failed",
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+            "error_code": provider_error_code(exc),
+            "error": str(exc),
+        })
+        raise
     payload.update({
         "status": "ready",
         "backend": settings.llm_provider,
@@ -78,6 +114,12 @@ def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = Fals
     })
     write_json_atomic(output_path, payload)
     _attach_highlights_to_cuts(job_dir, payload)
+    write_json_atomic(attempt_path, {
+        **attempt,
+        "status": "done",
+        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        "highlight_count": len(payload.get("highlights") or []),
+    })
     return payload
 
 
@@ -85,16 +127,65 @@ def call_structured_llm(settings: Settings, *, system: str, user: str, schema: d
     return _call_structured_llm(settings, system=system, user=user, schema=schema, schema_name=schema_name)
 
 
+def analyze_highlights(settings: Settings, job_dir: Path) -> dict[str, Any]:
+    context = _highlights_context(job_dir)
+    global_transcript_spans = _global_highlight_prompt_spans(context)
+    if (
+        settings.llm_provider.strip().lower() == "local"
+        and len(global_transcript_spans) > LOCAL_HIGHLIGHT_GLOBAL_MAX_SPANS
+    ):
+        payload = _call_local_chunked_highlights(
+            settings,
+            job_dir,
+            context,
+            _highlight_prompt_spans(job_dir, context),
+        )
+    else:
+        payload = _call_structured_llm(
+            settings,
+            system=HIGHLIGHT_SYSTEM_PROMPT,
+            user=_highlights_prompt_from_context(context, global_transcript_spans),
+            schema=_highlights_schema(),
+            schema_name="semantic_highlights",
+        )
+    return _normalize_highlights_payload(job_dir, payload)
+
+
 def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: dict[str, Any], schema_name: str) -> dict[str, Any]:
     provider = settings.llm_provider.strip().lower()
+    if provider == "local":
+        from .local_ai import call_local_structured_llm
+
+        return call_local_structured_llm(
+            settings,
+            system=system,
+            user=user,
+            schema=schema,
+            schema_name=schema_name,
+        )
     if provider == "google":
         return _call_google_structured_llm(settings, system=system, user=user, schema=schema)
     if provider != "openai":
-        raise RuntimeError(f"unsupported LLM_PROVIDER: {settings.llm_provider}")
+        raise provider_configuration_error(
+            settings.llm_provider or "LLM",
+            "structured request",
+            "provider_unsupported",
+            f"Unsupported LLM_PROVIDER: {settings.llm_provider}",
+        )
     if not settings.openai_api_key.strip():
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+        raise provider_configuration_error(
+            "OpenAI",
+            "structured request",
+            "credentials_missing",
+            "OPENAI_API_KEY is not configured.",
+        )
     if not settings.llm_model.strip():
-        raise RuntimeError("LLM_MODEL is not configured")
+        raise provider_configuration_error(
+            "OpenAI",
+            "structured request",
+            "model_missing",
+            "LLM_MODEL is not configured.",
+        )
     request_payload = {
         "model": settings.llm_model,
         "input": [
@@ -124,9 +215,14 @@ def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: 
             raw = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI request failed: {exc.code} {detail}") from exc
+        raise provider_http_error(
+            "OpenAI",
+            "structured request",
+            exc.code,
+            detail,
+        ) from exc
     except OSError as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc}") from exc
+        raise provider_network_error("OpenAI", "structured request", exc) from exc
     text = _extract_output_text(raw)
     try:
         parsed = json.loads(text)
@@ -145,9 +241,19 @@ def _call_google_structured_llm(
     schema: dict[str, Any],
 ) -> dict[str, Any]:
     if not settings.google_api_key.strip():
-        raise RuntimeError("GOOGLE_API_KEY is not configured")
+        raise provider_configuration_error(
+            "Google Gemini",
+            "structured request",
+            "credentials_missing",
+            "GOOGLE_API_KEY is not configured.",
+        )
     if not settings.llm_model.strip():
-        raise RuntimeError("LLM_MODEL is not configured")
+        raise provider_configuration_error(
+            "Google Gemini",
+            "structured request",
+            "model_missing",
+            "LLM_MODEL is not configured.",
+        )
     request_payload = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -170,9 +276,14 @@ def _call_google_structured_llm(
             raw = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Google Gemini request failed: {exc.code} {detail}") from exc
+        raise provider_http_error(
+            "Google Gemini",
+            "structured request",
+            exc.code,
+            detail,
+        ) from exc
     except OSError as exc:
-        raise RuntimeError(f"Google Gemini request failed: {exc}") from exc
+        raise provider_network_error("Google Gemini", "structured request", exc) from exc
     text = _extract_google_text(raw)
     try:
         parsed = json.loads(text)
@@ -249,29 +360,489 @@ def _metadata_prompt(job_dir: Path, platform: str) -> str:
 
 
 def _highlights_prompt(job_dir: Path) -> str:
+    context = _highlights_context(job_dir)
+    return _highlights_prompt_from_context(
+        context,
+        _global_highlight_prompt_spans(context),
+    )
+
+
+def _highlights_prompt_from_context(
+    context: dict[str, Any],
+    transcript_spans: list[dict[str, Any]],
+    *,
+    target_count: int | None = None,
+    chunk_label: str = "",
+) -> str:
+    normalized_target = min(
+        max(0, target_count if target_count is not None else 4),
+        len(transcript_spans),
+    )
+    return json.dumps({
+        "source_name": context.get("source_name"),
+        "duration_seconds": context.get("duration_seconds"),
+        "transcript_language": context.get("transcript_language"),
+        "selection_task": {
+            "target_highlight_count": normalized_target,
+            "primary_evidence": "transcript_spans",
+            "coverage_chunk": chunk_label,
+            "instruction": (
+                "Read every transcript span from beginning to end, including late sections. "
+                "Rank moments by the concrete event and reaction in the transcript, not by "
+                "speech density, silence boundaries, scene changes, or generic emotional wording."
+            ),
+        },
+        "transcript_spans": transcript_spans,
+        "requirements": [
+            (
+                f"Return exactly {normalized_target} distinct highlights when at least "
+                f"{normalized_target} transcript spans contain meaningful speech."
+            ),
+            "Prefer a complete setup and payoff over a generic topic summary.",
+            "Prefer precise 8-45 second intervals and never exceed 60 seconds.",
+            (
+                "Each interval must stay within one supplied transcript span. Copy that span's "
+                "start/end timestamps when it is at most 60 seconds; otherwise choose a precise "
+                "8-45 second sub-interval inside it."
+            ),
+            "Give the strongest moments scores in the 80-100 range and rank them descending.",
+            "Explain the specific action, quote, misunderstanding, reversal, or reaction.",
+            "Reject greetings, subscription thanks, routine notices, filler, silence, and music-only passages.",
+            "Refer to the on-screen speaker as 主播, not 用户 or 观众, unless the transcript clearly quotes viewers.",
+            "Write summary, reason, and recommended_use in concise Simplified Chinese.",
+        ],
+    }, ensure_ascii=False)
+
+
+def _highlights_context(job_dir: Path) -> dict[str, Any]:
+    manifest = read_json_file(job_dir / "manifest.json") or {}
     transcript = read_json_file(job_dir / "transcript.json") or {}
     cuts = read_json_file(job_dir / "cuts.json") or {}
     scene = read_json_file(job_dir / "scene.json") or {}
-    clips = sorted(cuts.get("clips", []), key=lambda item: float(item.get("content_score") or 0), reverse=True)[:30]
-    segments = transcript.get("segments", [])[:180]
-    return json.dumps({
+    raw_clips = cuts.get("clips") if isinstance(cuts.get("clips"), list) else []
+    clips = sorted(
+        [item for item in raw_clips if isinstance(item, dict)],
+        key=lambda item: _finite_number(item.get("content_score"), default=0.0),
+        reverse=True,
+    )[:30]
+    raw_segments = transcript.get("segments") if isinstance(transcript.get("segments"), list) else []
+    segments = [item for item in raw_segments if isinstance(item, dict)]
+    sampled_segments = _sample_evenly(segments, 180)
+    raw_scenes = scene.get("scenes") if isinstance(scene.get("scenes"), list) else []
+    sampled_scenes = _sample_evenly(raw_scenes, 120)
+    candidate_clips = []
+    for clip in clips:
+        start = _finite_number(clip.get("start"))
+        end = _finite_number(clip.get("end"))
+        if start is None or end is None or end <= start:
+            continue
+        clip_text = str(clip.get("subtitle_text") or clip.get("transcript_text") or "").strip()
+        context_text = _transcript_text_for_interval(segments, start, end, padding=1.5, max_chars=700)
+        candidate_clips.append({
+            "start": start,
+            "end": end,
+            "duration": round(end - start, 3),
+            "structure_score": _finite_number(clip.get("content_score"), default=0.0),
+            "scene_count": clip.get("scene_count"),
+            "text": (clip_text or context_text)[:700],
+            "structural_reason": str(clip.get("reason") or "")[:240],
+        })
+    source_name = manifest.get("source_name") or manifest.get("source_path") or job_dir.name
+    return {
+        "source_name": source_name,
+        "duration_seconds": (
+            _finite_number(manifest.get("duration_seconds"))
+            or _finite_number(cuts.get("duration_seconds"))
+        ),
+        "transcript_language": transcript.get("language") or transcript.get("detected_language") or "",
         "candidate_clips": [
-            {
-                "start": clip.get("start"),
-                "end": clip.get("end"),
-                "score": clip.get("content_score"),
-                "scene_count": clip.get("scene_count"),
-                "text": clip.get("subtitle_text") or clip.get("transcript_text"),
-            }
-            for clip in clips
+            clip for clip in candidate_clips
         ],
         "transcript_sample": [
             {"start": item.get("start"), "end": item.get("end"), "text": item.get("text")}
-            for item in segments
+            for item in sampled_segments
         ],
-        "scenes": scene.get("scenes", [])[:120],
-        "requirements": "Pick 3-12 semantic highlights. Start/end must stay inside provided candidate clip or transcript timestamps.",
-    }, ensure_ascii=False)
+        "scenes": sampled_scenes,
+        "requirements": [
+            "Return 3-12 highlights when the content supports them; returning fewer is better than inventing weak moments.",
+            "Prefer precise 8-45 second intervals with enough setup to understand the payoff.",
+            "Each start/end interval must be contained in a supplied candidate clip or covered transcript span.",
+            "Score 0-100 for short-video value, not merely speech density or scene changes.",
+            "Explain the specific event or line that makes the moment worth watching.",
+            "Do not select greetings, subscription thanks, routine notices, repeated filler, silence, or music-only passages.",
+            "Write summary, reason, and recommended_use in Simplified Chinese.",
+        ],
+    }
+
+
+def _highlight_prompt_spans(
+    job_dir: Path,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sampled = context.get("transcript_sample")
+    if not isinstance(sampled, list):
+        return []
+    transcript = read_json_file(job_dir / "transcript.json") or {}
+    raw_segments = transcript.get("segments")
+    if not isinstance(raw_segments, list):
+        raw_segments = []
+    segment_lookup: dict[tuple[float, float], dict[str, Any]] = {}
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            continue
+        start = _finite_number(item.get("start"))
+        end = _finite_number(item.get("end"))
+        if start is None or end is None:
+            continue
+        segment_lookup[(round(start, 3), round(end, 3))] = item
+
+    bounded: list[dict[str, Any]] = []
+    for item in sampled:
+        if not isinstance(item, dict):
+            continue
+        start = _finite_number(item.get("start"))
+        end = _finite_number(item.get("end"))
+        text = str(item.get("text") or "").strip()
+        if start is None or end is None or end <= start or not text:
+            continue
+        normalized = {
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": text,
+        }
+        if end - start <= HIGHLIGHT_MAX_SECONDS:
+            bounded.append(normalized)
+            continue
+        source = segment_lookup.get((round(start, 3), round(end, 3)), {})
+        bounded.extend(_split_highlight_prompt_span(normalized, source.get("words")))
+    return _sample_evenly(bounded, 240)
+
+
+def _global_highlight_prompt_spans(
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sampled = context.get("transcript_sample")
+    if not isinstance(sampled, list):
+        return []
+    spans: list[dict[str, Any]] = []
+    for item in sampled:
+        if not isinstance(item, dict):
+            continue
+        start = _finite_number(item.get("start"))
+        end = _finite_number(item.get("end"))
+        text = str(item.get("text") or "").strip()
+        if start is None or end is None or end <= start or not text:
+            continue
+        spans.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": text,
+        })
+    return spans
+
+
+def _split_highlight_prompt_span(
+    span: dict[str, Any],
+    raw_words: Any,
+    *,
+    window_seconds: float = 50.0,
+    stride_seconds: float = 40.0,
+) -> list[dict[str, Any]]:
+    start = float(span["start"])
+    end = float(span["end"])
+    words = [item for item in raw_words if isinstance(item, dict)] if isinstance(raw_words, list) else []
+    windows: list[dict[str, Any]] = []
+    window_start = start
+    while window_start < end:
+        window_end = min(end, window_start + window_seconds)
+        selected_words = []
+        for word in words:
+            word_start = _finite_number(word.get("start"))
+            word_end = _finite_number(word.get("end"))
+            if word_start is None or word_end is None:
+                continue
+            if word_start < window_end and word_end > window_start:
+                value = str(word.get("word") or "").strip()
+                if value:
+                    selected_words.append(value)
+        text = " ".join(selected_words).strip()
+        if not text:
+            source_text = str(span.get("text") or "")
+            relative_start = (window_start - start) / max(end - start, 0.001)
+            relative_end = (window_end - start) / max(end - start, 0.001)
+            left = int(len(source_text) * relative_start)
+            right = max(left + 1, int(len(source_text) * relative_end))
+            text = source_text[left:right].strip()
+        if text:
+            windows.append({
+                "start": round(window_start, 3),
+                "end": round(window_end, 3),
+                "text": text,
+            })
+        if window_end >= end:
+            break
+        window_start += stride_seconds
+    return windows
+
+
+def _chunk_transcript_spans(
+    spans: list[dict[str, Any]],
+    *,
+    max_spans: int = 8,
+    max_chars: int = 4500,
+) -> list[list[dict[str, Any]]]:
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_chars = 0
+    for span in spans:
+        span_chars = len(json.dumps(span, ensure_ascii=False))
+        if current and (
+            len(current) >= max_spans
+            or current_chars + span_chars > max_chars
+        ):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(span)
+        current_chars += span_chars
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _call_local_chunked_highlights(
+    settings: Settings,
+    job_dir: Path,
+    context: dict[str, Any],
+    transcript_spans: list[dict[str, Any]],
+) -> dict[str, Any]:
+    chunks = _chunk_transcript_spans(transcript_spans)
+    candidates: list[dict[str, Any]] = []
+    summaries: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        payload = _call_structured_llm(
+            settings,
+            system=HIGHLIGHT_SYSTEM_PROMPT,
+            user=_highlights_prompt_from_context(
+                context,
+                chunk,
+                target_count=min(2, len(chunk)),
+                chunk_label=f"{index}/{len(chunks)}",
+            ),
+            schema=_highlights_schema(),
+            schema_name=f"semantic_highlights_chunk_{index}",
+        )
+        normalized = _normalize_highlights_payload(job_dir, payload)
+        candidates.extend(normalized.get("highlights") or [])
+        summary = _clean_model_text(normalized.get("summary"), max_chars=240)
+        if summary:
+            summaries.append(summary)
+
+    merged = _normalize_highlights_payload(
+        job_dir,
+        {
+            "summary": "；".join(summaries)[:600],
+            "highlights": candidates,
+        },
+    )
+    ranked = merged.get("highlights")
+    if not isinstance(ranked, list) or not ranked:
+        return merged
+    return merged
+
+
+def _normalize_highlights_payload(job_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    raw_highlights = payload.get("highlights")
+    if not isinstance(raw_highlights, list):
+        raw_highlights = []
+    allowed_ranges = _highlight_allowed_ranges(job_dir)
+    duration_limit = _highlight_duration_limit(job_dir, allowed_ranges)
+    normalized: list[dict[str, Any]] = []
+    for raw in raw_highlights:
+        if not isinstance(raw, dict):
+            continue
+        start = _finite_number(raw.get("start"))
+        end = _finite_number(raw.get("end"))
+        score = _finite_number(raw.get("score"))
+        if start is None or end is None or score is None:
+            continue
+        start = max(0.0, start)
+        if duration_limit is not None:
+            end = min(end, duration_limit)
+        fitted = _fit_highlight_interval(start, end, allowed_ranges)
+        if fitted is None:
+            continue
+        start, end = fitted
+        duration = end - start
+        if duration < HIGHLIGHT_MIN_SECONDS or duration > HIGHLIGHT_MAX_SECONDS:
+            continue
+        reason = _clean_model_text(raw.get("reason"), max_chars=320)
+        if not reason:
+            continue
+        recommended_use = _clean_model_text(raw.get("recommended_use"), max_chars=180)
+        normalized.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "score": round(max(0.0, min(100.0, score)), 1),
+            "reason": reason,
+            "recommended_use": recommended_use or "短视频高光片段",
+        })
+
+    ranked = sorted(
+        normalized,
+        key=lambda item: (
+            float(item["score"]),
+            -(float(item["end"]) - float(item["start"])),
+        ),
+        reverse=True,
+    )
+    deduplicated: list[dict[str, Any]] = []
+    for item in ranked:
+        if any(_highlight_duplicate(item, existing) for existing in deduplicated):
+            continue
+        deduplicated.append(item)
+        if len(deduplicated) >= HIGHLIGHT_MAX_COUNT:
+            break
+
+    summary = _clean_model_text(payload.get("summary"), max_chars=600)
+    if not summary and deduplicated:
+        summary = "；".join(item["reason"] for item in deduplicated[:3])[:600]
+    return {"summary": summary, "highlights": deduplicated}
+
+
+def _highlight_allowed_ranges(job_dir: Path) -> list[tuple[float, float]]:
+    transcript = read_json_file(job_dir / "transcript.json") or {}
+    cuts = read_json_file(job_dir / "cuts.json") or {}
+    ranges: list[tuple[float, float]] = []
+    raw_clips = cuts.get("clips") if isinstance(cuts.get("clips"), list) else []
+    clips = sorted(
+        [item for item in raw_clips if isinstance(item, dict)],
+        key=lambda item: _finite_number(item.get("content_score"), default=0.0),
+        reverse=True,
+    )[:30]
+    for clip in clips:
+        interval = _valid_interval(clip.get("start"), clip.get("end"))
+        if interval is not None:
+            ranges.append(interval)
+    raw_segments = transcript.get("segments") if isinstance(transcript.get("segments"), list) else []
+    transcript_ranges = [
+        interval
+        for item in raw_segments
+        if isinstance(item, dict)
+        for interval in [_valid_interval(item.get("start"), item.get("end"))]
+        if interval is not None
+    ]
+    ranges.extend(_merge_ranges(transcript_ranges, max_gap=1.5))
+    return _merge_ranges(ranges, max_gap=0.0)
+
+
+def _highlight_duration_limit(job_dir: Path, ranges: list[tuple[float, float]]) -> float | None:
+    manifest = read_json_file(job_dir / "manifest.json") or {}
+    cuts = read_json_file(job_dir / "cuts.json") or {}
+    values = [
+        _finite_number(manifest.get("duration_seconds")),
+        _finite_number(cuts.get("duration_seconds")),
+        max((end for _, end in ranges), default=None),
+    ]
+    finite = [value for value in values if value is not None and value > 0]
+    return max(finite) if finite else None
+
+
+def _fit_highlight_interval(
+    start: float,
+    end: float,
+    allowed_ranges: list[tuple[float, float]],
+) -> tuple[float, float] | None:
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        return None
+    if not allowed_ranges:
+        return start, end
+    tolerance = 0.75
+    matches = [
+        (range_start, range_end)
+        for range_start, range_end in allowed_ranges
+        if start >= range_start - tolerance and end <= range_end + tolerance
+    ]
+    if not matches:
+        return None
+    range_start, range_end = min(matches, key=lambda item: item[1] - item[0])
+    fitted_start = max(start, range_start)
+    fitted_end = min(end, range_end)
+    return (fitted_start, fitted_end) if fitted_end > fitted_start else None
+
+
+def _highlight_duplicate(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_start = float(left["start"])
+    left_end = float(left["end"])
+    right_start = float(right["start"])
+    right_end = float(right["end"])
+    overlap = max(0.0, min(left_end, right_end) - max(left_start, right_start))
+    shorter = min(left_end - left_start, right_end - right_start)
+    return shorter > 0 and overlap / shorter >= 0.7
+
+
+def _valid_interval(start_value: Any, end_value: Any) -> tuple[float, float] | None:
+    start = _finite_number(start_value)
+    end = _finite_number(end_value)
+    if start is None or end is None or end <= start:
+        return None
+    return max(0.0, start), end
+
+
+def _merge_ranges(ranges: list[tuple[float, float]], *, max_gap: float) -> list[tuple[float, float]]:
+    merged: list[list[float]] = []
+    for start, end in sorted(ranges):
+        if not merged or start > merged[-1][1] + max_gap:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return [(start, end) for start, end in merged]
+
+
+def _sample_evenly(items: list[Any], limit: int) -> list[Any]:
+    if limit <= 0 or not items:
+        return []
+    if len(items) <= limit:
+        return list(items)
+    if limit == 1:
+        return [items[0]]
+    return [
+        items[round(index * (len(items) - 1) / (limit - 1))]
+        for index in range(limit)
+    ]
+
+
+def _transcript_text_for_interval(
+    segments: list[dict[str, Any]],
+    start: float,
+    end: float,
+    *,
+    padding: float = 0.0,
+    max_chars: int = 600,
+) -> str:
+    texts = []
+    for segment in segments:
+        segment_start = _finite_number(segment.get("start"))
+        segment_end = _finite_number(segment.get("end"))
+        if segment_start is None or segment_end is None:
+            continue
+        if segment_start < end + padding and segment_end > start - padding:
+            text = str(segment.get("text") or "").strip()
+            if text:
+                texts.append(text)
+    return " ".join(texts)[:max_chars]
+
+
+def _clean_model_text(value: Any, *, max_chars: int) -> str:
+    return " ".join(str(value or "").split())[:max_chars]
+
+
+def _finite_number(value: Any, *, default: float | None = None) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
 
 
 def _metadata_schema() -> dict[str, Any]:
@@ -299,14 +870,15 @@ def _highlights_schema() -> dict[str, Any]:
             "summary": {"type": "string"},
             "highlights": {
                 "type": "array",
+                "maxItems": HIGHLIGHT_MAX_COUNT,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["start", "end", "score", "reason", "recommended_use"],
                     "properties": {
-                        "start": {"type": "number"},
-                        "end": {"type": "number"},
-                        "score": {"type": "number"},
+                        "start": {"type": "number", "minimum": 0},
+                        "end": {"type": "number", "minimum": 0},
+                        "score": {"type": "number", "minimum": 0, "maximum": 100},
                         "reason": {"type": "string"},
                         "recommended_use": {"type": "string"},
                     },

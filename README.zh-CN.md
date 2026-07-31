@@ -56,14 +56,24 @@ python3 -m venv venv
 ./venv/bin/python run_worker.py --serve
 ```
 
-推荐命令安装默认配置使用的轻量 Faster-Whisper 环境；`requirements.txt` 保留
-兼容性较好的 OpenAI Whisper CLI 回退。FunASR 加 Faster-Whisper 回退使用
-`requirements-transcription-funasr.txt`。桌面打包、Pillow、Demucs 等完整可选
-组件仍在 `requirements-optional.txt`。
+推荐命令安装默认配置使用的轻量 Faster-Whisper 环境；`requirements.txt` 保留 OpenAI Whisper CLI 回退。FunASR 加 Faster-Whisper 回退使用 `requirements-transcription-funasr.txt`，桌面打包、Pillow、Demucs 等可选组件仍在 `requirements-optional.txt`。
 
-WSL 必须单独创建 Linux 虚拟环境，不能直接复用 `D:\` 下的 Windows `venv`。
+WSL 必须单独创建 Linux 虚拟环境，不能直接复用 Windows 的虚拟环境。
 
 浏览器打开 [http://127.0.0.1:8765/#/](http://127.0.0.1:8765/#/)。使用期间不要关闭运行服务的终端窗口。
+
+### 可选：本地 Hugging Face AI
+
+请按可用显存选择模型，不要照搬某一台电脑的实际配置。下面是假设同一时间只加载一个模型、并预留 1–2 GB 显存的保守起点：
+
+| 可用显存 | 本地文本模型 | 本地参考图模型 | 建议内存 |
+|---|---|---|---|
+| 仅 CPU 或低于 6 GB | 1B–3B GGUF，Q4 | CPU 卸载或外部服务；512–768 px | 16 GB+ |
+| 8 GB | 7B–8B GGUF，Q4 | 2B–4B，4 bit；最高 768 px | 24–32 GB |
+| 12–16 GB | 12B–14B GGUF，Q4/Q5 | 4B–8B，4 bit；768–1024 px | 32 GB+ |
+| 24 GB 以上 | 20B–32B GGUF，Q4/Q5 | 8B–12B，4/8 bit；最高 1024 px | 64 GB+ |
+
+可从 Hugging Face 的[文本生成模型列表](https://huggingface.co/models?pipeline_tag=text-generation&sort=trending)和[图生图模型列表](https://huggingface.co/models?pipeline_tag=image-to-image&sort=trending)筛选，并逐一核对许可证和运行时兼容性；运行环境使用 `requirements-local-ai.txt` 和 [llama.cpp](https://github.com/ggml-org/llama.cpp/releases)。实际模型 ID、路径、权重、清单、缓存、日志和评测只保存在被忽略的本地 `.env`、`models/`、`config/` 及运行目录中，Git 只保留通用建议。
 
 ## 日常使用流程
 
@@ -102,17 +112,29 @@ WSL 必须单独创建 Linux 虚拟环境，不能直接复用 `D:\` 下的 Wind
 
 可选功能：
 
-- AI 封面、字幕翻译、标题简介和高光建议
+- AI 封面、字幕翻译、标题简介和语义高光建议
 - NVIDIA CUDA/NVENC 加速
 - Faster-Whisper 本地转写（默认 `medium` 主模型、`small` 回退模型）；已有 FunASR 配置仍兼容
 - Demucs 音频分离
 - 单独配置的发布连接器；手动发布包始终可以作为备用方案
 
-AI 功能需要对应服务商的 Key。在 **设置** 中新填的密钥会保存到操作系统凭据库，
+外部 AI 功能需要对应服务商的 Key，本地 Hugging Face 模式不需要。在 **设置**
+中新填的密钥会保存到操作系统凭据库，
 私有 `.env` 只保留引用；已有的 `.env` 明文密钥可以通过设置页警告一键迁移。
 全部配置项见 [`.env.example`](.env.example)。
 
+语义高光会覆盖采样整段转写并返回精确时间区间；高光剪辑和封面上下文直接使用这些
+区间，不再退化为整段结构剪辑。使用支持参考图的 OpenRouter 图片模型时，应用会在
+本地比较多个高分语义区间，优先选择主体清晰居中、没有重复或分屏干扰的一帧；只有
+你明确运行外部封面功能时，才会把该帧连同封面提示发送给服务商。
+语义服务调用失败时会保留上一次可用的 `highlights.json`，并只把服务商、模型、状态
+和稳定错误码写入 `highlights_attempt.json`；该文件不保存提示词、转写文本或 API Key。
+
 转写在隔离子进程中运行，并带有阶段心跳、无进展超时、进程树清理和临时后端熔断。某个模型失败后会及时进入配置的回退模型，不会继续占住队列直到旧的按视频时长计算的超时结束。
+
+转写语言默认自动检测。只有在单个任务或整批素材确定使用同一种语言时，才建议固定
+`zh`、`en`、`ja` 或 `ko`；强制选择错误语言会生成看似正常但内容错误的字幕。
+生成字幕前还会移除无效的 Unicode 替换字符，并限制明显的单字符解码循环。
 
 ## 重要输出文件
 
@@ -124,7 +146,10 @@ AI 功能需要对应服务商的 Key。在 **设置** 中新填的密钥会保�
 | `web_preview.mp4` | 体积较小的浏览器预览 |
 | `transcript.txt` / `.srt` | 转写文本和字幕 |
 | `cuts.json` | 建议或编辑后的剪辑片段 |
+| `highlights.json` / `highlight_cut.json` | 语义高光结论和受目标时长约束的渲染剪辑 |
+| `highlights_attempt.json` | 最近一次语义服务调用状态和不含敏感内容的错误码 |
 | `clip_refinement.json` | 剪辑边界检查的尝试记录、评分与恢复状态 |
+| `highlight_thumbnail.jpg` | 为封面生成在本地抽取的内容参考帧 |
 | `cover_*.jpg` | 生成或选中的封面 |
 | `publish_packages/` | 手动上传需要的视频和文案 |
 | `project_exports/` | Premiere Pro 或剪映/CapCut 交接文件 |
