@@ -319,9 +319,21 @@ def _funasr_runtime_checks(settings: Settings, *, optional: bool = False) -> lis
 
 def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
     provider = settings.cover_provider.strip().lower()
-    if provider not in {"openai", "openai-compatible", "openrouter", "google"}:
+    if provider not in {"openai", "openai-compatible", "openrouter", "google", "local"}:
         return []
     pillow_exists = importlib.util.find_spec("PIL") is not None
+    if provider == "local":
+        return [
+            {
+                "name": "pillow",
+                "path": "python:PIL",
+                "exists": pillow_exists,
+                "required": True,
+                "optional": False,
+                "status": "ok" if pillow_exists else "missing",
+                "version": _package_version("Pillow") if pillow_exists else "",
+            }
+        ]
     cover_key_exists = bool(settings.cover_api_key_for_provider())
     key_path = "env:COVER_API_KEY or env:GOOGLE_API_KEY" if provider == "google" else "env:COVER_API_KEY or env:OPENAI_API_KEY"
     return [
@@ -347,8 +359,10 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
 
 
 def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
-    llm_model_configured = bool(settings.llm_model.strip())
     llm_provider = settings.llm_provider.strip().lower()
+    llm_model_configured = bool(settings.llm_model.strip()) or (
+        llm_provider == "local" and settings.local_llm_model_path.is_file()
+    )
     llm_key_exists = bool(settings.google_api_key.strip()) if llm_provider == "google" else bool(settings.openai_api_key.strip())
     llm_required = llm_model_configured and llm_provider in {"openai", "google"}
     llm_key_name = "llm_google_api_key" if llm_provider == "google" else "llm_openai_api_key"
@@ -356,24 +370,19 @@ def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
     separation_engine = settings.audio_separation_engine.strip().lower()
     demucs_required = separation_engine == "demucs"
     demucs_exists = _path_exists(settings.demucs_path, "optional_exe")
-    return [
+    checks = [
         {
             "name": "llm_model",
-            "path": "env:LLM_MODEL",
+            "path": (
+                str(settings.local_llm_model_path)
+                if llm_provider == "local"
+                else "env:LLM_MODEL"
+            ),
             "exists": llm_model_configured,
             "required": False,
             "optional": True,
             "status": "ok" if llm_model_configured else "optional_missing",
-            "version": settings.llm_model,
-        },
-        {
-            "name": llm_key_name,
-            "path": llm_key_path,
-            "exists": llm_key_exists,
-            "required": llm_required,
-            "optional": not llm_required,
-            "status": "ok" if llm_key_exists else "missing" if llm_required else "optional_missing",
-            "version": "",
+            "version": settings.llm_model or settings.local_llm_model_path.stem,
         },
         {
             "name": "demucs",
@@ -385,6 +394,21 @@ def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
             "version": _demucs_version(settings.demucs_path) if demucs_exists else "",
         },
     ]
+    if llm_provider != "local":
+        checks.insert(1, {
+            "name": llm_key_name,
+            "path": llm_key_path,
+            "exists": llm_key_exists,
+            "required": llm_required,
+            "optional": not llm_required,
+            "status": "ok" if llm_key_exists else "missing" if llm_required else "optional_missing",
+            "version": "",
+        })
+    if llm_provider == "local" or settings.cover_provider.strip().lower() == "local":
+        from .local_ai import local_ai_health
+
+        checks.extend(local_ai_health(settings))
+    return checks
 
 
 def _package_version(name: str) -> str:
@@ -501,6 +525,15 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
         "optional_modules": {
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
+            "local_models_dir": str(settings.local_models_dir),
+            "local_llm_server_path": str(settings.local_llm_server_path),
+            "local_llm_model_path": str(settings.local_llm_model_path),
+            "local_llm_base_url": settings.local_llm_base_url,
+            "local_llm_context_size": settings.local_llm_context_size,
+            "local_llm_gpu_layers": settings.local_llm_gpu_layers,
+            "local_llm_threads": settings.local_llm_threads,
+            "local_llm_startup_timeout_seconds": settings.local_llm_startup_timeout_seconds,
+            "local_llm_request_timeout_seconds": settings.local_llm_request_timeout_seconds,
             "google_base_url": settings.google_base_url,
             "google_api_key_configured": bool(settings.google_api_key),
             "native_waveform_enabled": settings.native_waveform_enabled,
@@ -534,6 +567,14 @@ def _settings_payload(settings: Settings) -> dict[str, Any]:
             "http_referer": settings.cover_http_referer,
             "app_title": settings.cover_app_title,
             "modalities": ", ".join(settings.cover_modalities),
+            "local_model_path": str(settings.local_cover_model_path),
+            "local_device": settings.local_cover_device,
+            "local_quantization": settings.local_cover_quantization,
+            "local_max_side": settings.local_cover_max_side,
+            "local_steps": settings.local_cover_steps,
+            "local_guidance_scale": settings.local_cover_guidance_scale,
+            "local_seed": settings.local_cover_seed,
+            "local_max_sequence_length": settings.local_cover_max_sequence_length,
         },
     }
 

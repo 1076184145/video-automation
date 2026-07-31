@@ -107,6 +107,7 @@ export const en = {
   "common.stage": "Current stage",
   "common.path": "Path",
   "common.version": "Version",
+  "common.technical_details": "Technical details",
   "file.video": "Video",
   "file.subtitle": "Subtitle",
   "file.audio": "Audio",
@@ -381,8 +382,8 @@ Object.assign(en, {
   "cover.key_missing_openai": "OPENAI_API_KEY or COVER_API_KEY is not configured. Add it to .env and restart the service first.",
   "cover.key_missing_openrouter": "COVER_API_KEY is not configured. OpenRouter cover generation requires your own OpenRouter key.",
   "cover.key_missing_google": "GOOGLE_API_KEY or COVER_API_KEY is not configured. Google cover generation requires your own Google key.",
-  "cover.usage_note": "Cover generation calls the selected provider's image API; more candidates use more API quota.",
-  "cover.confirm_generate": "Generate AI cover candidates now? This will call the selected provider's image API.",
+  "cover.usage_note": "Cover generation calls the selected provider's image API. OpenRouter also receives one clear local frame selected across the top semantic moments.",
+  "cover.confirm_generate": "Generate AI cover candidates now? This sends the cover prompt and, with OpenRouter, one selected reference frame to the configured provider.",
   "settings.covers": "AI Covers"
 });
 
@@ -417,6 +418,19 @@ Object.assign(en, {
   "enhance.publish_ready": "Publish package is ready.",
   "enhance.platform": "Target platform",
   "enhance.llm_missing": "LLM_MODEL or OPENAI_API_KEY is not configured; this feature is disabled.",
+  "ai.error.credentials_missing": "The selected AI provider has no API key. Add it in Settings, then restart the service.",
+  "ai.error.credentials_missing_openai": "OPENAI_API_KEY is not configured. Add it in Settings, then restart the service.",
+  "ai.error.credentials_missing_google": "GOOGLE_API_KEY is not configured. Add it in Settings, then restart the service.",
+  "ai.error.credentials_invalid": "The provider rejected the current credentials. Replace or reconnect the API key before retrying.",
+  "ai.error.model_missing": "No AI model is selected. Configure the model required by this feature in Settings before retrying.",
+  "ai.error.llm_model_missing": "No semantic AI model is selected. Configure LLM_MODEL in Settings before retrying.",
+  "ai.error.model_unavailable": "The selected model is unavailable for this provider or endpoint. Choose a supported model.",
+  "ai.error.provider_unsupported": "The selected AI provider is not supported by this feature.",
+  "ai.error.quota_exhausted": "The provider account has no usable quota or credit. Update billing or use another funded project.",
+  "ai.error.rate_limited": "The provider is temporarily rate-limiting requests. Wait briefly, then retry.",
+  "ai.error.network_error": "The AI provider could not be reached. Check the network and provider status before retrying.",
+  "ai.error.response_invalid": "The provider returned no usable result. Verify that the selected model supports this feature.",
+  "ai.error.provider_error": "The AI provider rejected the request. Open technical details for the original response.",
   "enhance.invalid_json": "Metadata JSON is invalid: ",
   "enhance.started": "Operation completed.",
   "enhance.saved": "Saved.",
@@ -638,9 +652,9 @@ Object.assign(en, {
 
 Object.assign(en, {
   "ai.disclosure_text": "This action sends transcript text, clip summaries, or subtitle content to your configured AI service. Make sure this material is allowed to leave the local machine.",
-  "ai.disclosure_image": "This action sends the cover title, content summary, and thumbnail context to your configured image generation service. Make sure this material is allowed to leave the local machine.",
+  "ai.disclosure_image": "This action sends the cover title and content summary to your configured image service. With OpenRouter, it also sends one locally extracted reference frame. Make sure this material is allowed to leave the local machine.",
   "ai.usage_text": "Estimated usage: one or more text model calls. Long subtitles are processed in batches.",
-  "ai.usage_image": "Estimated usage: image generation calls equal to each aspect multiplied by candidate count."
+  "ai.usage_image": "Estimated billed outputs: selected aspect ratios multiplied by candidate count."
 });
 
 Object.assign(en, {
@@ -959,7 +973,39 @@ Object.assign(en, {
   "health.check.llm_api_key": "LLM API key",
   "health.check.llm_google_api_key": "Google Gemini API key",
   "health.check.llm_openai_api_key": "OpenAI API key",
-  "health.check.demucs": "Demucs audio separation"
+  "health.check.demucs": "Demucs audio separation",
+  "health.check.local_llm_model": "Local text model",
+  "health.check.local_llm_server": "Local llama.cpp server",
+  "health.check.local_cover_model": "Local image model",
+  "health.check.local_cover_transformers": "Transformers local-image runtime",
+  "health.check.local_cover_diffusers": "Diffusers local-image runtime",
+  "health.check.local_cover_accelerate": "Accelerate local-image runtime",
+  "health.check.local_cover_bitsandbytes": "BitsAndBytes quantization runtime",
+  "settings.edit_ai_note": "Configure text and cover AI here. Choose Local Hugging Face to keep transcript text and reference frames on this machine; third-party providers use only the API keys you supply.",
+  "cover.usage_note_local": "Local mode edits a selected reference frame with the image model configured on this machine. The first run loads the model into GPU memory and may take longer.",
+  "ai.local_text": "Local mode: transcript text, clip summaries, and subtitles are processed by the configured text model through the loopback llama.cpp server and are not sent to an external AI provider.",
+  "ai.local_image": "Local mode: the title, content summary, and selected reference frame are processed by the configured image model on this machine and are not sent to an external AI provider.",
+  "settings.key.local_models_dir": "Local model directory",
+  "settings.key.local_llm_server_path": "llama.cpp server path",
+  "settings.key.local_llm_model_path": "Local GGUF model path",
+  "settings.key.local_llm_base_url": "Local LLM loopback URL",
+  "settings.key.local_llm_context_size": "Local LLM context size",
+  "settings.key.local_llm_gpu_layers": "Local LLM GPU layers",
+  "settings.key.local_llm_threads": "Local LLM CPU threads",
+  "settings.key.local_llm_startup_timeout_seconds": "Local LLM startup timeout (seconds)",
+  "settings.key.local_llm_request_timeout_seconds": "Local LLM request timeout (seconds)",
+  "settings.key.local_model_path": "Local image model path",
+  "settings.key.local_device": "Local cover device",
+  "settings.key.local_quantization": "Local cover quantization",
+  "settings.key.local_max_side": "Local cover maximum side",
+  "settings.key.local_steps": "Local cover inference steps",
+  "settings.key.local_guidance_scale": "Local cover guidance scale",
+  "settings.key.local_seed": "Local cover random seed",
+  "settings.key.local_max_sequence_length": "Local cover prompt token limit",
+  "settings.option.local": "Local Hugging Face",
+  "settings.option.nf4": "NF4 4-bit (recommended)",
+  "settings.option.none": "No quantization",
+  "settings.recommendation.reason.local_ai": "The selected provider runs on this machine and does not require an API key."
 });
 
 export default en;

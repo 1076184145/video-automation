@@ -56,6 +56,9 @@ MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 
 def _is_excluded(path: Path) -> bool:
     relative = path.relative_to(ROOT).as_posix()
+    parts = relative.split("/")
+    if parts[0] == "native" and "target" in parts:
+        return True
     return any(
         relative == excluded or relative.startswith(f"{excluded}/")
         for excluded in EXCLUDED_PARTS
@@ -87,6 +90,69 @@ def _iter_json_strings(value):
 
 
 class RepositoryHygieneTests(unittest.TestCase):
+    def test_local_ai_private_artifacts_are_gitignored(self) -> None:
+        entries = {
+            line.strip()
+            for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        required = {
+            ".env",
+            ".env.*",
+            ".cache/",
+            "models/",
+            "*.gguf",
+            "*.safetensors",
+            "logs/",
+            "logs-runtime/",
+            "processing/",
+            "output/",
+            "config/",
+            "local-models.json",
+            "local-ai-benchmark/",
+            "semantic-cover-debug/",
+        }
+        self.assertEqual(required - entries, set())
+        self.assertIn("!.env.example", entries)
+
+    def test_public_docs_do_not_embed_local_absolute_paths(self) -> None:
+        public_docs = (
+            ROOT / "README.md",
+            ROOT / "README.zh-CN.md",
+            ROOT / "docs" / "PROJECT_STRUCTURE.md",
+        )
+        forbidden_patterns = (
+            re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+", re.IGNORECASE),
+            re.compile(r"[A-Za-z]:[\\/]+video-automation(?:[\\/]|$)", re.IGNORECASE),
+        )
+        matches = []
+        for path in public_docs:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for pattern in forbidden_patterns:
+                if match := pattern.search(text):
+                    matches.append(
+                        f"{path.relative_to(ROOT).as_posix()}: {match.group(0)}"
+                    )
+        self.assertEqual(matches, [])
+
+    def test_public_docs_do_not_pin_a_private_hugging_face_model(self) -> None:
+        direct_model_link = re.compile(
+            r"https://huggingface\.co/(?!models(?:\?|/))[^/\s)]+/[^\s)]+",
+            re.IGNORECASE,
+        )
+        matches = []
+        for path in (
+            ROOT / "README.md",
+            ROOT / "README.zh-CN.md",
+            ROOT / "docs" / "PROJECT_STRUCTURE.md",
+        ):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if match := direct_model_link.search(text):
+                matches.append(
+                    f"{path.relative_to(ROOT).as_posix()}: {match.group(0)}"
+                )
+        self.assertEqual(matches, [])
+
     def test_beginner_readmes_are_concise(self) -> None:
         line_counts = {
             filename: len((ROOT / filename).read_text(encoding="utf-8").splitlines())

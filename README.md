@@ -56,16 +56,25 @@ python3 -m venv venv
 ./venv/bin/python run_worker.py --serve
 ```
 
-The recommended command installs the leaner Faster-Whisper runtime used by the
-default configuration. `requirements.txt` keeps the compatible OpenAI Whisper
-CLI fallback. FunASR with Faster-Whisper fallback uses
-`requirements-transcription-funasr.txt`; desktop packaging, Pillow, Demucs, and
-all other extras remain in `requirements-optional.txt`.
+The recommended command installs the leaner Faster-Whisper runtime used by the default configuration. `requirements.txt` keeps the compatible OpenAI Whisper CLI fallback. FunASR with Faster-Whisper fallback uses `requirements-transcription-funasr.txt`; desktop packaging, Pillow, Demucs, and other extras remain in `requirements-optional.txt`.
 
-Create a separate Linux virtual environment inside WSL. A Windows `venv` under
-`D:\` cannot be reused by WSL Python.
+Create a separate Linux virtual environment inside WSL. A Windows virtual
+environment cannot be reused by WSL Python.
 
 Open [http://127.0.0.1:8765/#/](http://127.0.0.1:8765/#/) in your browser. Keep the terminal window open while using the app.
+
+### Optional local Hugging Face AI
+
+Choose models from available VRAM rather than copying one machine's configuration. These are conservative starting points for one active model at a time with 1–2 GB of VRAM left free:
+
+| Free VRAM | Local text model | Local reference-image model | System RAM |
+|---|---|---|---|
+| CPU or under 6 GB | 1B–3B GGUF, Q4 | CPU offload or external service; 512–768 px | 16 GB+ |
+| 8 GB | 7B–8B GGUF, Q4 | 2B–4B, 4-bit; up to 768 px | 24–32 GB |
+| 12–16 GB | 12B–14B GGUF, Q4/Q5 | 4B–8B, 4-bit; 768–1024 px | 32 GB+ |
+| 24 GB+ | 20B–32B GGUF, Q4/Q5 | 8B–12B, 4/8-bit; up to 1024 px | 64 GB+ |
+
+Browse [text-generation models](https://huggingface.co/models?pipeline_tag=text-generation&sort=trending) and [image-to-image models](https://huggingface.co/models?pipeline_tag=image-to-image&sort=trending), verify each model's license and runtime compatibility, then install `requirements-local-ai.txt` and [llama.cpp](https://github.com/ggml-org/llama.cpp/releases). Keep the selected IDs, paths, weights, manifests, caches, logs, and benchmarks in the ignored local `.env`, `models/`, `config/`, and runtime folders; only generic guidance belongs in Git.
 
 ## Daily Workflow
 
@@ -104,22 +113,40 @@ Included in the local workflow:
 
 Optional features:
 
-- AI covers, translation, titles, descriptions, and highlight suggestions
+- AI covers, translation, titles, descriptions, and semantic highlight suggestions
 - NVIDIA CUDA/NVENC acceleration
 - Faster-Whisper local transcription (`medium` primary, `small` fallback by default); legacy FunASR configurations remain supported
 - Demucs audio separation
 - A separately configured publishing connector; manual packages remain the fallback
 
-AI features require a key from the provider you select. Keys entered in
+External AI features require a key from the provider you select; local Hugging
+Face mode does not. Keys entered in
 **Settings** are stored in the operating-system credential store; the private
 `.env` contains only a reference. Existing plaintext `.env` keys can be migrated
 from the warning shown in **Settings**. See [`.env.example`](.env.example) for
 available settings.
 
+Semantic highlight analysis samples the full transcript and returns precise
+intervals; those intervals drive the highlight cut and cover context instead of
+expanding back to whole structural clips. With OpenRouter image models that
+support references, cover generation locally extracts one frame from the
+top-ranked semantic intervals, preferring a clear centered subject over repeated
+or split-screen layouts, and sends it with the cover prompt only when you
+explicitly run the external cover feature.
+Failed semantic-provider attempts preserve the last good `highlights.json` and
+write only provider, model, status, and a stable error code to
+`highlights_attempt.json`; prompts, transcripts, and API keys are not stored there.
+
 Transcription runs in an isolated process with phase heartbeats, a no-progress
 timeout, process-tree cleanup, and a temporary backend circuit breaker. A failed
 model attempt therefore advances to the configured fallback instead of blocking
 the queue for the full duration-derived timeout.
+
+Transcription language defaults to automatic detection. Choose a fixed language
+only when every recording in the job or batch uses that language; forcing the
+wrong language can produce plausible-looking but incorrect subtitles. Before
+subtitle generation, invalid Unicode replacement markers and obvious
+single-character decoder loops are removed from ASR output.
 
 ## Important Outputs
 
@@ -131,7 +158,10 @@ Each job is stored under `processing/jobs/<job-name>/`.
 | `web_preview.mp4` | Smaller browser preview |
 | `transcript.txt` / `.srt` | Transcript and subtitles |
 | `cuts.json` | Suggested or edited clip ranges |
+| `highlights.json` / `highlight_cut.json` | Semantic highlight decisions and the duration-bounded render cut |
+| `highlights_attempt.json` | Last semantic-provider attempt status and privacy-safe error code |
 | `clip_refinement.json` | Deterministic boundary-check attempts, scores, and recovery state |
+| `highlight_thumbnail.jpg` | Local reference frame selected for grounded cover generation |
 | `cover_*.jpg` | Generated or selected covers |
 | `publish_packages/` | Files and text for manual upload |
 | `project_exports/` | Premiere Pro or Jianying/CapCut handoff files |

@@ -61,6 +61,23 @@ const ENV_KEY_MAP = {
   COVER_APP_TITLE: "app_title",
   LLM_PROVIDER: "llm_provider",
   LLM_MODEL: "llm_model",
+  LOCAL_MODELS_DIR: "local_models_dir",
+  LOCAL_LLM_SERVER_PATH: "local_llm_server_path",
+  LOCAL_LLM_MODEL_PATH: "local_llm_model_path",
+  LOCAL_LLM_BASE_URL: "local_llm_base_url",
+  LOCAL_LLM_CONTEXT_SIZE: "local_llm_context_size",
+  LOCAL_LLM_GPU_LAYERS: "local_llm_gpu_layers",
+  LOCAL_LLM_THREADS: "local_llm_threads",
+  LOCAL_LLM_STARTUP_TIMEOUT_SECONDS: "local_llm_startup_timeout_seconds",
+  LOCAL_LLM_REQUEST_TIMEOUT_SECONDS: "local_llm_request_timeout_seconds",
+  LOCAL_COVER_MODEL_PATH: "local_model_path",
+  LOCAL_COVER_DEVICE: "local_device",
+  LOCAL_COVER_QUANTIZATION: "local_quantization",
+  LOCAL_COVER_MAX_SIDE: "local_max_side",
+  LOCAL_COVER_STEPS: "local_steps",
+  LOCAL_COVER_GUIDANCE_SCALE: "local_guidance_scale",
+  LOCAL_COVER_SEED: "local_seed",
+  LOCAL_COVER_MAX_SEQUENCE_LENGTH: "local_max_sequence_length",
   API_BATCH_LIMIT: "batch_limit",
   RECORDING_UPLOAD_MAX_BYTES: "recording_upload_max_bytes",
   NATIVE_WAVEFORM_ENABLED: "native_waveform_enabled",
@@ -256,6 +273,12 @@ function dynamicRecommendation(id, currentValue, capabilities) {
     };
   }
   if (id === "optional_modules.llm_provider") {
+    if (String(currentValue || "").toLowerCase() === "local") {
+      return {
+        recommended: "local",
+        reasonKey: "settings.recommendation.reason.local_ai",
+      };
+    }
     return {
       recommended: currentValue || "openai-compatible",
       reasonKey: "settings.recommendation.reason.byok_provider",
@@ -287,6 +310,12 @@ function dynamicRecommendation(id, currentValue, capabilities) {
     };
   }
   if (id === "covers.provider") {
+    if (String(currentValue || "").toLowerCase() === "local") {
+      return {
+        recommended: "local",
+        reasonKey: "settings.recommendation.reason.local_ai",
+      };
+    }
     return capabilities.cover_api_key
       ? {
           recommended: currentValue && currentValue !== "disabled" ? currentValue : "openai-compatible",

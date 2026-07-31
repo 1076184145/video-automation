@@ -29,7 +29,7 @@ globalThis.document = {
   },
 };
 
-const { coverKeyStatus } = await import("../web/js/cover-panel.js");
+const { coverKeyStatus, renderCovers } = await import("../web/js/cover-panel.js");
 
 test("cover key status follows the selected provider", () => {
   assert.deepEqual(
@@ -59,4 +59,25 @@ test("cover key status follows the selected provider", () => {
     coverKeyStatus({ covers: { provider: "google" } }),
     { missing: true, messageKey: "cover.key_missing_google" }
   );
+
+  assert.deepEqual(
+    coverKeyStatus({ covers: { provider: "local" } }),
+    { missing: false, messageKey: "" }
+  );
+});
+
+test("local cover mode is enabled without an API key and shows a local-only notice", () => {
+  const html = renderCovers(
+    "job",
+    new Map(),
+    null,
+    {},
+    {},
+    {},
+    { settings: { covers: { provider: "local" } } },
+  );
+
+  assert.match(html, /processed by the configured image model on this machine/i);
+  assert.doesNotMatch(html, /allowed to leave the local machine/i);
+  assert.doesNotMatch(html, /id="generate-covers"[^>]*disabled/);
 });

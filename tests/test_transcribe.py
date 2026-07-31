@@ -260,6 +260,38 @@ class TranscribeFallbackTests(unittest.TestCase):
         self.assertNotIn("openai_api_key", persisted["settings"])
         self.assertNotIn("must-not-be-persisted", json.dumps(persisted))
 
+    def test_asr_text_sanitizer_removes_invalid_output_and_bounds_character_loops(self) -> None:
+        settings = SimpleNamespace(
+            subtitle_replacements=(),
+            profanity_words=(),
+            subtitle_censor_replacement="[beep]",
+        )
+
+        cleaned = transcribe._postprocess_text(
+            "감사합니다. " + ("땡" * 72) + "\ufffd 바\ufffd " + ("거 " * 10).strip(),
+            settings,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(cleaned, "감사합니다. 땡땡땡땡 바 거 거 거 거")
+        self.assertNotIn("\ufffd", cleaned)
+
+    def test_asr_text_sanitizer_preserves_normal_emphasis(self) -> None:
+        self.assertEqual(
+            transcribe._sanitize_asr_text("좋아!!! ㅋㅋㅋㅋ 1000000"),
+            "좋아!!! ㅋㅋㅋㅋ 1000000",
+        )
+
+    def test_asr_word_sanitizer_bounds_repeated_tokens_and_keeps_full_span(self) -> None:
+        words = [
+            {"start": index / 10, "end": (index + 1) / 10, "word": "거"}
+            for index in range(11)
+        ]
+
+        cleaned = transcribe._bound_repeated_asr_words(words)
+
+        self.assertEqual([word["word"] for word in cleaned], ["거"] * 4)
+        self.assertEqual(cleaned[-1]["end"], 1.1)
+
     def test_funasr_warmup_uses_persistent_worker_protocol(self) -> None:
         settings = SimpleNamespace(
             root=Path("D:/video-automation"),

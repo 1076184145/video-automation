@@ -986,6 +986,16 @@ canvas.timeline.is-panning { cursor: grabbing; }
 .enhancement-result-details[open] summary { margin-bottom: 10px; }
 .download-more summary:focus-visible,
 .enhancement-result-details summary:focus-visible { outline: var(--focus-ring); }
+.technical-error {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  font: 12px/1.6 var(--font-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .download-advanced summary { color: var(--text-secondary); cursor: pointer; margin-bottom: 12px; font-weight: 600; outline: none; border-radius: var(--radius-sm); padding: 4px; }
 .download-advanced summary:focus-visible { outline: var(--focus-ring); }
 

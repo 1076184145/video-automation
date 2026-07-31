@@ -38,6 +38,10 @@ _PATH_FIELDS = {
     "bgm_path",
     "demucs_path",
     "uvr_path",
+    "local_models_dir",
+    "local_llm_server_path",
+    "local_llm_model_path",
+    "local_cover_model_path",
 }
 
 

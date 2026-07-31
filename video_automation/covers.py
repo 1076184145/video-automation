@@ -4,6 +4,7 @@ import base64
 import http.client
 import ipaddress
 import json
+import math
 import os
 import shutil
 import socket
@@ -20,6 +21,14 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
+from .media import run_command
+from .provider_errors import (
+    ProviderRequestError,
+    provider_configuration_error,
+    provider_error_code,
+    provider_http_error,
+    provider_network_error,
+)
 
 
 ASPECT_SPECS = {
@@ -27,12 +36,14 @@ ASPECT_SPECS = {
     "16:9": {"slug": "16x9", "selected": "cover_landscape.jpg", "size": "1536x1024", "final": (1920, 1080)},
 }
 STYLE_PROMPTS = {
-    "short_video": "bold Chinese short-video cover, strong subject, high contrast, vivid but clean",
-    "clean": "minimal clean editorial cover, modern layout, clear subject, premium calm lighting",
-    "cinematic": "cinematic poster-like cover, dramatic lighting, film still mood, premium composition",
-    "gaming": "energetic gaming livestream cover, esports style, dynamic lighting, high-impact composition",
+    "short_video": "high-impact creator portrait, strong subject, vivid clean lighting, text-free composition",
+    "clean": "minimal editorial scene, clear subject, premium calm lighting, text-free composition",
+    "cinematic": "cinematic film-still mood, dramatic lighting, premium text-free composition",
+    "gaming": "energetic gaming livestream scene, esports lighting, dynamic text-free composition",
 }
-SUPPORTED_COVER_PROVIDERS = {"openai", "openai-compatible", "openrouter", "google"}
+SUPPORTED_COVER_PROVIDERS = {"openai", "openai-compatible", "openrouter", "google", "local"}
+COVER_SUMMARY_MAX_CHARS = 240
+COVER_HIGHLIGHTS_MAX_CHARS = 160
 MAX_REMOTE_COVER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_REMOTE_COVER_REDIRECTS = 3
 MAX_REMOTE_COVER_TOTAL_SECONDS = 60.0
@@ -71,7 +82,7 @@ def normalize_cover_options(settings: Settings, payload: dict[str, Any] | None) 
 
 
 def mark_cover_generation_started(settings: Settings, job_dir: Path, options: dict[str, Any]) -> dict[str, Any]:
-    title = str(options.get("title") or _default_title(job_dir)).strip()
+    title = _preferred_cover_title(job_dir, str(options.get("title") or ""))
     manifest = _initial_manifest(
         settings,
         job_dir,
@@ -93,16 +104,36 @@ def generate_cover_candidates(
     count: int | None = None,
     aspects: list[str] | None = None,
 ) -> dict[str, Any]:
-    if settings.cover_provider.strip().lower() not in SUPPORTED_COVER_PROVIDERS:
-        raise RuntimeError(f"unsupported COVER_PROVIDER: {settings.cover_provider}")
-    if not settings.cover_api_key_for_provider():
-        raise RuntimeError("COVER_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY is not configured")
+    provider = settings.cover_provider.strip().lower()
+    provider_name = _cover_provider_name(settings)
+    if provider not in SUPPORTED_COVER_PROVIDERS:
+        raise provider_configuration_error(
+            provider_name,
+            "image generation",
+            "provider_unsupported",
+            f"Unsupported COVER_PROVIDER: {settings.cover_provider}",
+        )
+    if provider != "local" and not settings.cover_api_key_for_provider():
+        raise provider_configuration_error(
+            provider_name,
+            "image generation",
+            "credentials_missing",
+            "The API key required by the selected cover provider is not configured.",
+        )
+    if not settings.cover_model.strip():
+        raise provider_configuration_error(
+            provider_name,
+            "image generation",
+            "model_missing",
+            "COVER_MODEL is not configured.",
+        )
 
     normalized_count = _cover_count(count if count is not None else settings.cover_count)
     normalized_aspects = _cover_aspects(aspects or list(settings.cover_aspects))
     normalized_style = style if style in STYLE_PROMPTS else "short_video"
     manifest_path = job_dir / "cover_manifest.json"
-    prompt_title = (title or _default_title(job_dir)).strip()
+    prompt_title = _preferred_cover_title(job_dir, title)
+    reference_path = _prepare_cover_reference(settings, job_dir) if _uses_cover_reference(settings) else None
     context = _cover_context(job_dir, prompt_title)
     manifest = _initial_manifest(
         settings,
@@ -112,13 +143,21 @@ def generate_cover_candidates(
         count=normalized_count,
         aspects=normalized_aspects,
     )
+    if reference_path is not None:
+        manifest["reference_image"] = reference_path.name
     write_json_atomic(manifest_path, manifest)
 
     try:
         for aspect in normalized_aspects:
             spec = ASPECT_SPECS[aspect]
             prompt = _build_prompt(context, aspect, normalized_style)
-            payload = _generate_images(settings, prompt, normalized_count, spec["size"])
+            payload = _generate_images(
+                settings,
+                prompt,
+                normalized_count,
+                spec["size"],
+                reference_path=reference_path,
+            )
             candidates = []
             for index, item in enumerate(payload.get("data") or [], start=1):
                 raw = item.get("b64_json")
@@ -144,15 +183,22 @@ def generate_cover_candidates(
             manifest["candidates"][aspect] = candidates
         manifest["status"] = "ready"
         manifest["updated_at"] = _now()
+        manifest["error_code"] = ""
         manifest["error"] = ""
         write_json_atomic(manifest_path, manifest)
         return manifest
     except Exception as exc:
         manifest["status"] = "failed"
         manifest["updated_at"] = _now()
+        manifest["error_code"] = provider_error_code(exc)
         manifest["error"] = str(exc)
         write_json_atomic(manifest_path, manifest)
         raise
+    finally:
+        if provider == "local":
+            from .local_ai import release_local_ai
+
+            release_local_ai()
 
 
 def select_cover(job_dir: Path, *, aspect: str, candidate: str) -> dict[str, Any]:
@@ -186,6 +232,8 @@ def cover_manifest(job_dir: Path) -> dict[str, Any]:
         "status": "idle",
         "candidates": {},
         "selected": _selected_from_existing(job_dir),
+        "error_code": "",
+        "error": "",
     }
 
 
@@ -216,15 +264,51 @@ def _initial_manifest(
     }
 
 
-def _generate_images(settings: Settings, prompt: str, count: int, size: str) -> dict[str, Any]:
+def _generate_images(
+    settings: Settings,
+    prompt: str,
+    count: int,
+    size: str,
+    *,
+    reference_path: Path | None = None,
+) -> dict[str, Any]:
+    if settings.cover_provider.strip().lower() == "local":
+        from .local_ai import generate_local_cover_images
+
+        return generate_local_cover_images(
+            settings,
+            prompt=prompt,
+            count=count,
+            aspect=_aspect_from_size(size),
+            reference_path=reference_path,
+        )
     if settings.cover_provider.strip().lower() == "google":
         return _google_generate_images(settings, prompt, count, _aspect_from_size(size))
-    return _openai_generate_images(settings, prompt, count, size)
+    return _openai_generate_images(
+        settings,
+        prompt,
+        count,
+        size,
+        reference_path=reference_path,
+    )
 
 
-def _openai_generate_images(settings: Settings, prompt: str, count: int, size: str) -> dict[str, Any]:
+def _openai_generate_images(
+    settings: Settings,
+    prompt: str,
+    count: int,
+    size: str,
+    *,
+    reference_path: Path | None = None,
+) -> dict[str, Any]:
     if _uses_openrouter_images(settings):
-        return _openrouter_generate_images(settings, prompt, count, _aspect_from_size(size))
+        return _openrouter_generate_images(
+            settings,
+            prompt,
+            count,
+            _aspect_from_size(size),
+            reference_path=reference_path,
+        )
     output_format = settings.cover_output_format if settings.cover_output_format in {"jpeg", "png", "webp"} else "jpeg"
     body = {
         "model": settings.cover_model,
@@ -245,50 +329,93 @@ def _openai_generate_images(settings: Settings, prompt: str, count: int, size: s
         with urllib.request.urlopen(request, timeout=180) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        try:
-            payload = json.loads(exc.read().decode("utf-8"))
-            message = payload.get("error", {}).get("message") or payload.get("error") or str(exc)
-        except Exception:
-            message = str(exc)
-        raise RuntimeError(f"Cover image generation failed: {message}") from exc
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise provider_http_error(
+            _cover_provider_name(settings),
+            "image generation",
+            exc.code,
+            detail,
+        ) from exc
+    except OSError as exc:
+        raise provider_network_error(
+            _cover_provider_name(settings),
+            "image generation",
+            exc,
+        ) from exc
 
 
-def _openrouter_generate_images(settings: Settings, prompt: str, count: int, aspect: str) -> dict[str, Any]:
-    data: list[dict[str, Any]] = []
-    for _ in range(count):
-        body = {
-            "model": settings.cover_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "modalities": list(settings.cover_modalities or ("image", "text")),
-            "image_config": {"aspect_ratio": aspect},
-            "stream": False,
-        }
-        request = urllib.request.Request(
-            _join_url(settings.cover_base_url, "chat/completions"),
-            data=json.dumps(body).encode("utf-8"),
-            headers=_cover_headers(settings),
-            method="POST",
+def _openrouter_generate_images(
+    settings: Settings,
+    prompt: str,
+    count: int,
+    aspect: str,
+    *,
+    reference_path: Path | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": settings.cover_model,
+        "prompt": prompt,
+        "n": count,
+        "aspect_ratio": aspect,
+        "quality": settings.cover_quality,
+        "output_format": settings.cover_output_format,
+        "background": "opaque",
+    }
+    if reference_path is not None and reference_path.is_file():
+        body["input_references"] = [{
+            "type": "image_url",
+            "image_url": {"url": _image_data_url(reference_path)},
+        }]
+    request = urllib.request.Request(
+        _join_url(settings.cover_base_url, "images"),
+        data=json.dumps(body).encode("utf-8"),
+        headers=_cover_headers(settings),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise provider_http_error(
+            "OpenRouter",
+            "image generation",
+            exc.code,
+            detail,
+        ) from exc
+    except OSError as exc:
+        raise provider_network_error("OpenRouter", "image generation", exc) from exc
+    raw_data = payload.get("data") if isinstance(payload.get("data"), list) else []
+    data = []
+    for item in raw_data:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("b64_json") or item.get("url")
+        if isinstance(raw, str) and raw.strip():
+            data.append({
+                "b64_json": raw,
+                "revised_prompt": str(item.get("revised_prompt") or ""),
+            })
+    if not data:
+        raise ProviderRequestError(
+            "OpenRouter",
+            "image generation",
+            "response_invalid",
+            "The response did not include generated images. "
+            "Check that COVER_MODEL supports the dedicated Image API.",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=180) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = json.loads(exc.read().decode("utf-8"))
-                message = detail.get("error", {}).get("message") or detail.get("error") or str(exc)
-            except Exception:
-                message = str(exc)
-            raise RuntimeError(f"OpenRouter image generation failed: {message}") from exc
-        images, content = _openrouter_images(payload)
-        for raw in images:
-            data.append({"b64_json": raw, "revised_prompt": content})
     return {"data": data}
 
 
 def _google_generate_images(settings: Settings, prompt: str, count: int, aspect: str) -> dict[str, Any]:
     api_key = settings.cover_api_key_for_provider()
     if not api_key:
-        raise RuntimeError("COVER_API_KEY or GOOGLE_API_KEY is not configured")
+        raise provider_configuration_error(
+            "Google Gemini",
+            "image generation",
+            "credentials_missing",
+            "COVER_API_KEY or GOOGLE_API_KEY is not configured.",
+        )
     data: list[dict[str, Any]] = []
     for _ in range(count):
         body = {
@@ -312,9 +439,14 @@ def _google_generate_images(settings: Settings, prompt: str, count: int, aspect:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Google Gemini image generation failed: {exc.code} {detail}") from exc
+            raise provider_http_error(
+                "Google Gemini",
+                "image generation",
+                exc.code,
+                detail,
+            ) from exc
         except OSError as exc:
-            raise RuntimeError(f"Google Gemini image generation failed: {exc}") from exc
+            raise provider_network_error("Google Gemini", "image generation", exc) from exc
         images, content = _google_images(payload)
         data.extend({"b64_json": raw, "revised_prompt": content} for raw in images)
     return {"data": data}
@@ -338,7 +470,13 @@ def _google_images(payload: dict[str, Any]) -> tuple[list[str], str]:
             if isinstance(inline, dict) and isinstance(inline.get("data"), str):
                 images.append(inline["data"])
     if not images:
-        raise RuntimeError("Google Gemini response did not include generated image data. Check that COVER_MODEL supports image output.")
+        raise ProviderRequestError(
+            "Google Gemini",
+            "image generation",
+            "response_invalid",
+            "The response did not include generated image data. "
+            "Check that COVER_MODEL supports image output.",
+        )
     return images, "\n".join(text_parts).strip()
 
 
@@ -387,6 +525,23 @@ def _openrouter_images(payload: dict[str, Any]) -> tuple[list[str], str]:
 def _uses_openrouter_images(settings: Settings) -> bool:
     provider = settings.cover_provider.strip().lower()
     return provider == "openrouter" or "openrouter.ai" in settings.cover_base_url.strip().lower()
+
+
+def _uses_cover_reference(settings: Settings) -> bool:
+    return settings.cover_provider.strip().lower() == "local" or _uses_openrouter_images(settings)
+
+
+def _cover_provider_name(settings: Settings) -> str:
+    provider = settings.cover_provider.strip().lower()
+    if provider == "local":
+        return "Local Hugging Face"
+    if provider == "openrouter" or "openrouter.ai" in settings.cover_base_url.strip().lower():
+        return "OpenRouter"
+    if provider == "google":
+        return "Google Gemini"
+    if provider in {"openai", "openai-compatible"}:
+        return "OpenAI" if provider == "openai" else "OpenAI-compatible provider"
+    return settings.cover_provider.strip() or "Cover provider"
 
 
 def _aspect_from_size(size: str) -> str:
@@ -559,14 +714,10 @@ def _postprocess_cover(raw: bytes, output_path: Path, *, size: tuple[int, int], 
         font = _cover_font(ImageFont, font_name, max(44, int(size[0] * 0.06)))
         lines = _wrap_title(draw, title, font, max_width=int(size[0] * 0.84))
         line_height = _text_height(draw, "测", font) + int(size[1] * 0.014)
-        block_height = line_height * len(lines) + int(size[1] * 0.06)
-        y0 = size[1] - block_height - int(size[1] * 0.045)
-        draw.rounded_rectangle(
-            [int(size[0] * 0.06), y0, int(size[0] * 0.94), size[1] - int(size[1] * 0.045)],
-            radius=max(18, int(size[0] * 0.025)),
-            fill=(0, 0, 0, 150),
-        )
-        y = y0 + int(size[1] * 0.03)
+        panel_top = int(size[1] * 0.68)
+        draw.rectangle([0, panel_top, size[0], size[1]], fill=(8, 10, 14, 255))
+        text_height = line_height * len(lines)
+        y = panel_top + max(0, (size[1] - panel_top - text_height) // 2)
         for line in lines:
             width = _text_width(draw, line, font)
             x = (size[0] - width) / 2
@@ -663,14 +814,19 @@ def _text_height(draw: Any, text: str, font: Any) -> int:
 def _build_prompt(context: dict[str, Any], aspect: str, style: str) -> str:
     style_prompt = STYLE_PROMPTS.get(style, STYLE_PROMPTS["short_video"])
     return (
-        f"Create a polished video cover background for a creator upload. Aspect ratio: {aspect}. "
+        f"Create one polished, text-free editorial portrait or scene. Aspect ratio: {aspect}. "
         f"Style: {style_prompt}. "
-        "Do not include readable text, captions, logos, watermarks, UI, platform badges, or screenshots. "
-        "Leave visual breathing room in the lower third for a title overlay. "
-        f"Video title: {context['title']}. "
-        f"Content summary: {context['summary']}. "
-        f"Key moments: {context['highlights']}. "
-        f"Thumbnail visual cue: {context['thumbnail']}."
+        "Generate natural background art, not a poster, advertisement, screenshot, graphic design, or cover layout. "
+        "Show only the visual scene; the application adds the title separately after generation. "
+        "Use the notes below only as private art direction and never render or copy their wording. "
+        "Do not draw text, letters, numbers, captions, logos, watermarks, UI, badges, screenshots, or text-like marks. "
+        "Base the scene on the supplied content; do not invent public figures, brands, or unrelated events. "
+        "If a reference frame is supplied, preserve the creator's recognizable identity, clothing, and room context. "
+        "Keep the lower third visually simple for a later title overlay. "
+        f"Concept note: {context['title']}. "
+        f"Context note: {context['summary']}. "
+        f"Moment notes: {context['highlights']}. "
+        f"Reference cue: {context['thumbnail']}."
     )
 
 
@@ -678,26 +834,501 @@ def _cover_context(job_dir: Path, title: str) -> dict[str, str]:
     manifest = read_json_file(job_dir / "manifest.json") or {}
     cuts = read_json_file(job_dir / "cuts.json") or {}
     transcript = read_json_file(job_dir / "transcript.json") or {}
+    semantic_payload = read_json_file(job_dir / "highlights.json") or {}
+    metadata = read_json_file(job_dir / "metadata.json") or {}
     source_name = manifest.get("source_name") or job_dir.name
     segments = transcript.get("segments") if isinstance(transcript.get("segments"), list) else []
-    transcript_text = " ".join(str(segment.get("text", "")) for segment in segments[:12] if isinstance(segment, dict))
+    transcript_text = " ".join(
+        str(segment.get("text", "")).strip()
+        for segment in _sample_evenly_for_cover(
+            [item for item in segments if isinstance(item, dict)],
+            24,
+        )
+        if str(segment.get("text", "")).strip()
+    )
+    semantic = semantic_payload.get("highlights")
+    if not isinstance(semantic, list) or not semantic:
+        semantic = cuts.get("semantic_highlights")
+    if not isinstance(semantic, list):
+        semantic = []
+    ranked_semantic = sorted(
+        [item for item in semantic if isinstance(item, dict)],
+        key=lambda item: _cover_score(item.get("score")),
+        reverse=True,
+    )[:5]
+    semantic_moments = []
+    for item in ranked_semantic:
+        start = _cover_score(item.get("start"))
+        end = _cover_score(item.get("end"))
+        evidence = _cover_transcript_text(segments, start, end, max_chars=220)
+        reason = str(item.get("reason") or "").strip()
+        recommended_use = str(item.get("recommended_use") or "").strip()
+        parts = [
+            f"{start:.1f}-{end:.1f}s",
+            evidence,
+            f"亮点：{reason}" if reason else "",
+            f"用途：{recommended_use}" if recommended_use else "",
+        ]
+        semantic_moments.append("；".join(part for part in parts if part))
+
     clips = cuts.get("clips") if isinstance(cuts.get("clips"), list) else []
     best = sorted(
         [clip for clip in clips if isinstance(clip, dict)],
-        key=lambda clip: float(clip.get("content_score") or 0),
+        key=lambda clip: _cover_score(
+            clip.get("final_score")
+            if clip.get("final_score") is not None
+            else clip.get("content_score")
+        ),
         reverse=True,
     )[:5]
-    highlights = " / ".join(str(clip.get("transcript_text") or clip.get("reason") or "")[:80] for clip in best)
+    structural_moments = [
+        str(
+            clip.get("subtitle_text")
+            or clip.get("transcript_text")
+            or clip.get("reason")
+            or ""
+        ).strip()[:140]
+        for clip in best
+    ]
+    semantic_summary = str(semantic_payload.get("summary") or "").strip()
+    metadata_descriptions = metadata.get("descriptions") if isinstance(metadata.get("descriptions"), list) else []
+    metadata_summary = next(
+        (str(item).strip() for item in metadata_descriptions if str(item).strip()),
+        "",
+    )
+    highlights = " / ".join(semantic_moments or [item for item in structural_moments if item])
+    summary = semantic_summary or metadata_summary or transcript_text or str(source_name)
     return {
-        "title": title or Path(str(source_name)).stem,
-        "summary": (transcript_text or str(source_name))[:900],
-        "highlights": (highlights or "important commentary moments from the video")[:600],
+        "title": title or _preferred_cover_title(job_dir, ""),
+        "summary": summary[:COVER_SUMMARY_MAX_CHARS],
+        "highlights": (
+            highlights or "important commentary moments from the video"
+        )[:COVER_HIGHLIGHTS_MAX_CHARS],
         "thumbnail": _thumbnail_summary(job_dir),
     }
 
 
+def _preferred_cover_title(job_dir: Path, explicit_title: str) -> str:
+    title = " ".join(str(explicit_title or "").split())
+    if title:
+        return title
+    metadata = read_json_file(job_dir / "metadata.json") or {}
+    for key in ("cover_titles", "titles"):
+        values = metadata.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            candidate = " ".join(str(value or "").split())
+            if candidate:
+                return candidate[:120]
+    semantic_payload = read_json_file(job_dir / "highlights.json") or {}
+    semantic_summary = " ".join(str(semantic_payload.get("summary") or "").split())
+    if semantic_summary:
+        concise_title = _summary_cover_title(semantic_summary)
+        if concise_title:
+            return concise_title
+    return _default_title(job_dir)
+
+
+def _summary_cover_title(summary: str, max_chars: int = 24) -> str:
+    text = " ".join(str(summary or "").split())
+    separators = ("，", ",", "。", "！", "？", "；", ".", "!", "?", ";")
+    positions = [text.find(separator) for separator in separators if separator in text]
+    if positions:
+        text = text[: min(position for position in positions if position >= 0)]
+    return text[:max_chars].rstrip("，,、：:；; ")
+
+
+def _sample_evenly_for_cover(items: list[Any], limit: int) -> list[Any]:
+    if limit <= 0 or not items:
+        return []
+    if len(items) <= limit:
+        return list(items)
+    if limit == 1:
+        return [items[0]]
+    return [
+        items[round(index * (len(items) - 1) / (limit - 1))]
+        for index in range(limit)
+    ]
+
+
+def _cover_transcript_text(
+    segments: list[Any],
+    start: float,
+    end: float,
+    *,
+    max_chars: int,
+) -> str:
+    texts = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        segment_start = _cover_score(segment.get("start"))
+        segment_end = _cover_score(segment.get("end"))
+        if segment_start < end and segment_end > start:
+            text = str(segment.get("text") or "").strip()
+            if text:
+                texts.append(text)
+    return " ".join(texts)[:max_chars]
+
+
+def _cover_score(value: Any) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def _prepare_cover_reference(settings: Settings, job_dir: Path) -> Path | None:
+    fallback = job_dir / "thumbnail.jpg"
+    manifest = read_json_file(job_dir / "manifest.json") or {}
+    source_value = str(manifest.get("source_path") or "").strip()
+    source_path = Path(source_value) if source_value else None
+    intervals = _cover_reference_intervals(job_dir)
+    if source_path is None or not source_path.is_file() or not intervals:
+        return fallback if fallback.is_file() else None
+    interval_signature = [
+        [round(start, 3), round(end, 3), round(semantic_score, 3)]
+        for start, end, semantic_score in intervals
+    ]
+
+    output_path = job_dir / "highlight_thumbnail.jpg"
+    metadata_path = job_dir / "highlight_thumbnail.json"
+    cached = read_json_file(metadata_path) or {}
+    if (
+        output_path.is_file()
+        and output_path.stat().st_size > 0
+        and cached.get("selection_algorithm") == "semantic_visual_v3"
+        and cached.get("candidate_intervals") == interval_signature
+    ):
+        return output_path
+
+    candidates = []
+    max_semantic_score = max(item[2] for item in intervals)
+    candidate_index = 0
+    for interval_start, interval_end, semantic_score in intervals:
+        timestamps = _cover_reference_sample_timestamps(interval_start, interval_end)
+        midpoint = (interval_start + interval_end) / 2
+        for timestamp in timestamps:
+            candidate_index += 1
+            temp_path = job_dir / f".highlight_thumbnail.candidate-{candidate_index:02}.jpg"
+            temp_path.unlink(missing_ok=True)
+            if not _extract_cover_reference_frame(settings, source_path, temp_path, timestamp):
+                temp_path.unlink(missing_ok=True)
+                continue
+            metrics = _cover_reference_frame_score(temp_path)
+            semantic_adjustment = (semantic_score - max_semantic_score) * 1.25
+            candidates.append({
+                "path": temp_path,
+                "timestamp": timestamp,
+                "interval_start": interval_start,
+                "interval_end": interval_end,
+                "interval_midpoint": midpoint,
+                "semantic_score": semantic_score,
+                "semantic_adjustment": semantic_adjustment,
+                "selection_score": float(metrics.get("score") or 0.0) + semantic_adjustment,
+                **metrics,
+            })
+    if not candidates:
+        return fallback if fallback.is_file() else None
+    selected = max(
+        candidates,
+        key=lambda item: (
+            float(item.get("selection_score") or 0.0),
+            float(item.get("semantic_score") or 0.0),
+            -abs(float(item["timestamp"]) - float(item["interval_midpoint"])),
+        ),
+    )
+    os.replace(Path(selected["path"]), output_path)
+    for candidate in candidates:
+        path = Path(candidate["path"])
+        if path != Path(selected["path"]):
+            path.unlink(missing_ok=True)
+    write_json_atomic(metadata_path, {
+        "status": "ready",
+        "path": output_path.name,
+        "selection_algorithm": "semantic_visual_v3",
+        "timestamp": round(float(selected["timestamp"]), 3),
+        "interval_start": round(float(selected["interval_start"]), 3),
+        "interval_end": round(float(selected["interval_end"]), 3),
+        "semantic_score": round(float(selected["semantic_score"]), 3),
+        "candidate_intervals": interval_signature,
+        "sampled_timestamps": [
+            round(float(candidate["timestamp"]), 3)
+            for candidate in candidates
+        ],
+        "selection_score": round(float(selected.get("selection_score") or 0.0), 3),
+        "visual_score": round(float(selected.get("score") or 0.0), 3),
+        "face_count": selected.get("face_count"),
+        "face_ratio": selected.get("face_ratio"),
+        "face_center_distance": selected.get("face_center_distance"),
+        "sharpness": round(float(selected.get("sharpness") or 0.0), 3),
+        "brightness": round(float(selected.get("brightness") or 0.0), 3),
+        "repeated_thirds": round(float(selected.get("repeated_thirds") or 0.0), 4),
+        "source_name": manifest.get("source_name") or source_path.name,
+        "generated_at": _now(),
+    })
+    return output_path
+
+
+def _extract_cover_reference_frame(
+    settings: Settings,
+    source_path: Path,
+    output_path: Path,
+    timestamp: float,
+) -> bool:
+    result = run_command([
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(source_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=1280:-2",
+        "-q:v",
+        "2",
+        str(output_path),
+    ], timeout=120)
+    return result.returncode == 0 and output_path.is_file() and output_path.stat().st_size > 0
+
+
+def _cover_reference_frame_score(path: Path) -> dict[str, Any]:
+    try:
+        import cv2
+
+        image = cv2.imread(str(path))
+        if image is None:
+            raise RuntimeError("OpenCV could not decode the frame")
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+        detector = cv2.CascadeClassifier(cascade_path)
+        faces = detector.detectMultiScale(
+            gray,
+            scaleFactor=1.08,
+            minNeighbors=5,
+            minSize=(48, 48),
+        )
+        height, width = gray.shape[:2]
+        face_count = len(faces)
+        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        brightness = float(gray.mean())
+        repeated_thirds = _repeated_vertical_thirds_score(gray)
+        face_ratio = 0.0
+        face_center_distance = None
+        score = (
+            min(30.0, sharpness / 18.0)
+            - abs(brightness - 135.0) / 8.0
+            - repeated_thirds * 140.0
+        )
+        if face_count == 1:
+            x, y, face_width, face_height = faces[0]
+            face_ratio = float(face_width * face_height) / max(1.0, float(width * height))
+            center_x = x + face_width / 2
+            center_y = y + face_height / 2
+            horizontal_distance = abs(center_x / max(1.0, width) - 0.5)
+            vertical_distance = abs(center_y / max(1.0, height) - 0.42)
+            face_center_distance = horizontal_distance + vertical_distance
+            score += (
+                120.0
+                + min(35.0, face_ratio * 260.0)
+                - horizontal_distance * 110.0
+                - vertical_distance * 40.0
+            )
+        elif face_count > 1:
+            score += max(-40.0, 35.0 - (face_count - 1) * 35.0)
+        else:
+            score -= 25.0
+        return {
+            "score": round(score, 3),
+            "face_count": int(face_count),
+            "sharpness": round(sharpness, 3),
+            "brightness": round(brightness, 3),
+            "repeated_thirds": round(repeated_thirds, 4),
+            "face_ratio": round(face_ratio, 5),
+            "face_center_distance": (
+                round(face_center_distance, 5)
+                if face_center_distance is not None
+                else None
+            ),
+        }
+    except Exception:
+        try:
+            from PIL import Image, ImageFilter, ImageStat
+
+            with Image.open(path) as image:
+                gray = image.convert("L")
+                brightness = float(ImageStat.Stat(gray).mean[0])
+                edges = gray.filter(ImageFilter.FIND_EDGES)
+                sharpness = float(ImageStat.Stat(edges).var[0])
+                repeated_thirds = _repeated_vertical_thirds_pillow_score(gray)
+            return {
+                "score": round(
+                    min(30.0, sharpness / 8.0)
+                    - abs(brightness - 135.0) / 8.0
+                    - repeated_thirds * 140.0,
+                    3,
+                ),
+                "face_count": None,
+                "sharpness": round(sharpness, 3),
+                "brightness": round(brightness, 3),
+                "repeated_thirds": round(repeated_thirds, 4),
+                "face_ratio": None,
+                "face_center_distance": None,
+            }
+        except Exception:
+            return {
+                "score": 0.0,
+                "face_count": None,
+                "sharpness": 0.0,
+                "brightness": 0.0,
+                "repeated_thirds": 0.0,
+                "face_ratio": None,
+                "face_center_distance": None,
+            }
+
+
+def _repeated_vertical_thirds_score(gray: Any) -> float:
+    try:
+        import cv2
+
+        height, width = gray.shape[:2]
+        third = width // 3
+        if height < 32 or third < 32:
+            return 0.0
+        regions = [
+            gray[:, index * third:(index + 1) * third]
+            for index in range(3)
+        ]
+        normalized = [cv2.resize(region, (160, 90)) for region in regions]
+        differences = []
+        for left, right in ((normalized[0], normalized[1]), (normalized[1], normalized[2])):
+            difference = float(cv2.absdiff(left, right).mean())
+            differences.append(difference)
+        mean_difference = sum(differences) / len(differences)
+        return max(0.0, min(1.0, (28.0 - mean_difference) / 20.0))
+    except Exception:
+        return 0.0
+
+
+def _repeated_vertical_thirds_pillow_score(gray: Any) -> float:
+    try:
+        from PIL import ImageChops, ImageStat
+
+        width, height = gray.size
+        third = width // 3
+        if height < 32 or third < 32:
+            return 0.0
+        regions = [
+            gray.crop((index * third, 0, (index + 1) * third, height)).resize((160, 90))
+            for index in range(3)
+        ]
+        differences = [
+            float(ImageStat.Stat(ImageChops.difference(left, right)).mean[0])
+            for left, right in ((regions[0], regions[1]), (regions[1], regions[2]))
+        ]
+        mean_difference = sum(differences) / len(differences)
+        return max(0.0, min(1.0, (28.0 - mean_difference) / 20.0))
+    except Exception:
+        return 0.0
+
+
+def _cover_reference_sample_timestamps(start: float, end: float) -> list[float]:
+    duration = max(0.0, end - start)
+    fractions = (0.5,) if duration <= 4.0 else (0.15, 0.35, 0.5, 0.65, 0.85)
+    return list(dict.fromkeys(round(start + duration * fraction, 3) for fraction in fractions))
+
+
+def _cover_reference_timestamp(job_dir: Path) -> float | None:
+    interval = _cover_reference_interval(job_dir)
+    return round((interval[0] + interval[1]) / 2, 3) if interval is not None else None
+
+
+def _cover_reference_interval(job_dir: Path) -> tuple[float, float] | None:
+    intervals = _cover_reference_intervals(job_dir)
+    return intervals[0][:2] if intervals else None
+
+
+def _cover_reference_intervals(
+    job_dir: Path,
+    *,
+    limit: int = 3,
+) -> list[tuple[float, float, float]]:
+    highlights_payload = read_json_file(job_dir / "highlights.json") or {}
+    cuts = read_json_file(job_dir / "cuts.json") or {}
+    semantic = highlights_payload.get("highlights")
+    if not isinstance(semantic, list) or not semantic:
+        semantic = cuts.get("semantic_highlights")
+    if isinstance(semantic, list):
+        ranked_semantic = sorted(
+            [item for item in semantic if isinstance(item, dict)],
+            key=lambda item: _cover_score(item.get("score")),
+            reverse=True,
+        )
+        intervals = []
+        for item in ranked_semantic:
+            start = _cover_score(item.get("start"))
+            end = _cover_score(item.get("end"))
+            if start >= 0 and end > start:
+                if any(start < existing_end and end > existing_start for existing_start, existing_end, _ in intervals):
+                    continue
+                intervals.append((start, end, _cover_score(item.get("score"))))
+                if len(intervals) >= limit:
+                    return intervals
+        if intervals:
+            return intervals
+
+    raw_clips = cuts.get("clips") if isinstance(cuts.get("clips"), list) else []
+    ranked_clips = sorted(
+        [
+            item for item in raw_clips
+            if isinstance(item, dict) and item.get("keep", True) is not False
+        ],
+        key=lambda item: _cover_score(
+            item.get("final_score")
+            if item.get("final_score") is not None
+            else item.get("content_score")
+        ),
+        reverse=True,
+    )
+    intervals = []
+    for clip in ranked_clips:
+        start = _cover_score(clip.get("start"))
+        end = _cover_score(clip.get("end"))
+        if start >= 0 and end - start >= 3.0:
+            score = _cover_score(
+                clip.get("final_score")
+                if clip.get("final_score") is not None
+                else clip.get("content_score")
+            )
+            if any(start < existing_end and end > existing_start for existing_start, existing_end, _ in intervals):
+                continue
+            intervals.append((start, end, score))
+            if len(intervals) >= limit:
+                break
+    return intervals
+
+
+def _image_data_url(path: Path) -> str:
+    if path.stat().st_size > MAX_REMOTE_COVER_IMAGE_BYTES:
+        raise RuntimeError("cover reference image is too large")
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(path.suffix.lower(), "application/octet-stream")
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
+
 def _thumbnail_summary(job_dir: Path) -> str:
-    thumbnail = job_dir / "thumbnail.jpg"
+    highlight_thumbnail = job_dir / "highlight_thumbnail.jpg"
+    thumbnail = highlight_thumbnail if highlight_thumbnail.is_file() else job_dir / "thumbnail.jpg"
     if not thumbnail.is_file():
         return "no thumbnail available"
     try:
