@@ -65,7 +65,7 @@ function renderBatch(batchId, jobs, projectNames = new Map()) {
     .map((group) => `${t(`status.${group}`)} ${counts.get(group)}`)
     .join(" · ");
   return `
-    <details class="dashboard-batch" data-batch-id="${escapeHtml(batchId)}">
+    <details class="dashboard-batch" data-batch-id="${escapeHtml(batchId)}" data-motion-item data-motion-key="batch:${escapeHtml(batchId)}">
       <summary>
         <span class="dashboard-batch-heading">
           <strong>${t("dashboard.batch_title")}</strong>
@@ -114,7 +114,7 @@ export function renderJobCard(job, projectNames = new Map()) {
       </button>`
     : "";
   return `
-    <article class="card job-card ${canDelete ? "has-delete" : ""}">
+    <article class="card job-card ${canDelete ? "has-delete" : ""}" data-motion-item data-motion-key="job:${escapeHtml(name)}">
       <a class="job-card-link" href="#/jobs/${encodeURIComponent(name)}">
         <div>
           <h2 class="job-title">${escapeHtml(sourceName || name)} <span class="badge ${group}">${t(statusLabelKey(job.status))}</span></h2>

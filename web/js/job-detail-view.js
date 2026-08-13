@@ -7,6 +7,7 @@ import { renderTimelineLegend, setPreviewOrientation } from "./detail-layout.js"
 import { renderEnhancements } from "./enhancement-panel.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
+import { animateContentRefresh } from "./motion.js";
 import {
   renderJobActions,
   renderJobError,
@@ -163,7 +164,10 @@ export function updateJobDetailView(
   const { manifest = {}, cuts = {}, transcript = {} } = payload;
   const safeHtml = (id, html) => {
     const el = document.getElementById(id);
-    if (el && el.innerHTML !== html) el.innerHTML = html;
+    if (el && el.innerHTML !== html) {
+      el.innerHTML = html;
+      animateContentRefresh(el);
+    }
   };
   const safeRenderHtml = (id, render) => {
     try {
@@ -285,7 +289,7 @@ export function renderStageTimings(stageTimings) {
       </div>
       <div class="stage-timing-list">
         ${rows.map((item) => `
-          <div class="stage-timing-row">
+          <div class="stage-timing-row" data-motion-item data-motion-key="stage-timing:${escapeHtml(item.stage)}">
             <span>${escapeHtml(t(`stage.${item.stage}`))}</span>
             <span class="stage-timing-values">
               <strong>${formatTime(item.duration_seconds)}</strong>

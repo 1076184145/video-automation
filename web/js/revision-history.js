@@ -1,4 +1,5 @@
 import { API } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { clearReviewDraft } from "./review-drafts.js";
 import { t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
@@ -9,7 +10,7 @@ export function renderRevisionHistory(revisions = []) {
   return `
     <div class="revision-list">
       ${revisions.map((revision) => `
-        <div class="revision-row">
+        <div class="revision-row" data-motion-item data-motion-key="revision:${escapeHtml(revision.id)}">
           <div>
             <strong>${t("revisions.revision")} ${Number(revision.revision || 0)}</strong>
             <span class="badge optional">${t(`revisions.kind_${revision.kind}`)}</span>
@@ -25,7 +26,13 @@ export function bindRevisionHistory(root, jobName, reload) {
   const handler = async (event) => {
     const button = event.target?.closest?.("[data-restore-revision]");
     if (!button) return;
-    if (!window.confirm(t("revisions.restore_confirm"))) return;
+    const confirmed = await confirmAction(t("revisions.restore_confirm"), {
+      title: t("revisions.restore"),
+      confirmLabel: t("revisions.restore"),
+      cancelLabel: t("common.cancel"),
+      tone: "primary",
+    });
+    if (!confirmed) return;
     setButtonLoading(button, true, t("common.loading"));
     try {
       const revision = await API.getRevision(jobName, button.dataset.restoreRevision);

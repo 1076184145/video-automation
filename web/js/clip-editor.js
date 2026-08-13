@@ -1,6 +1,8 @@
 import { API } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { formatClipTimeInput, parseClipTime } from "./clip-time.js";
 import { t } from "./i18n.js";
+import { animateContentRefresh, removeWithMotion } from "./motion.js";
 import { clearReviewDraft, createDraftSaver } from "./review-drafts.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatTime } from "./utils.js";
@@ -38,7 +40,7 @@ export function renderClipRow(clip, index, feedback) {
   const scoreTitle = semanticReasons ? `${t("job.semantic_reason")}: ${semanticReasons}` : t("job.score");
   const key = clipKey(clip);
   const feedbackAction = feedback?.action || "";
-  return `<tr data-clip-row data-clip-key="${escapeHtml(key)}" data-feedback-action="${escapeHtml(feedbackAction)}" draggable="true">
+  return `<tr data-clip-row data-clip-key="${escapeHtml(key)}" data-feedback-action="${escapeHtml(feedbackAction)}" data-motion-item draggable="true">
     <td><input type="checkbox" class="clip-select" data-clip-select aria-label="${t("job.select_clip")}" /></td>
     <td>${index + 1}</td>
     <td><label class="check" style="padding:4px;border:none;background:transparent;box-shadow:none;"><input type="checkbox" data-field="keep" ${clip.keep === false ? "" : "checked"} /></label></td>
@@ -139,9 +141,14 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     } else if (e.target.id === "batch-delete-clips") {
       const rows = selectedClipRows(root);
       if (!rows.length) return showToast(t("job.no_selected_clips"), "warning");
-      if (!window.confirm(t("job.batch_delete_confirm").replace("{count}", String(rows.length)))) return;
+      const confirmed = await confirmAction(t("job.batch_delete_confirm").replace("{count}", String(rows.length)), {
+        title: t("job.batch_delete"),
+        confirmLabel: t("common.delete"),
+        cancelLabel: t("common.cancel"),
+      });
+      if (!confirmed) return;
       history.push();
-      rows.forEach((row) => row.remove());
+      await Promise.all(rows.map((row) => removeWithMotion(row, { collapse: false })));
       refreshClipRowNumbers(root);
       setEditing(true);
       draftSaver.schedule();
@@ -167,7 +174,7 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     } else if (e.target.closest("[data-remove-clip]")) {
       history.push();
       setEditing(true);
-      e.target.closest("[data-clip-row]")?.remove();
+      await removeWithMotion(e.target.closest("[data-clip-row]"), { collapse: false });
       refreshClipRowNumbers(root);
       draftSaver.schedule();
     }
@@ -341,6 +348,7 @@ function createClipHistory(root, onRestore) {
     if (!body) return;
     body.innerHTML = clips.map((clip, index) => renderClipRow(clip, index)).join("");
     refreshClipRowNumbers(root);
+    animateContentRefresh(body);
     updateButtons();
     onRestore?.();
   };

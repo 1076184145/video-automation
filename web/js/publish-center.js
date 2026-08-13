@@ -179,7 +179,7 @@ export function renderPublishCenter({ targets = [], attempts = [], packages = []
 
 function renderTarget(target) {
   return `
-    <article class="panel publish-target-card">
+    <article class="panel publish-target-card" data-motion-item data-motion-key="publish-target:${escapeHtml(target.id)}">
       <div class="publish-target-mark">B</div>
       <div>
         <h2>${escapeHtml(target.name || target.id)}</h2>
@@ -195,7 +195,7 @@ function renderAttempt(attempt) {
   const percent = total ? Math.min(100, Math.round(uploaded / total * 100)) : 0;
   const manualUrl = API.jobFileUrl(attempt.job_name, "publish_package.json", true);
   return `
-    <article class="publish-attempt-row" data-publish-id="${escapeHtml(attempt.id)}">
+    <article class="publish-attempt-row" data-publish-id="${escapeHtml(attempt.id)}" data-motion-item>
       <div class="publish-attempt-main">
         <div class="publish-attempt-title">
           <strong>${escapeHtml(attempt.job_name)}</strong>

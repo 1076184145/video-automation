@@ -14,6 +14,7 @@ const ICONS = {
   new: '<svg viewBox="0 0 24 24"><path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7V4Z"/></svg>',
   publish: '<svg viewBox="0 0 24 24"><path d="M11 16V7.8L8.4 10.4 7 9l5-5 5 5-1.4 1.4L13 7.8V16h-2Zm-5 4a3 3 0 0 1-3-3v-3h2v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3h2v3a3 3 0 0 1-3 3H6Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><path d="m19.4 13.5 1.7 1.3-2 3.5-2-.8a7.8 7.8 0 0 1-1.8 1l-.3 2.1h-4l-.3-2.1a7.8 7.8 0 0 1-1.8-1l-2 .8-2-3.5 1.7-1.3a7 7 0 0 1 0-2.1L4.9 10l2-3.5 2 .8a7.8 7.8 0 0 1 1.8-1l.3-2.1h4l.3 2.1a7.8 7.8 0 0 1 1.8 1l2-.8 2 3.5-1.7 1.3a7 7 0 0 1 0 2.1ZM13 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>',
   trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6"></path></svg>'
 };
 

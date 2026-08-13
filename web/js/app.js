@@ -2,6 +2,7 @@ import { language, setLanguage, t } from "./i18n.js";
 import { addRoute, lazyView, startRouter } from "./router.js";
 import { icon } from "./icons.js";
 import { installBrowserNotifications } from "./notifications.js";
+import { installMotionSystem } from "./motion.js";
 import { installShortcutHelp } from "./shortcut-help.js";
 import { applyTheme, nextThemePreference, savedThemePreference, saveThemePreference, watchSystemTheme } from "./theme.js";
 import { showToast } from "./toast.js";
@@ -64,6 +65,7 @@ addRoute(/^\/health$/, lazyView(() => import("./health.js"), "renderHealth"), "n
 
 applyTheme();
 watchSystemTheme(renderNav);
+installMotionSystem();
 renderNav();
 startRouter();
 installShortcutHelp();

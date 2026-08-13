@@ -1,4 +1,5 @@
 import { escapeHtml } from "./utils.js";
+import { removeWithMotion } from "./motion.js";
 
 const DEFAULT_TIMEOUT_MS = 3200;
 
@@ -10,10 +11,7 @@ export function showToast(message, type = "info", options = {}) {
   toast.innerHTML = `<span>${escapeHtml(String(message || ""))}</span><button type="button" aria-label="Close">×</button>`;
   container.appendChild(toast);
 
-  const close = () => {
-    toast.classList.add("is-leaving");
-    window.setTimeout(() => toast.remove(), 180);
-  };
+  const close = () => removeWithMotion(toast, { kind: "toast", duration: 180 });
   toast.querySelector("button")?.addEventListener("click", close);
   window.setTimeout(close, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS));
   return toast;

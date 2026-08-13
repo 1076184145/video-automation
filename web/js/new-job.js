@@ -1,5 +1,6 @@
 import { API, isAbortError } from "./api.js";
 import { legacyProfilesToRecipes } from "./automation.js";
+import { confirmAction, promptAction } from "./confirm-dialog.js";
 import { t } from "./i18n.js";
 import {
   NEW_JOB_OPTIONS,
@@ -9,6 +10,7 @@ import {
   summaryCard,
   uploadProgressHtml,
 } from "./new-job-view.js";
+import { removeWithMotion } from "./motion.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { basename, escapeHtml, jobName } from "./utils.js";
 
@@ -401,7 +403,8 @@ function addCurrentSourceToBatch(state) {
   setUploadMessage(`${t("new.batch_direct_added")} 1 ${t("new.batch_files")}`);
 }
 
-function removeBatchPath(state, path) {
+async function removeBatchPath(state, path, item) {
+  await removeWithMotion(item);
   state.batchPaths = state.batchPaths.filter((item) => item !== path);
   renderBatchList(state);
   updateWizardSummary(state);
@@ -411,13 +414,18 @@ function renderBatchList(state) {
   const target = document.getElementById("batch-box");
   if (!target) return;
   target.innerHTML = batchListHtml(state.batchPaths, BATCH_PATH_LIMIT);
-  target.querySelector("#clear-batch")?.addEventListener("click", () => {
+  target.querySelector("#clear-batch")?.addEventListener("click", async () => {
+    await Promise.all(Array.from(target.querySelectorAll(".batch-item")).map((item) => removeWithMotion(item)));
     state.batchPaths = [];
     renderBatchList(state);
     updateWizardSummary(state);
   });
   target.querySelectorAll("[data-remove-batch]").forEach((button) => {
-    button.addEventListener("click", () => removeBatchPath(state, button.dataset.removeBatch || ""));
+    button.addEventListener("click", () => removeBatchPath(
+      state,
+      button.dataset.removeBatch || "",
+      button.closest(".batch-item"),
+    ));
   });
 }
 
@@ -556,7 +564,12 @@ function refreshProfileSelect(state, selectedValue = "") {
 async function saveCurrentProfile(state) {
   const form = document.getElementById("new-job-form");
   if (!form) return;
-  const name = window.prompt(t("new.profile_name_prompt"));
+  const name = await promptAction(t("new.profile_name_prompt"), {
+    title: t("new.profile_save"),
+    confirmLabel: t("common.save"),
+    cancelLabel: t("common.cancel"),
+    maxlength: 40,
+  });
   if (!name?.trim()) return;
   const legacy = [{
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -577,7 +590,12 @@ async function saveCurrentProfile(state) {
 async function deleteCurrentProfile(state) {
   const select = document.getElementById("workflow-profile");
   if (!select?.value?.startsWith("custom:") && !select?.value?.startsWith("recipe:")) return;
-  if (!window.confirm(t("new.profile_delete_confirm"))) return;
+  const confirmed = await confirmAction(t("new.profile_delete_confirm"), {
+    title: t("new.profile_delete"),
+    confirmLabel: t("common.delete"),
+    cancelLabel: t("common.cancel"),
+  });
+  if (!confirmed) return;
   if (select.value.startsWith("recipe:")) {
     const id = select.value.slice("recipe:".length);
     try {

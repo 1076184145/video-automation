@@ -1,4 +1,5 @@
 import { API } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { errorHintHtml } from "./error-hints.js";
 import { localizedErrorMessage, t } from "./i18n.js";
 import { setButtonLoading, showToast } from "./toast.js";
@@ -62,7 +63,12 @@ export function bindJobActions(root, jobName, reload) {
     }
     if (e.target.id === "cancel-job") {
       const button = e.target;
-      if (!window.confirm(t("job.cancel_job_confirm"))) return;
+      const confirmed = await confirmAction(t("job.cancel_job_confirm"), {
+        title: t("job.cancel_job"),
+        confirmLabel: t("job.cancel_job"),
+        cancelLabel: t("common.cancel"),
+      });
+      if (!confirmed) return;
       setButtonLoading(button, true, t("common.loading"));
       try {
         await API.cancelJob(jobName);
@@ -77,7 +83,14 @@ export function bindJobActions(root, jobName, reload) {
     } else if (e.target.id === "rerun-stage-button") {
       const button = e.target;
       const stage = document.getElementById("rerun-stage")?.value;
-      if (!stage || !window.confirm(`${t("job.rerun_confirm")} ${t(`stage.${stage}`)}`)) return;
+      if (!stage) return;
+      const confirmed = await confirmAction(`${t("job.rerun_confirm")} ${t(`stage.${stage}`)}`, {
+        title: t("job.rerun_stage"),
+        confirmLabel: t("job.rerun"),
+        cancelLabel: t("common.cancel"),
+        tone: "primary",
+      });
+      if (!confirmed) return;
       setButtonLoading(button, true, t("common.loading"));
       try {
         await API.rerunStage(jobName, stage);
@@ -91,7 +104,12 @@ export function bindJobActions(root, jobName, reload) {
         setButtonLoading(button, false);
       }
     } else if (["delete-job", "delete-stale-job"].includes(e.target.id)) {
-      if (!window.confirm(t("job.delete_job_confirm"))) return;
+      const confirmed = await confirmAction(t("job.delete_job_confirm"), {
+        title: t("job.delete_job"),
+        confirmLabel: t("common.delete"),
+        cancelLabel: t("common.cancel"),
+      });
+      if (!confirmed) return;
       try {
         await API.deleteJob(jobName);
         location.hash = "#/";
@@ -247,7 +265,7 @@ export function renderQualityGate(quality) {
     const message = localizedMessage && localizedMessage !== messageKey
       ? localizedMessage
       : entry.message || entry.code || "";
-    return `<li><strong>${escapeHtml(message)}</strong>${context ? `<span>${escapeHtml(context)}</span>` : ""}</li>`;
+    return `<li data-motion-item data-motion-key="quality:${escapeHtml(entry.code || message)}"><strong>${escapeHtml(message)}</strong>${context ? `<span>${escapeHtml(context)}</span>` : ""}</li>`;
   };
   return `
     <div class="quality-gate ${blocking.length ? "blocked" : "advisory"}" ${blocking.length ? 'role="alert"' : 'role="status"'}>

@@ -1,4 +1,5 @@
 import { API, isAbortError } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { t } from "./i18n.js";
 import {
   settingDisplayValue,
@@ -305,10 +306,17 @@ function bindLocalPreferences(context) {
   panel.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-preferences-action]");
     if (!button) return;
+    if (button.dataset.preferencesAction === "clear") {
+      const confirmed = await confirmAction(t("preferences.clear_confirm"), {
+        title: t("preferences.clear"),
+        confirmLabel: t("preferences.clear"),
+        cancelLabel: t("common.cancel"),
+      });
+      if (!confirmed) return;
+    }
     setButtonLoading(button, true);
     try {
       if (button.dataset.preferencesAction === "clear") {
-        if (!window.confirm(t("preferences.clear_confirm"))) return;
         await API.clearPreferences();
         if (!context.isActive?.()) return;
         await context.refresh?.(t("preferences.cleared"));

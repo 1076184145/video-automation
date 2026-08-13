@@ -34,7 +34,7 @@ function renderTranscriptRows(segments, page) {
   return segments.slice(start, start + TRANSCRIPT_PAGE_SIZE).map((segment, offset) => {
     const index = start + offset;
     return `
-        <div class="transcript-item editable-transcript" data-transcript-row>
+        <div class="transcript-item editable-transcript" data-transcript-row data-motion-item data-motion-key="transcript:${index}">
           <button class="time transcript-seek" type="button" data-seek="${Number(segment.start || 0)}" title="${t("job.seek_to_time")}">${formatTime(segment.start)}</button>
           <textarea class="transcript-input" data-index="${index}" data-start="${Number(segment.start || 0)}" data-end="${Number(segment.end || segment.start || 0)}">${escapeHtml(segment.text || "")}</textarea>
         </div>

@@ -2,6 +2,7 @@ import { API, isAbortError } from "./api.js";
 import { parseClipTime } from "./clip-time.js";
 import { bindCoverActions } from "./cover-panel.js";
 import { bindClipEditor, clipFromRow, refreshClipRowNumbers, renderClipRow, setClipMessage } from "./clip-editor.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { bindDetailResizer, bindTimelineActions, seekPreview } from "./detail-layout.js";
 import { bindJobDetailTabs } from "./detail-tabs.js";
 import { bindEnhancementActions } from "./enhancement-panel.js";
@@ -122,12 +123,22 @@ export async function renderJobDetail(match, { signal } = {}) {
     event.preventDefault();
     event.returnValue = "";
   };
-  const guardNavigation = (event) => {
+  let navigationPromptOpen = false;
+  const guardNavigation = async (event) => {
     const anchor = event.target?.closest?.('a[href^="#/"]');
     if (!anchor || !hasUnsavedChanges()) return;
-    if (window.confirm(t("job.unsaved_confirm"))) return;
     event.preventDefault();
     event.stopPropagation();
+    if (navigationPromptOpen) return;
+    navigationPromptOpen = true;
+    const destination = anchor.getAttribute("href") || "#/";
+    const confirmed = await confirmAction(t("job.unsaved_confirm"), {
+      title: t("job.unsaved_title"),
+      confirmLabel: t("job.leave_page"),
+      cancelLabel: t("common.cancel"),
+    });
+    navigationPromptOpen = false;
+    if (confirmed) location.hash = destination;
   };
   window.addEventListener("beforeunload", handleBeforeUnload);
   document.addEventListener("click", guardNavigation, true);

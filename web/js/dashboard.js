@@ -3,8 +3,10 @@ import { bindQueuePanel, renderQueuePanel } from "./automation.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { eventHub } from "./event-hub.js";
 import { errorHintHtml } from "./error-hints.js";
+import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { compareJobs, groupedBatches, MAX_RENDERED_JOBS, renderJobCard, renderJobCollection } from "./job-card.js";
+import { animateContentRefresh, removeWithMotion } from "./motion.js";
 import { showToast } from "./toast.js";
 import { emptyState, errorState, skeletonGrid } from "./ui-states.js";
 import { escapeHtml, jobName, statusGroup } from "./utils.js";
@@ -38,7 +40,7 @@ export async function renderDashboard(_match, { signal } = {}) {
   lastJobsKey = "";
   app.innerHTML = pageShell();
   const unbindQueue = bindQueuePanel(app, loadQueue);
-  const unbindControls = bindControls(() => updateJobs(jobs, projects));
+  const unbindControls = bindControls(() => updateJobs(jobs, projects, { animate: true }));
   const unbindJobList = bindJobListActions(load);
   const unbindDelete = bindJobDelete(async (button, name) => {
     const confirmed = await confirmAction(t("dashboard.delete_job_confirm"), {
@@ -47,6 +49,8 @@ export async function renderDashboard(_match, { signal } = {}) {
       cancelLabel: t("common.cancel"),
     });
     if (!confirmed || !isActive()) return;
+    await removeWithMotion(button.closest(".job-card"));
+    if (!isActive()) return;
     const removedJob = jobs.find((job) => jobName(job) === name) || null;
     deletedJobNames.add(name);
     jobs = withoutDeletedJobsForTest(jobs, deletedJobNames);
@@ -250,7 +254,11 @@ function pageShell() {
         <p class="page-subtitle">${t("app.subtitle")}</p>
       </div>
       <div class="toolbar">
-        <input class="search" id="search" type="search" placeholder="${t("dashboard.search")}" value="${escapeHtml(search)}" />
+        <label class="search-field">
+          <span class="sr-only">${t("dashboard.search")}</span>
+          ${icon("search")}
+          <input class="search" id="search" type="search" aria-label="${t("dashboard.search")}" placeholder="${t("dashboard.search")}" value="${escapeHtml(search)}" />
+        </label>
         <a class="button primary" href="#/new">+ ${t("dashboard.new_job") || t("nav.new")}</a>
       </div>
     </section>
@@ -269,7 +277,20 @@ function updateQueue(queue) {
   const key = JSON.stringify(queue);
   if (!shouldUpdateQueueForTest(lastQueueKey, key, Boolean(target.innerHTML.trim()))) return;
   lastQueueKey = key;
-  target.innerHTML = renderQueuePanel(queue);
+  const html = renderQueuePanel(queue);
+  const nextIds = new Set((queue.items || [])
+    .filter((item) => !["completed", "canceled"].includes(item.status))
+    .map((item) => String(item.id)));
+  const removedRows = Array.from(target.querySelectorAll("[data-queue-id]"))
+    .filter((row) => !nextIds.has(String(row.dataset.queueId || "")));
+  const commit = () => {
+    if (lastQueueKey === key && target.isConnected) target.innerHTML = html;
+  };
+  if (!removedRows.length) {
+    commit();
+    return;
+  }
+  Promise.all(removedRows.map((row) => removeWithMotion(row))).then(commit);
 }
 
 export function shouldUpdateQueueForTest(previousKey, nextKey, hasContent) {
@@ -326,13 +347,14 @@ function updateFilterButtons() {
   });
 }
 
-function updateJobs(jobs, projects = []) {
+function updateJobs(jobs, projects = [], { animate = false } = {}) {
   const target = document.getElementById("dashboard-jobs");
   if (!target) return;
   const key = `${filter}|${search}|${projects.map((project) => `${project.id}|${project.name}`).join("\n")}|${jobs.map((job) => `${job.job_dir}|${job.batch_id || ""}|${job.status}|${job.updated_at}|${job.state_version || 0}|${job.stage_progress ?? ""}|${job.project_id || ""}|${(job.files || []).length}`).join("\n")}`;
   if (key === lastJobsKey) return;
   lastJobsKey = key;
   target.innerHTML = renderDashboardJobsForTest(jobs, { filter, search, projects });
+  if (animate) animateContentRefresh(target);
 }
 
 function updateHealth(health) {
@@ -353,11 +375,20 @@ function updateHealth(health) {
     const key = `health.warning.${String(warning.code || "")}`;
     const localized = t(key);
     const message = localized === key ? String(warning.message || warning.code || "") : localized;
-    target.innerHTML = `<div class="notice warning">${escapeHtml(message)} <a class="button" href="#/health">${t("nav.health")}</a></div>`;
+    target.innerHTML = dashboardHealthBanner(message, "warning");
     return;
   }
   const missing = missingChecks.map((check) => check.name).join(", ");
-  target.innerHTML = `<div class="error">${t("health.missing")}: ${escapeHtml(missing || "unknown")} <a class="button" href="#/health">${t("nav.health")}</a></div>`;
+  const message = t("dashboard.health_missing_count").replace("{count}", String(missingChecks.length));
+  target.innerHTML = dashboardHealthBanner(message, "danger", `${t("health.missing")}: ${missing || "unknown"}`);
+}
+
+function dashboardHealthBanner(message, tone, accessibleMessage = message) {
+  return `<div class="dashboard-health ${tone}" data-motion-item role="status" aria-label="${escapeHtml(accessibleMessage)}">
+    <span class="dashboard-health-indicator" aria-hidden="true"></span>
+    <span class="dashboard-health-copy" aria-hidden="true">${escapeHtml(message)}</span>
+    <a class="button compact-button" href="#/health">${t("nav.health")}</a>
+  </div>`;
 }
 
 export function renderDashboardJobsForTest(jobs, state = {}) {

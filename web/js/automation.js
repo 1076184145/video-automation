@@ -56,7 +56,7 @@ export function renderQueuePanel(queue = {}) {
       ${items.length ? `
         <div class="queue-list">
           ${items.map((item, index) => renderQueueItem(item, index, items.length)).join("")}
-        </div>` : `<div class="empty queue-empty">${t("queue.empty")}</div>`}
+        </div>` : `<div class="empty queue-empty" data-motion-item>${t("queue.empty")}</div>`}
     </section>`;
 }
 
@@ -64,7 +64,7 @@ function renderQueueItem(item, index, total) {
   const status = String(item.status || "pending");
   const canceling = status === "running" && Boolean(item.cancel_requested);
   return `
-    <article class="queue-row" data-queue-id="${escapeHtml(item.id)}">
+    <article class="queue-row" data-queue-id="${escapeHtml(item.id)}" data-motion-item>
       <div class="queue-position">${index + 1}</div>
       <div class="queue-row-main">
         <strong>${escapeHtml(item.job_name || item.id)}</strong>
