@@ -16,7 +16,7 @@ export function renderStage(stage, job, files) {
     activeStages.includes(stage) || (job.current_stage || stageForStatus(job.status)) === stage
   );
   const failed = job.status === "failed";
-  return `<div class="stage ${failed ? "failed" : current ? "current" : complete ? "done" : ""}" title="${stage}">
+  return `<div class="stage ${failed ? "failed" : current ? "current" : complete ? "done" : ""}" title="${stage}" data-motion-item data-motion-key="stage:${escapeHtml(stage)}">
     <div class="stage-dot">${failed ? "!" : complete ? "✓" : ""}</div>
     <div class="stage-label">${t(`stage.${stage}`)}</div>
   </div>`;

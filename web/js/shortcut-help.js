@@ -1,4 +1,5 @@
 import { t } from "./i18n.js";
+import { removeWithMotion } from "./motion.js";
 
 let returnFocus = null;
 
@@ -9,6 +10,7 @@ let returnFocus = null;
 export function installShortcutHelp() {
   const button = document.createElement("button");
   button.className = "shortcut-help-button";
+  button.dataset.motionItem = "";
   button.type = "button";
   button.setAttribute("aria-label", t("shortcuts.open"));
   button.textContent = "?";
@@ -37,7 +39,7 @@ export function installShortcutHelp() {
 function openShortcutHelp() {
   const replacing = Boolean(document.getElementById("shortcut-modal"));
   if (!replacing) returnFocus = document.activeElement;
-  closeShortcutHelp(false);
+  closeShortcutHelp(false, true);
   const modal = document.createElement("div");
   modal.className = "modal-backdrop shortcut-modal";
   modal.id = "shortcut-modal";
@@ -67,12 +69,23 @@ function openShortcutHelp() {
   modal.querySelector("[data-close-shortcuts]")?.focus({ preventScroll: true });
 }
 
-function closeShortcutHelp(restoreFocus = true) {
-  document.getElementById("shortcut-modal")?.remove();
-  if (restoreFocus) {
+function closeShortcutHelp(restoreFocus = true, immediate = false) {
+  const modal = document.getElementById("shortcut-modal");
+  const finish = () => {
+    if (!restoreFocus) return;
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     returnFocus = null;
+  };
+  if (!modal) {
+    finish();
+    return;
   }
+  if (immediate) {
+    modal.remove();
+    finish();
+    return;
+  }
+  removeWithMotion(modal, { kind: "overlay" }).then(finish);
 }
 
 function shortcutRows() {

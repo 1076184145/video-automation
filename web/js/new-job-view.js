@@ -210,7 +210,7 @@ export function batchListHtml(paths, limit) {
     </div>
     <div class="batch-list">
       ${paths.map((path) => `
-        <div class="batch-item">
+        <div class="batch-item" data-motion-item data-motion-key="batch-path:${escapeHtml(path)}">
           <span>${escapeHtml(basename(path))}</span>
           <button class="button compact-button" type="button" data-remove-batch="${escapeHtml(path)}">${t("new.batch_remove")}</button>
         </div>
@@ -225,7 +225,7 @@ export function recordingListHtml(recordings, showAll) {
     <div class="recording-head">${t("new.pick_recording")}</div>
     <div class="recording-list">
       ${visible.map((file) => `
-        <button class="recording-item" type="button" data-path="${escapeHtml(file.path)}">
+        <button class="recording-item" type="button" data-path="${escapeHtml(file.path)}" data-motion-item>
           <span>${escapeHtml(file.relative_path || basename(file.path))}</span>
           <small>${formatBytes(file.size_bytes)}</small>
         </button>

@@ -308,6 +308,8 @@ export const en = {
   "job.transcription_progress": "Transcription is running, elapsed {elapsed}s. Percent is estimated.",
   "job.rerun_confirm": "Rerun stage:",
   "job.unsaved_confirm": "You have unsaved clip or transcript changes. Leave this page?",
+  "job.unsaved_title": "Unsaved changes",
+  "job.leave_page": "Leave page",
   "job.seek_to_time": "Seek preview to this time",
   "stage.probe": "Probe Media",
   "stage.detect_corruption": "Detect Damage",
@@ -618,6 +620,7 @@ Object.assign(en, {
 Object.assign(en, {
   "dashboard.empty_title": "Start with your first video",
   "dashboard.empty_step_health": "Check the environment and repair missing tools",
+  "dashboard.health_missing_count": "Setup needs attention · {count} required tools missing",
   "dashboard.window_note": "{count} more jobs are collapsed; use search to find one quickly",
   "dashboard.empty_step_new": "Drag in a recording or pick an existing file",
   "dashboard.empty_step_review": "Review suggested clips and export the final video",

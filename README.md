@@ -108,6 +108,7 @@ Included in the local workflow:
 - Browser preview plus full-quality `final.mp4`
 - Vertical `1080x1920` output and subtitle burn-in
 - Projects, reusable recipes, creator settings, and review revisions
+- Purposeful enter/exit motion for routes, dialogs, lists, and disclosures, with reduced-motion support
 - Premiere Pro and Jianying/CapCut handoff files
 - Manual upload packages for supported platforms
 

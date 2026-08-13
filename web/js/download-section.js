@@ -81,7 +81,7 @@ function renderDownloadGroup(jobName, files, titleKey, names) {
 function link(jobName, files, name, primary = false) {
   const info = files.get(name);
   const localPath = info?.path || "";
-  return `<span class="download-segment">
+  return `<span class="download-segment" data-motion-item data-motion-key="download:${escapeHtml(name)}">
     <a class="button download-link ${fileKind(name)} ${primary ? "primary" : ""}" download href="${API.jobFileUrl(jobName, name, true)}">${fileIcon(name)} ${t("common.download")} ${escapeHtml(name)}</a>
     ${localPath ? `<button class="button copy-path-button" type="button" data-copy-path="${escapeHtml(localPath)}" title="${t("common.copy_path")}" aria-label="${t("common.copy_path")}">${t("common.copy")}</button>` : ""}
   </span>`;

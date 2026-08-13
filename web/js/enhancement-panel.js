@@ -65,7 +65,7 @@ function renderSegmentsPanel(jobName, files, segments) {
     const rows = (platform.segments || []).map((segment) => {
         const file = segment.file || "";
         const exists = files.has(file);
-        return `<a class="mini-row ${exists ? "" : "disabled"}" ${exists ? `download href="${API.jobFileUrl(jobName, file, true)}"` : ""}>${escapeHtml(file)} · ${formatTime(segment.duration)}</a>`;
+        return `<a class="mini-row ${exists ? "" : "disabled"}" data-motion-item data-motion-key="segment:${escapeHtml(file)}" ${exists ? `download href="${API.jobFileUrl(jobName, file, true)}"` : ""}>${escapeHtml(file)} · ${formatTime(segment.duration)}</a>`;
       }).join("");
     const label = `${t(`platform.${platform.name}`)} · ${platform.segment_count || 0}`;
     return platform.segments?.length > 6
@@ -73,7 +73,7 @@ function renderSegmentsPanel(jobName, files, segments) {
       : `<div class="mini-list"><strong>${label}</strong>${rows}</div>`;
   }).join("");
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:segments">
       <h3>${t("enhance.segments")}</h3>
       <p class="muted">${t("enhance.segments_note")}</p>
       <div class="inline-options">${renderPlatformChecks("segment")}</div>
@@ -87,7 +87,7 @@ function renderMetadataPanel(metadata, llmStatus) {
   const llmConfigured = llmStatus.configured;
   const value = escapeHtml(JSON.stringify(metadata || metadataTemplate(), null, 2));
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:metadata">
       <h3>${t("enhance.metadata")}</h3>
       <p class="muted">${llmConfigured ? t("enhance.metadata_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
       ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
@@ -110,7 +110,7 @@ function renderHighlightsPanel(highlights, llmStatus) {
   const llmConfigured = llmStatus.configured;
   const items = highlights?.highlights || [];
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:highlights">
       <h3>${t("enhance.highlights")}</h3>
       <p class="muted">${llmConfigured ? t("enhance.highlights_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
       ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
@@ -138,7 +138,7 @@ function renderHighlightCutPanel(jobName, highlightCut, highlightRender, files) 
         ? `<div class="error">${t("enhance.highlight_render_failed")}${escapeHtml(highlightRender?.error || "")}</div>`
         : "";
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:highlight-cut">
       <h3>${t("enhance.highlight_cut")}</h3>
       <p class="muted">${t("enhance.highlight_cut_note")}</p>
       <div class="inline-input compact-inline">
@@ -172,7 +172,7 @@ function renderSubtitleTranslationPanel(jobName, files, llmStatus) {
     .sort();
   const canRenderDefault = renderableTargets.includes("zh");
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:subtitle-translation">
       <h3>${t("enhance.subtitle_translation")}</h3>
       <p class="muted">${llmConfigured ? t("enhance.subtitle_translation_note") : t(llmStatus.messageKey || "enhance.llm_missing")}</p>
       ${llmConfigured ? renderLlmDisclosure(llmStatus) : ""}
@@ -203,7 +203,7 @@ function renderPublishPanel(jobName, files, publishPackage) {
   const platformCards = (publishPackage?.platforms || []).map((platform) => renderPublishPlatformCard(jobName, files, platform)).join("");
   const packageFiles = publishPackageFiles(publishPackage, files);
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:publish">
       <h3>${t("enhance.publish_center")}</h3>
       <p class="muted">${t("enhance.publish_note")}</p>
       <div class="inline-options">${renderPlatformChecks("publish")}</div>
@@ -223,7 +223,7 @@ function renderPublishPlatformCard(jobName, files, platform) {
   const prefix = `publish-${name}`;
   const handoffFiles = (platform.handoff?.files || []).map((file) => file.relative_path || file.name).filter(Boolean);
   return `
-    <details class="publish-platform-card">
+    <details class="publish-platform-card" data-motion-item data-motion-key="publish-platform:${escapeHtml(name)}">
       <summary class="publish-platform-head">
         <strong>${t(`platform.${name}`) || escapeHtml(name)}</strong>
         <span class="badge optional">${escapeHtml(platform.handoff?.mode || "manual_upload")}</span>
@@ -241,7 +241,7 @@ function renderPublishPlatformCard(jobName, files, platform) {
       <div class="mini-list">
         ${handoffFiles.map((path) => {
           const exists = files.has(path);
-          return `<a class="mini-row ${exists ? "" : "disabled"}" ${exists ? `download href="${API.jobFileUrl(jobName, path, true)}"` : ""}>${escapeHtml(path)}</a>`;
+          return `<a class="mini-row ${exists ? "" : "disabled"}" data-motion-item ${exists ? `download href="${API.jobFileUrl(jobName, path, true)}"` : ""}>${escapeHtml(path)}</a>`;
         }).join("")}
       </div>
       </div>
@@ -273,7 +273,7 @@ function publishPackageFiles(publishPackage, files) {
 function renderProjectExportPanel(jobName, files, projectExport) {
   const exportFiles = projectExportFiles(projectExport);
   return `
-    <article class="enhancement-card">
+    <article class="enhancement-card" data-motion-item data-motion-key="enhancement:project-export">
       <h3>${t("enhance.project_export")}</h3>
       <p class="muted">${t("enhance.project_export_note")}</p>
       <div class="inline-options">
@@ -312,15 +312,21 @@ function projectExportFiles(projectExport) {
 function renderCompactMiniList(items, renderItem, limit = 6) {
   const visible = items.slice(0, limit);
   const overflow = items.slice(limit);
+  const renderRows = (rows) => rows.map((item) => withMotionItem(renderItem(item))).join("");
   return `
-    <div class="mini-list">${visible.map(renderItem).join("")}</div>
+    <div class="mini-list">${renderRows(visible)}</div>
     ${overflow.length ? `
       <details class="enhancement-result-details">
         <summary>${t("common.show_all_count").replace("{count}", String(items.length))}</summary>
-        <div class="mini-list">${overflow.map(renderItem).join("")}</div>
+        <div class="mini-list">${renderRows(overflow)}</div>
       </details>
     ` : ""}
   `;
+}
+
+function withMotionItem(markup) {
+  if (/\bdata-motion-item\b/.test(markup)) return markup;
+  return markup.replace(/^(\s*<[a-z][\w-]*)/i, "$1 data-motion-item");
 }
 
 export function bindEnhancementActions(root, jobName, reload, seekPreview = () => {}) {

@@ -1,5 +1,7 @@
 import { API, isAbortError } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { t } from "./i18n.js";
+import { removeWithMotion } from "./motion.js";
 import { setButtonLoading, showToast } from "./toast.js";
 import { emptyState, errorState, loadingState } from "./ui-states.js";
 import { escapeHtml } from "./utils.js";
@@ -90,7 +92,7 @@ export function renderProjectsView({ projects = [], kits = [] } = {}) {
 function renderProjectRow(project, kitById) {
   const kit = kitById.get(project.default_kit_id);
   return `
-    <article class="library-row">
+    <article class="library-row" data-motion-item data-motion-key="project:${escapeHtml(project.id)}">
       <div class="library-row-main">
         <strong>${escapeHtml(project.name)}</strong>
         <p>${escapeHtml(project.description || t("projects.no_description"))}</p>
@@ -108,7 +110,7 @@ function renderProjectRow(project, kitById) {
 
 function renderKitRow(kit) {
   return `
-    <article class="library-row">
+    <article class="library-row" data-motion-item data-motion-key="kit:${escapeHtml(kit.id)}">
       <div class="library-row-main">
         <strong>${escapeHtml(kit.name)}</strong>
         <p>${escapeHtml(kit.platform || "—")} · ${escapeHtml(kit.aspect || "—")}</p>
@@ -166,13 +168,19 @@ function bindProjectActions(root, { refresh, isActive }) {
     const projectButton = event.target.closest("[data-delete-project]");
     const kitButton = event.target.closest("[data-delete-kit]");
     if (!projectButton && !kitButton) return;
-    if (!window.confirm(t("projects.delete_confirm"))) return;
     const button = projectButton || kitButton;
+    const confirmed = await confirmAction(t("projects.delete_confirm"), {
+      title: t("common.delete"),
+      confirmLabel: t("common.delete"),
+      cancelLabel: t("common.cancel"),
+    });
+    if (!confirmed || !isActive()) return;
     setButtonLoading(button, true, t("common.loading"));
     try {
       if (projectButton) await API.deleteProject(projectButton.dataset.deleteProject);
       else await API.deleteCreatorKit(kitButton.dataset.deleteKit);
       if (!isActive()) return;
+      await removeWithMotion(button.closest(".library-row"));
       await refresh();
     } catch (error) {
       if (!isActive()) return;

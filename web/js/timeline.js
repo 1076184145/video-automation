@@ -133,9 +133,13 @@ function attachTimelineInteractions(canvas, marks, width, duration, view, option
   if (!tooltip) {
     tooltip = document.createElement("div");
     tooltip.className = "tooltip";
-    tooltip.hidden = true;
+    tooltip.setAttribute("aria-hidden", "true");
     document.body.appendChild(tooltip);
   }
+  const hideTooltip = () => {
+    tooltip.classList.remove("is-visible");
+    tooltip.setAttribute("aria-hidden", "true");
+  };
   
   const lookupMarks = prepareMarksForLookup(marks);
 
@@ -153,20 +157,21 @@ function attachTimelineInteractions(canvas, marks, width, duration, view, option
       drag.view = normalizeView(nextView.viewStart, nextView.viewEnd, duration);
       canvas.__timelineDrag = drag;
       emitViewChange(options, nextView);
-      tooltip.hidden = true;
+      hideTooltip();
       return;
     }
 
     const found = findMark(lookupMarks, x, y);
 
     if (!found) {
-      tooltip.hidden = true;
+      hideTooltip();
       return;
     }
-    tooltip.hidden = false;
     tooltip.style.left = `${event.clientX + 14}px`;
     tooltip.style.top = `${event.clientY + 14}px`;
     tooltip.textContent = `${found.label} ${formatTime(found.start)}${found.end > found.start ? ` - ${formatTime(found.end)}` : ""} ${found.text || ""}`;
+    tooltip.classList.add("is-visible");
+    tooltip.setAttribute("aria-hidden", "false");
     
     const tooltipRect = tooltip.getBoundingClientRect();
     if (tooltipRect.right > window.innerWidth) {
@@ -176,7 +181,7 @@ function attachTimelineInteractions(canvas, marks, width, duration, view, option
       tooltip.style.top = `${Math.max(8, event.clientY - tooltipRect.height - 14)}px`;
     }
   };
-  canvas.onmouseleave = () => { tooltip.hidden = true; };
+  canvas.onmouseleave = hideTooltip;
   canvas.onmousedown = (event) => {
     if (event.button !== 0) return;
     canvas.__timelineDrag = { startX: event.clientX, lastX: event.clientX, moved: false, view };

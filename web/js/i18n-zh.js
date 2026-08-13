@@ -335,6 +335,8 @@ Object.assign(zh, {
   "job.transcription_progress": "语音转写正在运行，已运行 {elapsed} 秒，百分比为估算值。",
   "job.rerun_confirm": "确认重跑阶段：",
   "job.unsaved_confirm": "有未保存的剪辑或转写修改，确定离开吗？",
+  "job.unsaved_title": "未保存的修改",
+  "job.leave_page": "离开页面",
   "job.seek_to_time": "跳转到这个时间点",
   "new.show_all_recordings": "显示全部录播文件",
   "new.upload_progress": "上传进度",
@@ -620,6 +622,7 @@ Object.assign(zh, {
 Object.assign(zh, {
   "dashboard.empty_title": "从第一个视频开始",
   "dashboard.empty_step_health": "检查环境并一键修复缺失工具",
+  "dashboard.health_missing_count": "环境需要处理 · 缺少 {count} 个必需工具",
   "dashboard.window_note": "还有 {count} 个任务未展开，请使用搜索快速定位",
   "dashboard.empty_step_new": "拖入录播或选择已有文件",
   "dashboard.empty_step_review": "审核剪辑建议并导出成片",

@@ -1,4 +1,5 @@
 import { API } from "./api.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { renderAiDisclosure } from "./ai-disclosure.js";
 import { t } from "./i18n.js";
 import { providerErrorMessageKey } from "./provider-errors.js";
@@ -98,7 +99,13 @@ export function renderCoverProviderError(state = {}) {
 export function bindCoverActions(root, jobName, reload) {
   const handler = async (event) => {
     if (event.target.id === "generate-covers") {
-      if (!window.confirm(t("cover.confirm_generate"))) return;
+      const confirmed = await confirmAction(t("cover.confirm_generate"), {
+        title: t("cover.generate"),
+        confirmLabel: t("cover.generate"),
+        cancelLabel: t("common.cancel"),
+        tone: "primary",
+      });
+      if (!confirmed) return;
       const button = event.target;
       setButtonLoading(button, true, t("common.loading"));
       try {
@@ -162,7 +169,7 @@ function renderCoverCandidate(jobName, files, candidate, aspect, selected) {
   const downloadUrl = API.jobFileUrl(jobName, file, true, cacheKey);
   const isSelected = selected === file;
   return `
-    <article class="cover-card ${isSelected ? "selected" : ""}">
+    <article class="cover-card ${isSelected ? "selected" : ""}" data-motion-item data-motion-key="cover:${escapeHtml(file)}">
       <img src="${url}" alt="${escapeHtml(file)}" loading="lazy" />
       <div class="cover-card-actions">
         <button class="button compact-button ${isSelected ? "primary" : ""}" type="button" data-select-cover data-aspect="${aspect}" data-file="${escapeHtml(file)}">${isSelected ? t("cover.selected") : t("cover.select")}</button>

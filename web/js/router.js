@@ -1,4 +1,5 @@
 import { t } from "./i18n.js";
+import { MOTION_TIMINGS, prefersReducedMotion, waitForMotion } from "./motion.js";
 import { pageAction, pageState } from "./ui-states.js";
 import { escapeHtml } from "./utils.js";
 
@@ -48,15 +49,19 @@ export async function renderRoute(event) {
   cleanup = null;
   const controller = routeLifecycle.next();
   const currentRenderId = ++renderId;
-  if (!event || event.type === "hashchange") {
-    resetRouteScroll();
-  }
   const hash = location.hash || "#/";
   const path = hash.slice(1) || "/";
-  
   const app = document.getElementById("app");
+  const shouldExit = Boolean(event && app?.childElementCount && !prefersReducedMotion());
+  if (shouldExit) {
+    app.classList.remove("page-enter", "page-enter-active");
+    app.classList.add("page-exit");
+    await waitForMotion(MOTION_TIMINGS.routeExit);
+    if (currentRenderId !== renderId || controller.signal.aborted) return;
+  }
+  if (!event || event.type === "hashchange") resetRouteScroll();
   if (app) {
-    app.classList.remove("page-enter-active");
+    app.classList.remove("page-enter-active", "page-exit");
     app.classList.add("page-enter");
   }
 
@@ -75,21 +80,16 @@ export async function renderRoute(event) {
           return true;
         },
       };
-      const nextCleanup = await route.render(match, routeContext);
+      const previousMarkup = app?.innerHTML || "";
+      const renderPromise = Promise.resolve(route.render(match, routeContext));
+      const finishReveal = revealRouteWhenReady(app, previousMarkup, isActive);
+      const nextCleanup = await renderPromise;
       if (currentRenderId !== renderId) {
         if (typeof nextCleanup === "function") nextCleanup();
         return;
       }
       cleanup = nextCleanup;
-      if (app) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (!isActive()) return;
-            app.classList.remove("page-enter");
-            app.classList.add("page-enter-active");
-          });
-        });
-      }
+      finishReveal();
     } catch (error) {
       if (controller.signal.aborted || currentRenderId !== renderId) return;
       console.error("[Router Error]", error);
@@ -116,6 +116,38 @@ export async function renderRoute(event) {
     app.classList.remove("page-enter");
     app.classList.add("page-enter-active");
   }
+}
+
+function revealRouteWhenReady(app, previousMarkup, isActive) {
+  let observer = null;
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    observer?.disconnect();
+    revealRoute(app, isActive);
+  };
+  if (!app || app.innerHTML !== previousMarkup) {
+    reveal();
+  } else if (typeof globalThis.MutationObserver === "function") {
+    observer = new globalThis.MutationObserver(() => {
+      if (app.innerHTML !== previousMarkup) reveal();
+    });
+    observer.observe(app, { childList: true, subtree: true });
+  }
+  return reveal;
+}
+
+function revealRoute(app, isActive) {
+  if (!app) return;
+  const frame = globalThis.requestAnimationFrame || ((callback) => globalThis.setTimeout(callback, 0));
+  frame(() => {
+    frame(() => {
+      if (!isActive()) return;
+      app.classList.remove("page-enter", "page-exit");
+      app.classList.add("page-enter-active");
+    });
+  });
 }
 
 export function resetRouteScroll() {
