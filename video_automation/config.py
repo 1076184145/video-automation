@@ -262,6 +262,8 @@ class Settings:
     bilibili_api_endpoints: dict[str, str]
     export_platforms: tuple[str, ...]
     render_video_encoder: str
+    render_segment_parallel_enabled: bool
+    render_segment_workers: int
     platform_variants_enabled: bool
     render_output_fps: int
     render_x264_preset: str
@@ -460,6 +462,8 @@ class Settings:
             },
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
+            render_segment_parallel_enabled=_bool_env("RENDER_SEGMENT_PARALLEL_ENABLED", False),
+            render_segment_workers=max(1, min(8, _int_env("RENDER_SEGMENT_WORKERS", 2))),
             platform_variants_enabled=_bool_env("PLATFORM_VARIANTS_ENABLED", False),
             render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),
             render_x264_preset=_env("RENDER_X264_PRESET", "medium"),
