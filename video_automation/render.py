@@ -137,7 +137,12 @@ def render_final_video(
     if vertical:
         generate_vertical_crop_plan(settings, job_dir, force=False)
     if burn_subtitles:
-        generate_clipped_ass_subtitles(settings, job_dir, force=force or vertical)
+        generate_clipped_ass_subtitles(
+            settings,
+            job_dir,
+            force=force or vertical,
+            output_filename=subtitle_filename or "subtitles_clipped.ass",
+        )
     command = build_final_render_command(
         effective_settings,
         source_path,
@@ -272,6 +277,117 @@ def render_highlight_video(
     write_json_atomic(job_dir / "highlight_render_preview.json", preview)
     _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
+
+
+def render_platform_variants(
+    settings: Settings,
+    job_dir: Path,
+    source_path: Path,
+    *,
+    primary_vertical: bool,
+    burn_subtitles: bool = False,
+    force: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
+) -> dict[str, Any]:
+    """Render per-platform export variants (e.g. 9:16 douyin + 16:9 bilibili).
+
+    The primary final.mp4 already covers the first export platform's aspect;
+    each additional platform with a different aspect gets its own render with
+    a matching crop geometry, subtitle preset and encoder settings.
+    """
+    from .plans import PLATFORM_PRESETS
+
+    targets = platform_variant_targets(settings, primary_vertical=primary_vertical)
+    variants_dir = job_dir / "variants"
+    variants_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = variants_dir / "platform_variants.json"
+    if not targets:
+        payload = {
+            "status": "skipped",
+            "primary_vertical": primary_vertical,
+            "variants": {},
+            "notes": ["All export platforms share the primary render's aspect ratio."],
+        }
+        write_json_atomic(manifest_path, payload)
+        return payload
+
+    variants: dict[str, Any] = {}
+    for platform, vertical in targets:
+        ass_preset = ASS_PRESET_BY_PLATFORM.get(platform, settings.ass_preset)
+        platform_settings = replace(
+            settings,
+            export_platforms=(platform,),
+            ass_preset=ass_preset,
+        )
+        subtitle_filename = f"subtitles_clipped_{platform}.ass"
+        output_path = render_final_video(
+            platform_settings,
+            job_dir,
+            source_path,
+            force=force,
+            vertical=vertical,
+            burn_subtitles=burn_subtitles,
+            subtitle_filename=subtitle_filename,
+            output_filename=f"variants/{platform}.mp4",
+            progress_callback=progress_callback,
+            resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback,
+            control_callback=control_callback,
+            refresh_web_preview=False,
+        )
+        preset = PLATFORM_PRESETS.get(platform, {})
+        variants[platform] = {
+            "file": str(output_path.relative_to(job_dir)),
+            "vertical": vertical,
+            "resolution": preset.get("resolution", "source"),
+            "ass_preset": ass_preset,
+        }
+    payload = {
+        "status": "ready",
+        "primary_vertical": primary_vertical,
+        "variants": variants,
+        "notes": ["Variants re-render from the source with per-platform geometry and subtitles."],
+    }
+    write_json_atomic(manifest_path, payload)
+    return payload
+
+
+ASS_PRESET_BY_PLATFORM = {
+    "douyin": "douyin",
+    "bilibili": "bilibili",
+    "youtube_shorts": "douyin",
+}
+
+
+def platform_variant_targets(
+    settings: Settings, *, primary_vertical: bool
+) -> list[tuple[str, bool]]:
+    """Export platforms needing their own render, as (platform, vertical) pairs."""
+    from .plans import PLATFORM_PRESETS
+
+    primary = _primary_platform(settings)
+    targets: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for raw in getattr(settings, "export_platforms", ()):
+        platform = str(raw).strip().lower()
+        if not platform or platform in seen:
+            continue
+        seen.add(platform)
+        preset = PLATFORM_PRESETS.get(platform)
+        if not preset:
+            continue
+        width_text, _, height_text = str(preset.get("resolution", "")).partition("x")
+        try:
+            vertical = int(height_text) > int(width_text)
+        except ValueError:
+            continue
+        if platform == primary and vertical == primary_vertical:
+            continue
+        targets.append((platform, vertical))
+    return targets
 
 
 def render_web_preview(

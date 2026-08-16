@@ -21,8 +21,14 @@ def generate_ass_subtitles(settings: Settings, job_dir: Path, *, force: bool = F
     return output_path
 
 
-def generate_clipped_ass_subtitles(settings: Settings, job_dir: Path, *, force: bool = False) -> Path:
-    output_path = job_dir / "subtitles_clipped.ass"
+def generate_clipped_ass_subtitles(
+    settings: Settings,
+    job_dir: Path,
+    *,
+    force: bool = False,
+    output_filename: str = "subtitles_clipped.ass",
+) -> Path:
+    output_path = job_dir / output_filename
     if output_path.exists() and output_path.stat().st_size > 0 and not force:
         return output_path
 

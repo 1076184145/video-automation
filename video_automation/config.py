@@ -262,6 +262,7 @@ class Settings:
     bilibili_api_endpoints: dict[str, str]
     export_platforms: tuple[str, ...]
     render_video_encoder: str
+    platform_variants_enabled: bool
     render_output_fps: int
     render_x264_preset: str
     render_x264_crf: int
@@ -459,6 +460,7 @@ class Settings:
             },
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
+            platform_variants_enabled=_bool_env("PLATFORM_VARIANTS_ENABLED", False),
             render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),
             render_x264_preset=_env("RENDER_X264_PRESET", "medium"),
             render_x264_crf=max(0, _int_env("RENDER_X264_CRF", 0)),

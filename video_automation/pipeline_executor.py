@@ -27,7 +27,14 @@ from .pipeline_scheduler import PipelineStage, ProgressReporter, expand_stage_se
 from .pipeline_context import PipelineContext
 from .pipeline_spec import PIPELINE_STAGE_DEPENDENCIES, PIPELINE_STAGE_SPECS
 from .plans import generate_bgm_mix_plan, generate_platform_export_plan, generate_webhook_plan
-from .render import generate_render_preview, render_final_video, render_review_video, render_web_preview
+from .render import (
+    generate_render_preview,
+    platform_variant_targets,
+    render_final_video,
+    render_platform_variants,
+    render_review_video,
+    render_web_preview,
+)
 from .resources import job_gpu_status_callbacks, rendering_uses_gpu, transcription_uses_gpu
 from .stage_runs import StageRunRepository
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
@@ -388,6 +395,24 @@ def process_job(
                 ),
             )
 
+        def render_platform_variants_stage(stage_context: PipelineContext) -> None:
+            run_render_stage(
+                "render_platform_variants",
+                stage_context,
+                lambda callback, on_wait, on_acquired: render_platform_variants(
+                    settings,
+                    job.job_dir,
+                    job.source_path,
+                    primary_vertical=vertical_enabled,
+                    burn_subtitles=burn_subtitles_enabled,
+                    force=force,
+                    progress_callback=callback,
+                    resource_wait_callback=on_wait,
+                    resource_acquired_callback=on_acquired,
+                    control_callback=control_callback,
+                ),
+            )
+
         def render_web_preview_stage(stage_context: PipelineContext) -> None:
             final_source = job.job_dir / "final.mp4"
             source = final_source if render_final_enabled or final_source.is_file() else job.job_dir / "review.mp4"
@@ -433,6 +458,17 @@ def process_job(
             PipelineStage("plan_render", PIPELINE_STAGE_SPECS["plan_render"].status, enabled("plan_render", True), render_preview_stage),
             PipelineStage("render_review", PIPELINE_STAGE_SPECS["render_review"].status, enabled("render_review", render_review_enabled), render_review_stage),
             PipelineStage("render_final", PIPELINE_STAGE_SPECS["render_final"].status, enabled("render_final", render_final_enabled), render_final_stage),
+            PipelineStage(
+                "render_platform_variants",
+                PIPELINE_STAGE_SPECS["render_platform_variants"].status,
+                enabled(
+                    "render_platform_variants",
+                    render_final_enabled
+                    and getattr(settings, "platform_variants_enabled", False)
+                    and bool(platform_variant_targets(settings, primary_vertical=vertical_enabled)),
+                ),
+                render_platform_variants_stage,
+            ),
             PipelineStage(
                 "render_web_preview",
                 PIPELINE_STAGE_SPECS["render_web_preview"].status,
@@ -508,7 +544,7 @@ def process_job(
 def _stage_exclusive_resources(settings: Settings, stage_name: str) -> frozenset[str]:
     if stage_name == "transcribe" and transcription_uses_gpu(settings):
         return frozenset({"gpu"})
-    if stage_name in {"render_review", "render_final", "render_web_preview"} and rendering_uses_gpu(settings):
+    if stage_name in {"render_review", "render_final", "render_platform_variants", "render_web_preview"} and rendering_uses_gpu(settings):
         return frozenset({"gpu"})
     if stage_name == "plan_uvr" and str(getattr(settings, "demucs_device", "")).lower().startswith("cuda"):
         return frozenset({"gpu"})
