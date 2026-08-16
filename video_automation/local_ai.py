@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import urlparse
 
+from .llm_output import StructuredOutputError
+from .llm_output import parse_structured_json as _shared_parse_json
+from .llm_output import validate_required_shape as _shared_validate_shape
 from .provider_errors import (
     ProviderRequestError,
     provider_configuration_error,
@@ -605,86 +608,27 @@ def _local_chat_text(payload: dict[str, Any]) -> str:
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
-    value = str(text or "").strip()
-    if value.startswith("```"):
-        value = value.strip("`").strip()
-        if value.lower().startswith("json"):
-            value = value[4:].lstrip()
     try:
-        parsed = json.loads(value)
-        if isinstance(parsed, dict):
-            return parsed
-    except ValueError:
-        pass
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(value):
-        if char != "{":
-            continue
-        try:
-            parsed, _ = decoder.raw_decode(value[index:])
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    raise ProviderRequestError(
-        LOCAL_AI_PROVIDER_NAME,
-        "structured request",
-        "response_invalid",
-        "The local model returned invalid JSON.",
-    )
+        return _shared_parse_json(text, provider=LOCAL_AI_PROVIDER_NAME)
+    except StructuredOutputError as exc:
+        raise ProviderRequestError(
+            LOCAL_AI_PROVIDER_NAME,
+            "structured request",
+            "response_invalid",
+            str(exc),
+        ) from exc
 
 
 def _validate_required_shape(value: Any, schema: dict[str, Any], path: str = "$") -> None:
-    expected = schema.get("type")
-    if expected == "object":
-        if not isinstance(value, dict):
-            raise ProviderRequestError(
-                LOCAL_AI_PROVIDER_NAME,
-                "structured request",
-                "response_invalid",
-                f"{path} must be an object.",
-            )
-        for key in schema.get("required", []):
-            if key not in value:
-                raise ProviderRequestError(
-                    LOCAL_AI_PROVIDER_NAME,
-                    "structured request",
-                    "response_invalid",
-                    f"{path}.{key} is required.",
-                )
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            for key, child_schema in properties.items():
-                if key in value and isinstance(child_schema, dict):
-                    _validate_required_shape(value[key], child_schema, f"{path}.{key}")
-    elif expected == "array":
-        if not isinstance(value, list):
-            raise ProviderRequestError(
-                LOCAL_AI_PROVIDER_NAME,
-                "structured request",
-                "response_invalid",
-                f"{path} must be an array.",
-            )
-        item_schema = schema.get("items")
-        if isinstance(item_schema, dict):
-            for index, item in enumerate(value):
-                _validate_required_shape(item, item_schema, f"{path}[{index}]")
-    elif expected == "string" and not isinstance(value, str):
+    try:
+        _shared_validate_shape(value, schema, path)
+    except StructuredOutputError as exc:
         raise ProviderRequestError(
             LOCAL_AI_PROVIDER_NAME,
             "structured request",
             "response_invalid",
-            f"{path} must be a string.",
-        )
-    elif expected == "number" and (
-        not isinstance(value, (int, float)) or isinstance(value, bool)
-    ):
-        raise ProviderRequestError(
-            LOCAL_AI_PROVIDER_NAME,
-            "structured request",
-            "response_invalid",
-            f"{path} must be a number.",
-        )
+            str(exc),
+        ) from exc
 
 
 def _local_cover_dimensions(aspect: str, max_side: int) -> tuple[int, int]:

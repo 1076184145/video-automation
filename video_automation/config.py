@@ -240,6 +240,8 @@ class Settings:
     job_disk_multiplier: float
     llm_provider: str
     llm_model: str
+    llm_fallback_provider: str
+    llm_max_repair_retries: int
     local_models_dir: Path
     local_llm_server_path: Path
     local_llm_model_path: Path
@@ -418,6 +420,8 @@ class Settings:
             job_disk_multiplier=max(1.0, _float_env("JOB_DISK_MULTIPLIER", 2.0)),
             llm_provider=_env("LLM_PROVIDER", "openai"),
             llm_model=_env("LLM_MODEL", ""),
+            llm_fallback_provider=_env("LLM_FALLBACK_PROVIDER", ""),
+            llm_max_repair_retries=max(0, _int_env("LLM_MAX_REPAIR_RETRIES", 2)),
             local_models_dir=local_models_dir,
             local_llm_server_path=Path(_env("LOCAL_LLM_SERVER_PATH", "llama-server")).expanduser(),
             local_llm_model_path=Path(
