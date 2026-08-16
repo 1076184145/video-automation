@@ -170,6 +170,11 @@ class Settings:
     transcribe_worker_log_max_bytes: int
     whisper_word_timestamps: bool
     whisper_vad_filter: bool
+    whisper_condition_on_previous_text: bool
+    whisper_no_speech_threshold: float
+    whisper_log_prob_threshold: float
+    whisper_repetition_scrub_enabled: bool
+    whisper_drop_unreliable_segments: bool
     faster_whisper_device: str
     faster_whisper_compute_type: str
     faster_whisper_batch_size: int
@@ -337,6 +342,11 @@ class Settings:
             transcribe_worker_log_max_bytes=max(1024, _int_env("TRANSCRIBE_WORKER_LOG_MAX_BYTES", 5 * 1024 * 1024)),
             whisper_word_timestamps=_bool_env("WHISPER_WORD_TIMESTAMPS", True),
             whisper_vad_filter=_bool_env("WHISPER_VAD_FILTER", True),
+            whisper_condition_on_previous_text=_bool_env("WHISPER_CONDITION_ON_PREVIOUS_TEXT", False),
+            whisper_no_speech_threshold=_float_env("WHISPER_NO_SPEECH_THRESHOLD", 0.6),
+            whisper_log_prob_threshold=_float_env("WHISPER_LOG_PROB_THRESHOLD", -1.0),
+            whisper_repetition_scrub_enabled=_bool_env("WHISPER_REPETITION_SCRUB_ENABLED", True),
+            whisper_drop_unreliable_segments=_bool_env("WHISPER_DROP_UNRELIABLE_SEGMENTS", True),
             faster_whisper_device=_env("FASTER_WHISPER_DEVICE", "cuda"),
             faster_whisper_compute_type=_env("FASTER_WHISPER_COMPUTE_TYPE", "int8_float16"),
             faster_whisper_batch_size=max(1, _int_env("FASTER_WHISPER_BATCH_SIZE", 8)),
