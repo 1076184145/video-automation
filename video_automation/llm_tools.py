@@ -47,17 +47,24 @@ def generate_metadata(settings: Settings, job_dir: Path, *, platform: str = "dou
         cached = read_json_file(output_path)
         if cached is not None:
             return cached
-    payload = _call_structured_llm(
-        settings,
-        system="You are a Chinese short-video publishing assistant. Return concise, platform-ready metadata.",
-        user=_metadata_prompt(job_dir, platform),
-        schema=_metadata_schema(),
-        schema_name="video_metadata",
-    )
+    backend = settings.llm_provider
+    try:
+        payload = _call_structured_llm(
+            settings,
+            system="You are a Chinese short-video publishing assistant. Return concise, platform-ready metadata.",
+            user=_metadata_prompt(job_dir, platform),
+            schema=_metadata_schema(),
+            schema_name="video_metadata",
+        )
+    except Exception as exc:
+        if not getattr(settings, "metadata_fallback_heuristic", True):
+            raise
+        payload = _heuristic_metadata_payload(job_dir, exc)
+        backend = "heuristic_fallback"
     payload.update({
         "status": "ready",
-        "backend": settings.llm_provider,
-        "model": settings.llm_model,
+        "backend": backend,
+        "model": settings.llm_model if backend != "heuristic_fallback" else "",
         "platform": platform,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     })
@@ -81,6 +88,95 @@ def _metadata_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise RuntimeError("metadata fields must be arrays")
     return [str(item).strip() for item in value if str(item).strip()][:50]
+
+
+def _heuristic_metadata_payload(job_dir: Path, error: Exception) -> dict[str, Any]:
+    """Rule-based metadata used when every LLM provider is unavailable."""
+    highlights = read_json_file(job_dir / "highlights.json") or {}
+    cuts = read_json_file(job_dir / "cuts.json") or {}
+    transcript = read_json_file(job_dir / "transcript.json") or {}
+
+    reasons = [
+        str(item.get("reason") or "").strip()
+        for item in (highlights.get("highlights") or [])
+        if isinstance(item, dict) and str(item.get("reason") or "").strip()
+    ][:6]
+    summary = str(highlights.get("summary") or "").strip()
+    if not reasons and summary:
+        reasons = [summary]
+
+    top_clips = sorted(
+        [clip for clip in (cuts.get("clips") or []) if isinstance(clip, dict)],
+        key=lambda clip: float(clip.get("final_score") or clip.get("content_score") or 0),
+        reverse=True,
+    )[:5]
+    clip_texts = [
+        str(clip.get("text") or "").strip()
+        for clip in top_clips
+        if str(clip.get("text") or "").strip()
+    ]
+
+    titles: list[str] = []
+    if summary:
+        titles.append(_compact_title(summary, limit=24))
+    for reason in reasons[:2]:
+        title = _compact_title(reason, limit=20)
+        if title and title not in titles:
+            titles.append(title)
+    if not titles and clip_texts:
+        titles.append(_compact_title(clip_texts[0], limit=20))
+    if not titles:
+        titles.append("精彩片段回顾")
+
+    descriptions = (reasons or clip_texts or ["本期精选片段，欢迎观看。"])[:3]
+    keywords = _frequent_keywords(" ".join([summary] + reasons + clip_texts))
+    tags = keywords[:8] if keywords else ["短视频", "精彩片段"]
+    hashtags = [f"#{tag.replace(' ', '')}" for tag in keywords[:4]] or ["#短视频", "#精彩片段"]
+
+    return {
+        "titles": titles[:3],
+        "descriptions": [item[:120] for item in descriptions],
+        "tags": tags,
+        "hashtags": hashtags,
+        "cover_titles": titles[:2],
+        "platform_notes": [
+            "由本地规则生成的兜底文案：AI 供应商不可用，建议发布前人工润色。",
+            f"fallback_reason: {provider_error_code(error)}",
+        ],
+        "generator": "heuristic_fallback",
+        "fallback_reason": provider_error_code(error),
+    }
+
+
+_TITLE_STRIP_CHARS = "，。！？；：、,.!?;: \t\"'“”‘’()（）[]【】\n"
+
+
+def _compact_title(text: str, *, limit: int) -> str:
+    cleaned = str(text or "").strip().strip(_TITLE_STRIP_CHARS)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:limit].rstrip(_TITLE_STRIP_CHARS)
+
+
+_KEYWORD_STOP_CHARS = set("的了是在和与及或有也不这那你我他她它们吧啊吗呢呀哦嗯")
+
+
+def _frequent_keywords(text: str, *, limit: int = 12) -> list[str]:
+    """Rank CJK 2-6 char chunks and ASCII words by frequency."""
+    import re
+    from collections import Counter
+
+    chunks: list[str] = []
+    for token in re.findall(r"[\u4e00-\u9fff]{2,6}|[A-Za-z][A-Za-z0-9_-]{1,15}", str(text or "")):
+        if any(char in _KEYWORD_STOP_CHARS for char in token[:2]):
+            continue
+        chunks.append(token)
+    if not chunks:
+        return []
+    counts = Counter(chunks)
+    ranked = sorted(counts, key=lambda token: (-counts[token], len(token), token))
+    repeated = [token for token in ranked if counts[token] >= 2]
+    singles = [token for token in ranked if counts[token] == 1]
+    return (repeated + singles)[:limit]
 
 
 def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = False) -> dict[str, Any]:

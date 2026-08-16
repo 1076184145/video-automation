@@ -253,6 +253,7 @@ class Settings:
     local_llm_request_timeout_seconds: int
     llm_translation_batch_size: int
     llm_translation_batch_chars: int
+    metadata_fallback_heuristic: bool
     google_api_key: str
     google_base_url: str
     publish_enabled: bool
@@ -282,6 +283,7 @@ class Settings:
     webhook_url: str
     cover_provider: str
     cover_model: str
+    cover_fallback_local: bool
     cover_count: int
     cover_aspects: tuple[str, ...]
     cover_quality: str
@@ -442,6 +444,7 @@ class Settings:
             ),
             llm_translation_batch_size=max(1, _int_env("LLM_TRANSLATION_BATCH_SIZE", 24)),
             llm_translation_batch_chars=max(500, _int_env("LLM_TRANSLATION_BATCH_CHARS", 6000)),
+            metadata_fallback_heuristic=_bool_env("METADATA_FALLBACK_HEURISTIC", True),
             google_api_key=_secret_env("GOOGLE_API_KEY", ""),
             google_base_url=_env("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             publish_enabled=_bool_env("PUBLISH_ENABLED", False),
@@ -477,6 +480,7 @@ class Settings:
             webhook_url=_env("WEBHOOK_URL", ""),
             cover_provider=_env("COVER_PROVIDER", "openai"),
             cover_model=_env("COVER_MODEL", "gpt-image-2"),
+            cover_fallback_local=_bool_env("COVER_FALLBACK_LOCAL", True),
             cover_count=_int_env("COVER_COUNT", 3),
             cover_aspects=_words_env("COVER_ASPECTS", "9:16,16:9"),
             cover_quality=_env("COVER_QUALITY", "medium"),

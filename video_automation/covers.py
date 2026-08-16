@@ -104,6 +104,27 @@ def generate_cover_candidates(
     count: int | None = None,
     aspects: list[str] | None = None,
 ) -> dict[str, Any]:
+    try:
+        return _generate_provider_cover_candidates(
+            settings, job_dir, title=title, style=style, count=count, aspects=aspects
+        )
+    except Exception as exc:
+        if not getattr(settings, "cover_fallback_local", True):
+            raise
+        return _generate_fallback_covers(
+            settings, job_dir, error=exc, title=title, style=style, count=count, aspects=aspects
+        )
+
+
+def _generate_provider_cover_candidates(
+    settings: Settings,
+    job_dir: Path,
+    *,
+    title: str = "",
+    style: str = "short_video",
+    count: int | None = None,
+    aspects: list[str] | None = None,
+) -> dict[str, Any]:
     provider = settings.cover_provider.strip().lower()
     provider_name = _cover_provider_name(settings)
     if provider not in SUPPORTED_COVER_PROVIDERS:
@@ -199,6 +220,105 @@ def generate_cover_candidates(
             from .local_ai import release_local_ai
 
             release_local_ai()
+
+
+def _generate_fallback_covers(
+    settings: Settings,
+    job_dir: Path,
+    *,
+    error: Exception,
+    title: str = "",
+    style: str = "short_video",
+    count: int | None = None,
+    aspects: list[str] | None = None,
+) -> dict[str, Any]:
+    """Zero-provider covers: composite the best video frame with the title panel.
+
+    Used when the configured image-generation provider is unavailable so the
+    job still ships reviewable covers; the manifest records that these are
+    fallback candidates.
+    """
+    normalized_count = _cover_count(count if count is not None else settings.cover_count)
+    normalized_aspects = _cover_aspects(aspects or list(settings.cover_aspects))
+    normalized_style = style if style in STYLE_PROMPTS else "short_video"
+    prompt_title = _preferred_cover_title(job_dir, title)
+    manifest = _initial_manifest(
+        settings,
+        job_dir,
+        title=prompt_title,
+        style=normalized_style,
+        count=normalized_count,
+        aspects=normalized_aspects,
+    )
+    manifest["generator"] = "fallback_frame_composite"
+    manifest["fallback_reason"] = provider_error_code(error)
+    manifest["fallback_error"] = str(error)[:800]
+    manifest_path = job_dir / "cover_manifest.json"
+
+    reference = _prepare_cover_reference(settings, job_dir)
+    if reference is None or not Path(reference).is_file():
+        manifest["status"] = "failed"
+        manifest["updated_at"] = _now()
+        manifest["error_code"] = provider_error_code(error)
+        manifest["error"] = str(error)
+        manifest["fallback_error"] = (
+            str(manifest.get("fallback_error") or "")
+            + " | No usable video frame is available for a fallback cover."
+        )
+        write_json_atomic(manifest_path, manifest)
+        raise error
+
+    raw = Path(reference).read_bytes()
+    variants: list[tuple[str, float]] = [("frame", 0.0), ("frame_dark", 0.45)][: max(1, min(normalized_count, 2))]
+    try:
+        for aspect in normalized_aspects:
+            spec = ASPECT_SPECS[aspect]
+            candidates = []
+            for index, (variant, darkening) in enumerate(variants, start=1):
+                filename = f"cover_{spec['slug']}_{index:02}.jpg"
+                output_path = job_dir / filename
+                _postprocess_cover(
+                    _darken_cover_frame(raw, darkening) if darkening else raw,
+                    output_path,
+                    size=spec["final"],
+                    title=prompt_title,
+                    font_name=settings.cover_title_font,
+                    output_format=settings.cover_output_format,
+                )
+                candidates.append({
+                    "file": filename,
+                    "aspect": aspect,
+                    "width": spec["final"][0],
+                    "height": spec["final"][1],
+                    "revised_prompt": "",
+                    "fallback_variant": variant,
+                })
+            manifest["candidates"][aspect] = candidates
+        manifest["status"] = "ready"
+        manifest["updated_at"] = _now()
+        manifest["error_code"] = ""
+        manifest["error"] = ""
+        write_json_atomic(manifest_path, manifest)
+        return manifest
+    except Exception:
+        manifest["status"] = "failed"
+        manifest["updated_at"] = _now()
+        manifest["error_code"] = provider_error_code(error)
+        manifest["error"] = str(error)
+        write_json_atomic(manifest_path, manifest)
+        raise error
+
+
+def _darken_cover_frame(raw: bytes, factor: float) -> bytes:
+    try:
+        from PIL import Image, ImageEnhance
+    except ImportError:
+        return raw
+    with Image.open(BytesIO(raw)) as image:
+        darkened = ImageEnhance.Brightness(image.convert("RGB")).enhance(max(0.0, 1.0 - factor))
+        buffer = BytesIO()
+        darkened.save(buffer, format="JPEG", quality=92)
+        return buffer.getvalue()
 
 
 def select_cover(job_dir: Path, *, aspect: str, candidate: str) -> dict[str, Any]:
