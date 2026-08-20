@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,6 +58,90 @@ class EnvConfigTests(unittest.TestCase):
             os.utime(path, None)
 
             self.assertEqual(config._cached_env_file(path)["VALUE"], "two")
+
+    def test_settings_load_reads_each_env_file_once_and_resets_snapshot(self) -> None:
+        self._remember_env(
+            "API_PORT",
+            "GOOGLE_API_KEY",
+            "GOOGLE_API_KEY_REF",
+            "COVER_API_KEY",
+            "COVER_API_KEY_REF",
+            "OPENAI_API_KEY",
+            "OPENAI_API_KEY_REF",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            example_path = root / ".env.example"
+            env_path = root / ".env"
+            example_path.write_text("API_PORT=9000\n", encoding="utf-8")
+            env_path.write_text("API_PORT=9100\n", encoding="utf-8")
+            config.PROJECT_ROOT = root
+            config._ENV_FILE_CACHE.clear()
+
+            with patch.object(
+                config,
+                "_cached_env_file",
+                wraps=config._cached_env_file,
+            ) as cached_env_file:
+                settings = config.Settings.load()
+
+            self.assertEqual(settings.api_port, 9100)
+            self.assertEqual(
+                [call.args[0] for call in cached_env_file.call_args_list],
+                [example_path, env_path],
+            )
+            self.assertIsNone(config._ENV_SNAPSHOT.get())
+
+    def test_settings_load_resets_snapshot_after_error(self) -> None:
+        with patch.object(
+            config.Settings,
+            "_load_inner",
+            side_effect=RuntimeError("settings failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "settings failed"):
+                config.Settings.load()
+
+        self.assertIsNone(config._ENV_SNAPSHOT.get())
+
+    def test_settings_load_snapshots_are_isolated_between_threads(self) -> None:
+        self._remember_env("VIDEO_AUTOMATION_SNAPSHOT_TEST")
+        labels = threading.local()
+        first_snapshot_ready = threading.Event()
+        second_snapshot_ready = threading.Event()
+        allow_second_read = threading.Event()
+
+        def cached_env_file(_path):
+            return {"VIDEO_AUTOMATION_SNAPSHOT_TEST": labels.value}
+
+        class SnapshotSettings(config.Settings):
+            @classmethod
+            def _load_inner(cls):
+                if labels.value == "first":
+                    first_snapshot_ready.set()
+                    self.assertTrue(second_snapshot_ready.wait(timeout=5))
+                    value = config._env("VIDEO_AUTOMATION_SNAPSHOT_TEST")
+                    allow_second_read.set()
+                    return value
+                second_snapshot_ready.set()
+                self.assertTrue(allow_second_read.wait(timeout=5))
+                return config._env("VIDEO_AUTOMATION_SNAPSHOT_TEST")
+
+        def load(label: str) -> str:
+            labels.value = label
+            if label == "second":
+                self.assertTrue(first_snapshot_ready.wait(timeout=5))
+            return SnapshotSettings.load()
+
+        with (
+            patch.object(config, "_cached_env_file", side_effect=cached_env_file),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            first = executor.submit(load, "first")
+            second = executor.submit(load, "second")
+            self.assertEqual(first.result(timeout=5), "first")
+            self.assertEqual(second.result(timeout=5), "second")
+
+        self.assertIsNone(config._ENV_SNAPSHOT.get())
 
     def test_google_ai_studio_settings_load_from_environment(self) -> None:
         self._remember_env("GOOGLE_API_KEY", "GOOGLE_BASE_URL", "LLM_PROVIDER", "COVER_PROVIDER")

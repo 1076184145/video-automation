@@ -16,6 +16,12 @@ from .health import clear_health_cache, health_payload
 from .io_utils import read_json_file
 from .jobs import list_jobs
 from .media import MEDIA_EXTENSIONS
+from .process_tree import (
+    attach_process_tree,
+    process_group_popen_kwargs,
+    release_process_tree,
+    terminate_process_tree,
+)
 
 
 TOOLS_INSTALL_LOCK = threading.Lock()
@@ -118,6 +124,7 @@ def set_tools_install_state(**updates: Any) -> dict[str, Any]:
 
 
 def run_tools_install(settings: Settings, command: list[str]) -> None:
+    process: subprocess.Popen[str] | None = None
     try:
         process = subprocess.Popen(
             command,
@@ -127,8 +134,12 @@ def run_tools_install(settings: Settings, command: list[str]) -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **process_group_popen_kwargs(),
         )
-    except OSError as exc:
+        attach_process_tree(process)
+    except Exception as exc:
+        if process is not None:
+            terminate_process_tree(process)
         set_tools_install_state(
             status="failed",
             failed_at=datetime.now().isoformat(timespec="seconds"),
@@ -136,10 +147,26 @@ def run_tools_install(settings: Settings, command: list[str]) -> None:
         )
         return
 
-    if process.stdout is not None:
-        for line in process.stdout:
-            set_tools_install_state(log_append=line)
-    returncode = process.wait()
+    try:
+        if process.stdout is not None:
+            for line in process.stdout:
+                set_tools_install_state(log_append=line)
+        returncode = process.wait()
+    except Exception as exc:
+        terminate_process_tree(process)
+        set_tools_install_state(
+            status="failed",
+            failed_at=datetime.now().isoformat(timespec="seconds"),
+            message=f"Tool installation interrupted: {exc}",
+        )
+        return
+    finally:
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+        release_process_tree(process)
     if returncode == 0:
         clear_health_cache()
         set_tools_install_state(

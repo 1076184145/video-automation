@@ -10,6 +10,11 @@ from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from ..credentials import CredentialStore
+from ..provider_errors import (
+    ProviderRequestError,
+    provider_http_error,
+    provider_network_error,
+)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -166,15 +171,39 @@ class BilibiliHttpTransport:
             with self.opener.open(request, timeout=self.timeout) as response:
                 raw = response.read()
         except HTTPError as exc:
-            raise RuntimeError(f"Bilibili API returned HTTP {exc.code}") from exc
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            raise provider_http_error(
+                "Bilibili",
+                "API request",
+                exc.code,
+                detail,
+                classify_model_errors=False,
+            ) from exc
         except URLError as exc:
-            raise RuntimeError(f"Bilibili API request failed: {exc.reason}") from exc
+            raise provider_network_error(
+                "Bilibili",
+                "API request",
+                exc,
+            ) from exc
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
         except ValueError as exc:
-            raise RuntimeError("Bilibili API returned invalid JSON") from exc
+            raise ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "response_invalid",
+                "The API returned invalid JSON.",
+            ) from exc
         if not isinstance(payload, dict):
-            raise RuntimeError("Bilibili API returned an invalid response")
+            raise ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "response_invalid",
+                "The API returned an invalid response.",
+            )
         return payload
 
 

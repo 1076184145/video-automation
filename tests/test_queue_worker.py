@@ -33,6 +33,27 @@ class FakeProcess:
 
 
 class QueueWorkerProcessTests(unittest.TestCase):
+    def test_launcher_status_uses_one_process_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = SimpleNamespace(root=root, logs_dir=root / "logs", api_parallel_jobs=1)
+
+            class RacingQueueWorkerProcess(QueueWorkerProcess):
+                def __getattribute__(self, name):
+                    if name == "_process":
+                        accesses = object.__getattribute__(self, "process_accesses") + 1
+                        object.__setattr__(self, "process_accesses", accesses)
+                        if accesses > 1:
+                            return None
+                    return super().__getattribute__(name)
+
+            worker = RacingQueueWorkerProcess(settings)  # type: ignore[arg-type]
+            worker.process_accesses = 0
+            worker._process = FakeProcess()
+
+            self.assertTrue(worker._launcher_is_running)
+            self.assertEqual(worker.process_accesses, 1)
+
     def test_worker_process_uses_project_root_and_stops_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

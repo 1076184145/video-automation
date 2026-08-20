@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,10 @@ def _project_root() -> Path:
 
 PROJECT_ROOT = _project_root()
 _ENV_FILE_CACHE: dict[Path, tuple[tuple[int, int, str], dict[str, str]]] = {}
+_ENV_SNAPSHOT: ContextVar[dict[str, str] | None] = ContextVar(
+    "video_automation_env_snapshot",
+    default=None,
+)
 
 DEFAULT_WHISPER_INITIAL_PROMPT = ""
 DEFAULT_PROFANITY_WORDS = (
@@ -75,12 +80,14 @@ def _parse_env_text(text: str) -> dict[str, str]:
 
 
 def _env(name: str, default: str = "") -> str:
-    env_path = PROJECT_ROOT / ".env"
-    example_path = PROJECT_ROOT / ".env.example"
-    file_values = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
     env_value = os.environ.get(name)
     if env_value is not None:
         return env_value
+    file_values = _ENV_SNAPSHOT.get()
+    if file_values is None:
+        env_path = PROJECT_ROOT / ".env"
+        example_path = PROJECT_ROOT / ".env.example"
+        file_values = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
     return file_values.get(name) or default
 
 
@@ -322,6 +329,17 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
+        env_path = PROJECT_ROOT / ".env"
+        example_path = PROJECT_ROOT / ".env.example"
+        snapshot = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
+        token = _ENV_SNAPSHOT.set(snapshot)
+        try:
+            return cls._load_inner()
+        finally:
+            _ENV_SNAPSHOT.reset(token)
+
+    @classmethod
+    def _load_inner(cls) -> "Settings":
         root = Path(_env("VIDEO_AUTOMATION_ROOT", str(PROJECT_ROOT))).expanduser()
         local_models_dir = Path(_env("LOCAL_MODELS_DIR", str(root / "models"))).expanduser()
         return cls(
