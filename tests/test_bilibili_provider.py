@@ -1,17 +1,113 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 from video_automation.credentials import MemoryCredentialStore
+from video_automation.provider_errors import ProviderRequestError
 from video_automation.providers.bilibili import BilibiliHttpTransport, BilibiliProvider
 
 
 class BilibiliProviderTests(unittest.TestCase):
+    @staticmethod
+    def _http_transport() -> BilibiliHttpTransport:
+        return BilibiliHttpTransport(
+            "https://sandbox.test",
+            {
+                "validate": "/validate",
+                "create_upload": "/upload/init",
+                "complete_upload": "/upload/complete",
+                "publish": "/publish",
+                "query": "/query/{remote_id}",
+            },
+        )
+
+    def test_http_error_is_converted_to_structured_provider_error(self) -> None:
+        transport = self._http_transport()
+        error = HTTPError(
+            "https://sandbox.test/validate",
+            429,
+            "rate limited",
+            {},
+            io.BytesIO(b'{"error":{"message":"too many requests"}}'),
+        )
+
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                raise error
+
+        transport.opener = Opener()
+        with self.assertRaises(ProviderRequestError) as raised:
+            transport.validate("token", "client")
+
+        self.assertEqual(raised.exception.code, "rate_limited")
+        self.assertEqual(raised.exception.http_status, 429)
+        self.assertIs(raised.exception.__cause__, error)
+
+    def test_network_error_is_converted_to_structured_provider_error(self) -> None:
+        transport = self._http_transport()
+
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                raise URLError("offline")
+
+        transport.opener = Opener()
+        with self.assertRaises(ProviderRequestError) as raised:
+            transport.validate("token", "client")
+
+        self.assertEqual(raised.exception.code, "network_error")
+        self.assertIsInstance(raised.exception.__cause__, URLError)
+
+    def test_http_404_is_not_mislabeled_as_an_ai_model_error(self) -> None:
+        transport = self._http_transport()
+        error = HTTPError(
+            "https://sandbox.test/missing",
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"message":"endpoint not found"}'),
+        )
+
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                raise error
+
+        transport.opener = Opener()
+        with self.assertRaises(ProviderRequestError) as raised:
+            transport.validate("token", "client")
+
+        self.assertEqual(raised.exception.code, "provider_error")
+        self.assertEqual(raised.exception.http_status, 404)
+
+    def test_invalid_json_is_a_permanent_structured_provider_error(self) -> None:
+        transport = self._http_transport()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b"not-json"
+
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                return Response()
+
+        transport.opener = Opener()
+        with self.assertRaises(ProviderRequestError) as raised:
+            transport.validate("token", "client")
+
+        self.assertEqual(raised.exception.code, "response_invalid")
+
     def test_resumable_upload_continues_from_persisted_offset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             video = Path(tmp) / "final.mp4"

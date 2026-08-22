@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
+from .provider_errors import ProviderRequestError
+
 
 PUBLISH_TRANSITIONS = {
     "draft": {"validating"},
@@ -18,6 +20,17 @@ PUBLISH_TRANSITIONS = {
     "failed": {"validating", "uploading"},
     "published": set(),
 }
+
+_RETRYABLE_PROVIDER_ERROR_CODES = {"network_error", "rate_limited"}
+
+
+def _provider_error_is_retryable(error: ProviderRequestError) -> bool:
+    if error.code in _RETRYABLE_PROVIDER_ERROR_CODES:
+        return True
+    if error.code != "provider_error":
+        return False
+    status = error.http_status
+    return status is None or status in {408, 425} or status >= 500
 
 
 def _now() -> str:
@@ -252,8 +265,14 @@ class PublishService:
             return self.repository.transition(attempt_id, status, remote_id=remote_id)
         except PermissionError as exc:
             return self._fail(self.repository.get(attempt_id) or attempt, exc, retryable=False)
+        except ProviderRequestError as exc:
+            return self._fail(
+                self.repository.get(attempt_id) or attempt,
+                exc,
+                retryable=_provider_error_is_retryable(exc),
+            )
         except Exception as exc:
-            return self._fail(self.repository.get(attempt_id) or attempt, exc, retryable=True)
+            return self._fail(self.repository.get(attempt_id) or attempt, exc, retryable=False)
 
     def sync_attempt(self, attempt_id: str) -> dict[str, Any]:
         attempt = self.repository.get(attempt_id)
@@ -278,10 +297,22 @@ class PublishService:
                     action=self._fallback_action(attempt),
                 )
             return attempt
+        except PermissionError as exc:
+            if attempt["status"] != "processing":
+                raise
+            return self._fail(attempt, exc, retryable=False)
+        except ProviderRequestError as exc:
+            if attempt["status"] != "processing":
+                raise
+            return self._fail(
+                attempt,
+                exc,
+                retryable=_provider_error_is_retryable(exc),
+            )
         except Exception as exc:
             if attempt["status"] != "processing":
                 raise
-            return self._fail(attempt, exc, retryable=True)
+            return self._fail(attempt, exc, retryable=False)
 
     def _fail(self, attempt: dict[str, Any], error: Exception, *, retryable: bool) -> dict[str, Any]:
         if attempt["status"] == "draft":

@@ -43,6 +43,12 @@ PIPELINE_STAGE_SPECS: dict[str, StageSpec] = {
         StageSpec("plan_render", "planning_render", frozenset({"refine_cuts", "style_subtitles", "plan_uvr"}), frozenset({"probe", "extract_audio", "transcribe", "plan_cuts", "refine_cuts", "style_subtitles"})),
         StageSpec("render_review", "rendering_review", frozenset({"plan_render"}), frozenset({"probe", "extract_audio", "transcribe", "plan_cuts", "style_subtitles", "plan_render"})),
         StageSpec("render_final", "rendering_final", frozenset({"plan_render", "plan_crop", "render_review"}), frozenset({"probe", "extract_audio", "transcribe", "plan_cuts", "plan_crop", "style_subtitles", "plan_render"})),
+        StageSpec(
+            "render_platform_variants",
+            "rendering_platform_variants",
+            frozenset({"render_final"}),
+            frozenset({"probe", "extract_audio", "transcribe", "plan_cuts", "plan_crop", "style_subtitles", "plan_render", "render_final"}),
+        ),
         StageSpec("render_web_preview", "rendering_web_preview", frozenset({"render_final"}), frozenset({"probe", "extract_audio", "transcribe", "plan_cuts", "style_subtitles", "plan_render"})),
     )
 }

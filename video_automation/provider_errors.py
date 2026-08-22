@@ -54,9 +54,16 @@ def provider_http_error(
     operation: str,
     http_status: int,
     response_body: str,
+    *,
+    classify_model_errors: bool = True,
 ) -> ProviderRequestError:
     message, provider_code = _provider_error_detail(response_body)
-    code = _classify_provider_error(http_status, provider_code, message)
+    code = _classify_provider_error(
+        http_status,
+        provider_code,
+        message,
+        classify_model_errors=classify_model_errors,
+    )
     return ProviderRequestError(
         provider,
         operation,
@@ -107,7 +114,13 @@ def _provider_error_detail(response_body: str) -> tuple[str, str]:
     return _safe_provider_message(message), str(code or "").strip()
 
 
-def _classify_provider_error(http_status: int, provider_code: str, message: str) -> str:
+def _classify_provider_error(
+    http_status: int,
+    provider_code: str,
+    message: str,
+    *,
+    classify_model_errors: bool = True,
+) -> str:
     combined = f"{provider_code} {message}".lower()
     if http_status in {401, 403} or any(
         marker in combined
@@ -132,13 +145,16 @@ def _classify_provider_error(http_status: int, provider_code: str, message: str)
         return "quota_exhausted"
     if http_status == 429:
         return "rate_limited"
-    if http_status == 404 or any(
-        marker in combined
-        for marker in (
-            "model not found",
-            "model_not_found",
-            "model does not exist",
-            "unsupported model",
+    if classify_model_errors and (
+        http_status == 404
+        or any(
+            marker in combined
+            for marker in (
+                "model not found",
+                "model_not_found",
+                "model does not exist",
+                "unsupported model",
+            )
         )
     ):
         return "model_unavailable"

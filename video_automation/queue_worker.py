@@ -70,7 +70,8 @@ class QueueWorkerProcess:
 
     @property
     def _launcher_is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        process = self._process
+        return process is not None and process.poll() is None
 
     def start(self) -> None:
         with self._lock:

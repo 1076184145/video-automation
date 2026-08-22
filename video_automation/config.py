@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,10 @@ def _project_root() -> Path:
 
 PROJECT_ROOT = _project_root()
 _ENV_FILE_CACHE: dict[Path, tuple[tuple[int, int, str], dict[str, str]]] = {}
+_ENV_SNAPSHOT: ContextVar[dict[str, str] | None] = ContextVar(
+    "video_automation_env_snapshot",
+    default=None,
+)
 
 DEFAULT_WHISPER_INITIAL_PROMPT = ""
 DEFAULT_PROFANITY_WORDS = (
@@ -75,12 +80,14 @@ def _parse_env_text(text: str) -> dict[str, str]:
 
 
 def _env(name: str, default: str = "") -> str:
-    env_path = PROJECT_ROOT / ".env"
-    example_path = PROJECT_ROOT / ".env.example"
-    file_values = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
     env_value = os.environ.get(name)
     if env_value is not None:
         return env_value
+    file_values = _ENV_SNAPSHOT.get()
+    if file_values is None:
+        env_path = PROJECT_ROOT / ".env"
+        example_path = PROJECT_ROOT / ".env.example"
+        file_values = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
     return file_values.get(name) or default
 
 
@@ -170,6 +177,11 @@ class Settings:
     transcribe_worker_log_max_bytes: int
     whisper_word_timestamps: bool
     whisper_vad_filter: bool
+    whisper_condition_on_previous_text: bool
+    whisper_no_speech_threshold: float
+    whisper_log_prob_threshold: float
+    whisper_repetition_scrub_enabled: bool
+    whisper_drop_unreliable_segments: bool
     faster_whisper_device: str
     faster_whisper_compute_type: str
     faster_whisper_batch_size: int
@@ -235,6 +247,8 @@ class Settings:
     job_disk_multiplier: float
     llm_provider: str
     llm_model: str
+    llm_fallback_provider: str
+    llm_max_repair_retries: int
     local_models_dir: Path
     local_llm_server_path: Path
     local_llm_model_path: Path
@@ -246,6 +260,7 @@ class Settings:
     local_llm_request_timeout_seconds: int
     llm_translation_batch_size: int
     llm_translation_batch_chars: int
+    metadata_fallback_heuristic: bool
     google_api_key: str
     google_base_url: str
     publish_enabled: bool
@@ -254,6 +269,9 @@ class Settings:
     bilibili_api_endpoints: dict[str, str]
     export_platforms: tuple[str, ...]
     render_video_encoder: str
+    render_segment_parallel_enabled: bool
+    render_segment_workers: int
+    platform_variants_enabled: bool
     render_output_fps: int
     render_x264_preset: str
     render_x264_crf: int
@@ -275,6 +293,7 @@ class Settings:
     webhook_url: str
     cover_provider: str
     cover_model: str
+    cover_fallback_local: bool
     cover_count: int
     cover_aspects: tuple[str, ...]
     cover_quality: str
@@ -310,6 +329,17 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
+        env_path = PROJECT_ROOT / ".env"
+        example_path = PROJECT_ROOT / ".env.example"
+        snapshot = {**_cached_env_file(example_path), **_cached_env_file(env_path)}
+        token = _ENV_SNAPSHOT.set(snapshot)
+        try:
+            return cls._load_inner()
+        finally:
+            _ENV_SNAPSHOT.reset(token)
+
+    @classmethod
+    def _load_inner(cls) -> "Settings":
         root = Path(_env("VIDEO_AUTOMATION_ROOT", str(PROJECT_ROOT))).expanduser()
         local_models_dir = Path(_env("LOCAL_MODELS_DIR", str(root / "models"))).expanduser()
         return cls(
@@ -337,6 +367,11 @@ class Settings:
             transcribe_worker_log_max_bytes=max(1024, _int_env("TRANSCRIBE_WORKER_LOG_MAX_BYTES", 5 * 1024 * 1024)),
             whisper_word_timestamps=_bool_env("WHISPER_WORD_TIMESTAMPS", True),
             whisper_vad_filter=_bool_env("WHISPER_VAD_FILTER", True),
+            whisper_condition_on_previous_text=_bool_env("WHISPER_CONDITION_ON_PREVIOUS_TEXT", False),
+            whisper_no_speech_threshold=_float_env("WHISPER_NO_SPEECH_THRESHOLD", 0.6),
+            whisper_log_prob_threshold=_float_env("WHISPER_LOG_PROB_THRESHOLD", -1.0),
+            whisper_repetition_scrub_enabled=_bool_env("WHISPER_REPETITION_SCRUB_ENABLED", True),
+            whisper_drop_unreliable_segments=_bool_env("WHISPER_DROP_UNRELIABLE_SEGMENTS", True),
             faster_whisper_device=_env("FASTER_WHISPER_DEVICE", "cuda"),
             faster_whisper_compute_type=_env("FASTER_WHISPER_COMPUTE_TYPE", "int8_float16"),
             faster_whisper_batch_size=max(1, _int_env("FASTER_WHISPER_BATCH_SIZE", 8)),
@@ -408,6 +443,8 @@ class Settings:
             job_disk_multiplier=max(1.0, _float_env("JOB_DISK_MULTIPLIER", 2.0)),
             llm_provider=_env("LLM_PROVIDER", "openai"),
             llm_model=_env("LLM_MODEL", ""),
+            llm_fallback_provider=_env("LLM_FALLBACK_PROVIDER", ""),
+            llm_max_repair_retries=max(0, _int_env("LLM_MAX_REPAIR_RETRIES", 2)),
             local_models_dir=local_models_dir,
             local_llm_server_path=Path(_env("LOCAL_LLM_SERVER_PATH", "llama-server")).expanduser(),
             local_llm_model_path=Path(
@@ -428,6 +465,7 @@ class Settings:
             ),
             llm_translation_batch_size=max(1, _int_env("LLM_TRANSLATION_BATCH_SIZE", 24)),
             llm_translation_batch_chars=max(500, _int_env("LLM_TRANSLATION_BATCH_CHARS", 6000)),
+            metadata_fallback_heuristic=_bool_env("METADATA_FALLBACK_HEURISTIC", True),
             google_api_key=_secret_env("GOOGLE_API_KEY", ""),
             google_base_url=_env("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             publish_enabled=_bool_env("PUBLISH_ENABLED", False),
@@ -442,6 +480,9 @@ class Settings:
             },
             export_platforms=_words_env("EXPORT_PLATFORMS", "douyin,bilibili,youtube_shorts"),
             render_video_encoder=_env("RENDER_VIDEO_ENCODER", "libx264"),
+            render_segment_parallel_enabled=_bool_env("RENDER_SEGMENT_PARALLEL_ENABLED", False),
+            render_segment_workers=max(1, min(8, _int_env("RENDER_SEGMENT_WORKERS", 2))),
+            platform_variants_enabled=_bool_env("PLATFORM_VARIANTS_ENABLED", False),
             render_output_fps=max(0, _int_env("RENDER_OUTPUT_FPS", 30)),
             render_x264_preset=_env("RENDER_X264_PRESET", "medium"),
             render_x264_crf=max(0, _int_env("RENDER_X264_CRF", 0)),
@@ -463,6 +504,7 @@ class Settings:
             webhook_url=_env("WEBHOOK_URL", ""),
             cover_provider=_env("COVER_PROVIDER", "openai"),
             cover_model=_env("COVER_MODEL", "gpt-image-2"),
+            cover_fallback_local=_bool_env("COVER_FALLBACK_LOCAL", True),
             cover_count=_int_env("COVER_COUNT", 3),
             cover_aspects=_words_env("COVER_ASPECTS", "9:16,16:9"),
             cover_quality=_env("COVER_QUALITY", "medium"),

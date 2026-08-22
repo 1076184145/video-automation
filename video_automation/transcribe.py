@@ -376,6 +376,9 @@ def transcribe_audio_faster_whisper(
         "initial_prompt": settings.whisper_initial_prompt or None,
         "word_timestamps": settings.whisper_word_timestamps,
         "vad_filter": settings.whisper_vad_filter,
+        "condition_on_previous_text": settings.whisper_condition_on_previous_text,
+        "no_speech_threshold": settings.whisper_no_speech_threshold,
+        "log_prob_threshold": settings.whisper_log_prob_threshold,
     }
     if settings.faster_whisper_batch_size > 1:
         try:
@@ -393,8 +396,16 @@ def transcribe_audio_faster_whisper(
     _report_transcription_progress(progress_callback, "transcribing")
     segments = []
     text_parts = []
+    dropped_unreliable = 0
     for index, segment in enumerate(segments_iter, start=1):
         _report_transcription_progress(progress_callback, "transcribing")
+        avg_logprob = getattr(segment, "avg_logprob", None)
+        no_speech_prob = getattr(segment, "no_speech_prob", None)
+        if settings.whisper_drop_unreliable_segments and _segment_is_unreliable(
+            avg_logprob, no_speech_prob, settings
+        ):
+            dropped_unreliable += 1
+            continue
         text = _postprocess_text(segment.text.strip(), settings)
         text_parts.append(text)
         payload = {
@@ -403,6 +414,10 @@ def transcribe_audio_faster_whisper(
             "end": round(float(segment.end), 3),
             "text": text,
         }
+        if avg_logprob is not None:
+            payload["avg_logprob"] = round(float(avg_logprob), 4)
+        if no_speech_prob is not None:
+            payload["no_speech_prob"] = round(float(no_speech_prob), 4)
         words = _segment_words(segment, settings)
         if words:
             payload["words"] = words
@@ -410,6 +425,10 @@ def transcribe_audio_faster_whisper(
         if speaker is not None:
             payload["speaker"] = speaker
         segments.append(payload)
+
+    if settings.whisper_repetition_scrub_enabled:
+        segments = _collapse_repeated_segments(segments)
+        text_parts = [segment["text"] for segment in segments]
 
     _report_transcription_progress(progress_callback, "writing_outputs")
     write_text_atomic(txt_path, "\n".join(text_parts))
@@ -426,6 +445,11 @@ def transcribe_audio_faster_whisper(
         "batch_size": settings.faster_whisper_batch_size,
         "word_timestamps": settings.whisper_word_timestamps,
         "vad_filter": settings.whisper_vad_filter,
+        "condition_on_previous_text": settings.whisper_condition_on_previous_text,
+        "no_speech_threshold": settings.whisper_no_speech_threshold,
+        "log_prob_threshold": settings.whisper_log_prob_threshold,
+        "repetition_scrub_enabled": settings.whisper_repetition_scrub_enabled,
+        "dropped_unreliable_segments": dropped_unreliable,
     })
 
 
@@ -935,6 +959,11 @@ def _write_transcription_settings_snapshot(settings: Settings, job_dir: Path) ->
         "whisper_timeout_multiplier",
         "whisper_word_timestamps",
         "whisper_vad_filter",
+        "whisper_condition_on_previous_text",
+        "whisper_no_speech_threshold",
+        "whisper_log_prob_threshold",
+        "whisper_repetition_scrub_enabled",
+        "whisper_drop_unreliable_segments",
         "faster_whisper_device",
         "faster_whisper_compute_type",
         "faster_whisper_batch_size",
@@ -1069,6 +1098,8 @@ def _srt_time(seconds: float) -> str:
 
 def _postprocess_text(text: str, settings: Settings) -> str:
     replaced = apply_replacements(_sanitize_asr_text(text), settings.subtitle_replacements)
+    if getattr(settings, "whisper_repetition_scrub_enabled", True):
+        replaced = _collapse_repeated_phrases(replaced)
     return censor_text(replaced, settings.profanity_words, replacement=settings.subtitle_censor_replacement)
 
 
@@ -1092,6 +1123,74 @@ def _sanitize_asr_text(text: str) -> str:
         lambda match: " ".join(match.group("char") for _ in range(_MAX_ASR_CHARACTER_RUN)),
         "".join(sanitized),
     )
+
+
+_MAX_ASR_PHRASE_REPEATS = 3
+# Lazy quantifiers: the engine picks the shortest phrase unit that still forms a
+# repeat run, which maximizes how much of a degeneration loop one match covers.
+_ASR_PHRASE_UNIT = r"[^\s，。！？；、,.!?;:\u3000]{2,12}?(?:[ \t][^\s，。！？；、,.!?;:\u3000]{1,12}?){0,3}?"
+_ASR_PHRASE_SEPARATOR = r"[，。、,;.!?\s]*"
+# Four or more consecutive repeats of the same phrase, optionally separated by
+# punctuation/whitespace, is the classic decoder-degeneration signature.
+_REPEATED_ASR_PHRASE = re.compile(
+    rf"(?P<phrase>{_ASR_PHRASE_UNIT})(?P<sep>{_ASR_PHRASE_SEPARATOR})(?P=phrase)"
+    rf"(?:{_ASR_PHRASE_SEPARATOR}(?P=phrase)){{2,}}"
+)
+_REPEAT_STRIP_CHARS = "，。！？；、,.!?;: \t\u3000"
+
+
+def _collapse_repeated_phrases(text: str) -> str:
+    """Collapse consecutive repeated phrase runs (Whisper degeneration loops)."""
+
+    def keep_bounded_run(match: re.Match[str]) -> str:
+        phrase = match.group("phrase")
+        separator = match.group("sep") or ""
+        if not separator:
+            return phrase * _MAX_ASR_PHRASE_REPEATS
+        return separator.join([phrase] * _MAX_ASR_PHRASE_REPEATS)
+
+    return _REPEATED_ASR_PHRASE.sub(keep_bounded_run, text)
+
+
+def _normalized_repeat_key(text: str) -> str:
+    return "".join(character for character in text if character not in _REPEAT_STRIP_CHARS)
+
+
+def _collapse_repeated_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep at most three consecutive segments carrying identical text."""
+    kept: list[dict[str, Any]] = []
+    previous_key: str | None = None
+    run_length = 0
+    for segment in segments:
+        key = _normalized_repeat_key(str(segment.get("text", "")))
+        if key and key == previous_key:
+            run_length += 1
+            if run_length > _MAX_ASR_PHRASE_REPEATS:
+                continue
+        else:
+            previous_key = key
+            run_length = 1
+        kept.append(segment)
+    for index, segment in enumerate(kept):
+        segment["id"] = index
+    return kept
+
+
+def _segment_is_unreliable(
+    avg_logprob: Any,
+    no_speech_prob: Any,
+    settings: Settings,
+) -> bool:
+    """Detect text emitted over probable silence with poor decoder confidence."""
+    if avg_logprob is None or no_speech_prob is None:
+        return False
+    try:
+        return (
+            float(no_speech_prob) >= settings.whisper_no_speech_threshold
+            and float(avg_logprob) < settings.whisper_log_prob_threshold
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _copy_text_if_exists(source: Path, dest: Path, settings: Settings) -> None:

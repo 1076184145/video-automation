@@ -114,8 +114,9 @@ Included in the local workflow:
 
 Optional features:
 
-- AI covers, translation, titles, descriptions, and semantic highlight suggestions
-- NVIDIA CUDA/NVENC acceleration
+- AI covers, translation, titles, descriptions, and semantic highlight suggestions; covers and metadata fall back to rule-based local generation when providers are unavailable
+- NVIDIA CUDA/NVENC acceleration, serialized across processes by a kernel file lock
+- Opt-in per-platform aspect variants and segment-parallel final rendering (`PLATFORM_VARIANTS_ENABLED`, `RENDER_SEGMENT_PARALLEL_ENABLED`)
 - Faster-Whisper local transcription (`medium` primary, `small` fallback by default); legacy FunASR configurations remain supported
 - Demucs audio separation
 - A separately configured publishing connector; manual packages remain the fallback
@@ -134,9 +135,8 @@ support references, cover generation locally extracts one frame from the
 top-ranked semantic intervals, preferring a clear centered subject over repeated
 or split-screen layouts, and sends it with the cover prompt only when you
 explicitly run the external cover feature.
-Failed semantic-provider attempts preserve the last good `highlights.json` and
-write only provider, model, status, and a stable error code to
-`highlights_attempt.json`; prompts, transcripts, and API keys are not stored there.
+Failed semantic-provider attempts preserve the last good `highlights.json` and write only provider, model, status, and a stable error code to
+`highlights_attempt.json`; prompts, transcripts, and API keys are not stored there. Structured output is schema-validated with repair retries and an optional fallback provider (`LLM_FALLBACK_PROVIDER`).
 
 Transcription runs in an isolated process with phase heartbeats, a no-progress
 timeout, process-tree cleanup, and a temporary backend circuit breaker. A failed
@@ -145,9 +145,10 @@ the queue for the full duration-derived timeout.
 
 Transcription language defaults to automatic detection. Choose a fixed language
 only when every recording in the job or batch uses that language; forcing the
-wrong language can produce plausible-looking but incorrect subtitles. Before
-subtitle generation, invalid Unicode replacement markers and obvious
-single-character decoder loops are removed from ASR output.
+wrong language can produce plausible-looking but incorrect subtitles. Before subtitle
+generation, invalid Unicode markers, decoder loops, and repeated-phrase degeneration
+are removed from ASR output, and segments emitted over probable silence with poor
+decoder confidence are dropped.
 
 ## Important Outputs
 
@@ -155,7 +156,7 @@ Each job is stored under `processing/jobs/<job-name>/`.
 
 | File | What it is |
 |---|---|
-| `final.mp4` | Full-quality finished video |
+| `final.mp4` | Full-quality finished video (plus `variants/<platform>.mp4` when aspect variants are enabled) |
 | `web_preview.mp4` | Smaller browser preview |
 | `transcript.txt` / `.srt` | Transcript and subtitles |
 | `cuts.json` | Suggested or edited clip ranges |

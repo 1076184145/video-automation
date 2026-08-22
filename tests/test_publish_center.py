@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from video_automation.provider_errors import ProviderRequestError
 from video_automation.publish_center import PublishRepository, PublishService
 
 
@@ -43,6 +44,98 @@ class PublishRepositoryTests(unittest.TestCase):
 
 
 class PublishServiceTests(unittest.TestCase):
+    def _run_validation_failure(self, error: Exception) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = PublishRepository(Path(tmp) / "library.sqlite3")
+
+            class Provider:
+                def validate(self, _attempt):
+                    raise error
+
+            service = PublishService(repository, {"bilibili": Provider()})
+            attempt = repository.create_attempt("job-one", "bilibili", payload={})
+            return service.run_attempt(attempt["id"])
+
+    def test_retryable_provider_failures_are_marked_for_retry(self) -> None:
+        errors = (
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "network_error",
+                "offline",
+            ),
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "rate_limited",
+                "slow down",
+                http_status=429,
+            ),
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "provider_error",
+                "unavailable",
+                http_status=503,
+            ),
+        )
+        for error in errors:
+            with self.subTest(code=error.code, status=error.http_status):
+                failed = self._run_validation_failure(error)
+                self.assertTrue(failed["retryable"])
+
+    def test_permanent_and_internal_failures_are_not_marked_for_retry(self) -> None:
+        errors = (
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "credentials_invalid",
+                "invalid token",
+                http_status=401,
+            ),
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "provider_error",
+                "bad request",
+                http_status=400,
+            ),
+            ProviderRequestError(
+                "Bilibili",
+                "API request",
+                "response_invalid",
+                "invalid JSON",
+            ),
+            KeyError("internal bug"),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__, status=getattr(error, "http_status", None)):
+                failed = self._run_validation_failure(error)
+                self.assertFalse(failed["retryable"])
+
+    def test_sync_uses_the_same_provider_retry_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = PublishRepository(Path(tmp) / "library.sqlite3")
+            attempt = repository.create_attempt("job-one", "bilibili", payload={})
+            attempt = repository.transition(attempt["id"], "validating")
+            attempt = repository.transition(attempt["id"], "uploading")
+            attempt = repository.transition(attempt["id"], "processing")
+
+            class Provider:
+                def query(self, _attempt):
+                    raise ProviderRequestError(
+                        "Bilibili",
+                        "API request",
+                        "network_error",
+                        "offline",
+                    )
+
+            service = PublishService(repository, {"bilibili": Provider()})
+            failed = service.sync_attempt(attempt["id"])
+
+            self.assertEqual(failed["status"], "failed")
+            self.assertTrue(failed["retryable"])
+
     def test_missing_permission_falls_back_to_manual_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

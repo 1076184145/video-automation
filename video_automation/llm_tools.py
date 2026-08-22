@@ -10,7 +10,13 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
+from .llm_output import (
+    StructuredOutputError,
+    parse_structured_json,
+    validate_required_shape,
+)
 from .provider_errors import (
+    ProviderRequestError,
     provider_configuration_error,
     provider_error_code,
     provider_http_error,
@@ -41,17 +47,24 @@ def generate_metadata(settings: Settings, job_dir: Path, *, platform: str = "dou
         cached = read_json_file(output_path)
         if cached is not None:
             return cached
-    payload = _call_structured_llm(
-        settings,
-        system="You are a Chinese short-video publishing assistant. Return concise, platform-ready metadata.",
-        user=_metadata_prompt(job_dir, platform),
-        schema=_metadata_schema(),
-        schema_name="video_metadata",
-    )
+    backend = settings.llm_provider
+    try:
+        payload = _call_structured_llm(
+            settings,
+            system="You are a Chinese short-video publishing assistant. Return concise, platform-ready metadata.",
+            user=_metadata_prompt(job_dir, platform),
+            schema=_metadata_schema(),
+            schema_name="video_metadata",
+        )
+    except Exception as exc:
+        if not getattr(settings, "metadata_fallback_heuristic", True):
+            raise
+        payload = _heuristic_metadata_payload(job_dir, exc)
+        backend = "heuristic_fallback"
     payload.update({
         "status": "ready",
-        "backend": settings.llm_provider,
-        "model": settings.llm_model,
+        "backend": backend,
+        "model": settings.llm_model if backend != "heuristic_fallback" else "",
         "platform": platform,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     })
@@ -77,6 +90,95 @@ def _metadata_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()][:50]
 
 
+def _heuristic_metadata_payload(job_dir: Path, error: Exception) -> dict[str, Any]:
+    """Rule-based metadata used when every LLM provider is unavailable."""
+    highlights = read_json_file(job_dir / "highlights.json") or {}
+    cuts = read_json_file(job_dir / "cuts.json") or {}
+    transcript = read_json_file(job_dir / "transcript.json") or {}
+
+    reasons = [
+        str(item.get("reason") or "").strip()
+        for item in (highlights.get("highlights") or [])
+        if isinstance(item, dict) and str(item.get("reason") or "").strip()
+    ][:6]
+    summary = str(highlights.get("summary") or "").strip()
+    if not reasons and summary:
+        reasons = [summary]
+
+    top_clips = sorted(
+        [clip for clip in (cuts.get("clips") or []) if isinstance(clip, dict)],
+        key=lambda clip: float(clip.get("final_score") or clip.get("content_score") or 0),
+        reverse=True,
+    )[:5]
+    clip_texts = [
+        str(clip.get("text") or "").strip()
+        for clip in top_clips
+        if str(clip.get("text") or "").strip()
+    ]
+
+    titles: list[str] = []
+    if summary:
+        titles.append(_compact_title(summary, limit=24))
+    for reason in reasons[:2]:
+        title = _compact_title(reason, limit=20)
+        if title and title not in titles:
+            titles.append(title)
+    if not titles and clip_texts:
+        titles.append(_compact_title(clip_texts[0], limit=20))
+    if not titles:
+        titles.append("精彩片段回顾")
+
+    descriptions = (reasons or clip_texts or ["本期精选片段，欢迎观看。"])[:3]
+    keywords = _frequent_keywords(" ".join([summary] + reasons + clip_texts))
+    tags = keywords[:8] if keywords else ["短视频", "精彩片段"]
+    hashtags = [f"#{tag.replace(' ', '')}" for tag in keywords[:4]] or ["#短视频", "#精彩片段"]
+
+    return {
+        "titles": titles[:3],
+        "descriptions": [item[:120] for item in descriptions],
+        "tags": tags,
+        "hashtags": hashtags,
+        "cover_titles": titles[:2],
+        "platform_notes": [
+            "由本地规则生成的兜底文案：AI 供应商不可用，建议发布前人工润色。",
+            f"fallback_reason: {provider_error_code(error)}",
+        ],
+        "generator": "heuristic_fallback",
+        "fallback_reason": provider_error_code(error),
+    }
+
+
+_TITLE_STRIP_CHARS = "，。！？；：、,.!?;: \t\"'“”‘’()（）[]【】\n"
+
+
+def _compact_title(text: str, *, limit: int) -> str:
+    cleaned = str(text or "").strip().strip(_TITLE_STRIP_CHARS)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:limit].rstrip(_TITLE_STRIP_CHARS)
+
+
+_KEYWORD_STOP_CHARS = set("的了是在和与及或有也不这那你我他她它们吧啊吗呢呀哦嗯")
+
+
+def _frequent_keywords(text: str, *, limit: int = 12) -> list[str]:
+    """Rank CJK 2-6 char chunks and ASCII words by frequency."""
+    import re
+    from collections import Counter
+
+    chunks: list[str] = []
+    for token in re.findall(r"[\u4e00-\u9fff]{2,6}|[A-Za-z][A-Za-z0-9_-]{1,15}", str(text or "")):
+        if any(char in _KEYWORD_STOP_CHARS for char in token[:2]):
+            continue
+        chunks.append(token)
+    if not chunks:
+        return []
+    counts = Counter(chunks)
+    ranked = sorted(counts, key=lambda token: (-counts[token], len(token), token))
+    repeated = [token for token in ranked if counts[token] >= 2]
+    singles = [token for token in ranked if counts[token] == 1]
+    return (repeated + singles)[:limit]
+
+
 def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = False) -> dict[str, Any]:
     output_path = job_dir / "highlights.json"
     if output_path.exists() and not force:
@@ -88,6 +190,7 @@ def generate_highlights(settings: Settings, job_dir: Path, *, force: bool = Fals
     attempt = {
         "status": "running",
         "provider": settings.llm_provider,
+        "fallback_provider": getattr(settings, "llm_fallback_provider", "") or "",
         "model": settings.llm_model,
         "started_at": started_at,
         "completed_at": "",
@@ -152,26 +255,122 @@ def analyze_highlights(settings: Settings, job_dir: Path) -> dict[str, Any]:
 
 
 def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: dict[str, Any], schema_name: str) -> dict[str, Any]:
-    provider = settings.llm_provider.strip().lower()
-    if provider == "local":
-        from .local_ai import call_local_structured_llm
+    """Call the configured LLM provider with schema validation and repair retries.
 
-        return call_local_structured_llm(
-            settings,
-            system=system,
-            user=user,
-            schema=schema,
-            schema_name=schema_name,
-        )
-    if provider == "google":
-        return _call_google_structured_llm(settings, system=system, user=user, schema=schema)
-    if provider != "openai":
+    Malformed or schema-invalid output is retried with a corrective prompt.
+    If every attempt on the primary provider fails (or the provider itself
+    errors) and LLM_FALLBACK_PROVIDER is configured, the whole sequence is
+    retried on the fallback before giving up.
+    """
+    chain = _structured_llm_provider_chain(settings)
+    if not chain:
         raise provider_configuration_error(
             settings.llm_provider or "LLM",
             "structured request",
             "provider_unsupported",
-            f"Unsupported LLM_PROVIDER: {settings.llm_provider}",
+            "LLM_PROVIDER is not configured.",
         )
+    attempts = 1 + max(0, int(getattr(settings, "llm_max_repair_retries", 2)))
+    last_error: BaseException | None = None
+    for index, provider in enumerate(chain):
+        prompt = user
+        try:
+            for _ in range(attempts):
+                try:
+                    return _structured_attempt(
+                        settings,
+                        provider,
+                        system=system,
+                        prompt=prompt,
+                        schema=schema,
+                        schema_name=schema_name,
+                    )
+                except StructuredOutputError as exc:
+                    last_error = exc
+                    prompt = _repair_prompt(user, exc)
+        except Exception as exc:  # provider-level failure: try the fallback provider
+            last_error = exc
+        if index == len(chain) - 1:
+            if isinstance(last_error, StructuredOutputError):
+                raise ProviderRequestError(
+                    provider,
+                    "structured request",
+                    "response_invalid",
+                    str(last_error),
+                ) from last_error
+            assert last_error is not None
+            raise last_error
+    raise last_error  # pragma: no cover - chain is never empty here
+
+
+def _structured_llm_provider_chain(settings: Settings) -> list[str]:
+    primary = settings.llm_provider.strip().lower()
+    chain = [primary] if primary else []
+    fallback = str(getattr(settings, "llm_fallback_provider", "") or "").strip().lower()
+    if fallback and fallback not in chain:
+        chain.append(fallback)
+    return chain
+
+
+def _repair_prompt(user: str, error: StructuredOutputError) -> str:
+    return (
+        f"{user}\n\n"
+        f"Your previous response was rejected: {str(error)[:400]}\n"
+        "Respond again with ONLY a corrected JSON object matching the required schema."
+    )
+
+
+def _structured_attempt(
+    settings: Settings,
+    provider: str,
+    *,
+    system: str,
+    prompt: str,
+    schema: dict[str, Any],
+    schema_name: str,
+) -> dict[str, Any]:
+    """One provider attempt; repairable output problems raise StructuredOutputError."""
+    if provider == "local":
+        from .local_ai import call_local_structured_llm
+
+        try:
+            return call_local_structured_llm(
+                settings,
+                system=system,
+                user=prompt,
+                schema=schema,
+                schema_name=schema_name,
+            )
+        except ProviderRequestError as exc:
+            if exc.code == "response_invalid":
+                raise StructuredOutputError(str(exc)) from exc
+            raise
+    if provider == "google":
+        text = _request_google_text(settings, system=system, user=prompt, schema=schema)
+    elif provider == "openai":
+        text = _request_openai_text(
+            settings, system=system, user=prompt, schema=schema, schema_name=schema_name
+        )
+    else:
+        raise provider_configuration_error(
+            provider or "LLM",
+            "structured request",
+            "provider_unsupported",
+            f"Unsupported LLM_PROVIDER: {provider}",
+        )
+    parsed = parse_structured_json(text, provider=provider)
+    validate_required_shape(parsed, schema)
+    return parsed
+
+
+def _request_openai_text(
+    settings: Settings,
+    *,
+    system: str,
+    user: str,
+    schema: dict[str, Any],
+    schema_name: str,
+) -> str:
     if not settings.openai_api_key.strip():
         raise provider_configuration_error(
             "OpenAI",
@@ -224,22 +423,18 @@ def _call_structured_llm(settings: Settings, *, system: str, user: str, schema: 
     except OSError as exc:
         raise provider_network_error("OpenAI", "structured request", exc) from exc
     text = _extract_output_text(raw)
-    try:
-        parsed = json.loads(text)
-    except ValueError as exc:
-        raise RuntimeError("LLM returned invalid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("LLM returned a non-object JSON payload")
-    return parsed
+    if not text.strip():
+        raise StructuredOutputError("OpenAI returned an empty response.")
+    return text
 
 
-def _call_google_structured_llm(
+def _request_google_text(
     settings: Settings,
     *,
     system: str,
     user: str,
     schema: dict[str, Any],
-) -> dict[str, Any]:
+) -> str:
     if not settings.google_api_key.strip():
         raise provider_configuration_error(
             "Google Gemini",
@@ -284,14 +479,7 @@ def _call_google_structured_llm(
         ) from exc
     except OSError as exc:
         raise provider_network_error("Google Gemini", "structured request", exc) from exc
-    text = _extract_google_text(raw)
-    try:
-        parsed = json.loads(text)
-    except ValueError as exc:
-        raise RuntimeError("Google Gemini returned invalid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Google Gemini returned a non-object JSON payload")
-    return parsed
+    return _extract_google_text(raw)
 
 
 def _extract_google_text(payload: dict[str, Any]) -> str:

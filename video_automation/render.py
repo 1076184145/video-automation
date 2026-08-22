@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Callable
@@ -137,7 +139,30 @@ def render_final_video(
     if vertical:
         generate_vertical_crop_plan(settings, job_dir, force=False)
     if burn_subtitles:
-        generate_clipped_ass_subtitles(settings, job_dir, force=force or vertical)
+        generate_clipped_ass_subtitles(
+            settings,
+            job_dir,
+            force=force or vertical,
+            output_filename=subtitle_filename or "subtitles_clipped.ass",
+        )
+    if getattr(settings, "render_segment_parallel_enabled", False) and len(clips) >= 2:
+        return _render_final_segmented(
+            settings,
+            effective_settings,
+            job_dir,
+            source_path,
+            output_path,
+            clips=clips,
+            vertical=vertical,
+            burn_subtitles=burn_subtitles,
+            subtitle_filename=subtitle_filename,
+            fallback_reason=fallback_reason,
+            progress_callback=progress_callback,
+            resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback,
+            control_callback=control_callback,
+            refresh_web_preview=refresh_web_preview,
+        )
     command = build_final_render_command(
         effective_settings,
         source_path,
@@ -194,6 +219,301 @@ def render_final_video(
     if refresh_web_preview:
         _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
+
+
+def _render_final_segmented(
+    settings: Settings,
+    effective_settings: Settings,
+    job_dir: Path,
+    source_path: Path,
+    output_path: Path,
+    *,
+    clips: list[dict[str, Any]],
+    vertical: bool,
+    burn_subtitles: bool,
+    subtitle_filename: str | None,
+    fallback_reason: str | None,
+    progress_callback: ProgressCallback | None,
+    resource_wait_callback: Callable[[], None] | None,
+    resource_acquired_callback: Callable[[], None] | None,
+    control_callback: ControlCallback | None,
+    refresh_web_preview: bool,
+) -> Path:
+    """Render each kept clip as its own file in parallel, then concat.
+
+    Only the kept ranges are decoded (input seeking skips dropped spans), and
+    segments encode concurrently. Subtitle burn-in and BGM mixing run once in a
+    short finish pass over the merged output; when neither is needed the
+    concat itself is stream-copied into the final file with zero re-encode.
+    """
+    segment_filters = _final_post_filters(job_dir, vertical=vertical, burn_subtitles=False)
+    workers = max(1, min(8, int(getattr(effective_settings, "render_segment_workers", 2) or 2)))
+    total_duration = _clips_duration(clips)
+    segments_dir = job_dir / ".render_segments"
+    if segments_dir.exists():
+        shutil.rmtree(segments_dir)
+    segments_dir.mkdir(parents=True)
+
+    commands: list[list[str]] = []
+
+    def run_segment(index: int, clip: dict[str, Any]) -> None:
+        segment_path = segments_dir / f"segment_{index:03d}.mp4"
+        command = build_segment_render_command(
+            effective_settings,
+            source_path,
+            clip,
+            segment_path,
+            post_filters=segment_filters,
+        )
+        commands.append(command)
+        duration = _clips_duration([clip])
+        result = _run_ffmpeg_with_resource_gate(
+            effective_settings,
+            command,
+            duration_seconds=duration,
+            progress_callback=None,
+            timeout=_render_timeout_seconds(effective_settings, duration),
+            resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback,
+            control_callback=control_callback,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg segment {index:03d} render failed: {result.stderr.strip()}")
+        if not _valid_media_output(effective_settings, segment_path):
+            raise RuntimeError(f"segment {index:03d} produced an invalid or incomplete media file")
+
+    pool = ThreadPoolExecutor(max_workers=min(workers, len(clips)))
+    futures = []
+    try:
+        for index, clip in enumerate(clips):
+            futures.append(pool.submit(run_segment, index, clip))
+        done = 0
+        for future in futures:
+            future.result()
+            done += 1
+            if progress_callback is not None:
+                progress_callback(round(done / (len(clips) + 1) * 90.0, 1))
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True)
+
+    subtitle_path = _subtitle_burn_path(job_dir, subtitle_filename) if burn_subtitles else None
+    bgm_path = settings.bgm_path if settings.bgm_path and settings.bgm_path.exists() else None
+    concat_command = build_concat_command(
+        effective_settings,
+        [segments_dir / f"segment_{index:03d}.mp4" for index in range(len(clips))],
+        output_path if subtitle_path is None and bgm_path is None else segments_dir / "merged.mp4",
+    )
+    finish_command: list[str] | None = None
+    if subtitle_path is not None or bgm_path is not None:
+        finish_command = build_segment_finish_command(
+            effective_settings,
+            segments_dir / "merged.mp4",
+            output_path,
+            subtitle_path=subtitle_path,
+            bgm_path=bgm_path,
+            duration=total_duration,
+        )
+
+    concat_result = run_ffmpeg_with_progress(
+        [str(part) for part in concat_command],
+        duration_seconds=total_duration,
+        control_callback=control_callback,
+        timeout=_render_timeout_seconds(effective_settings, total_duration),
+    )
+    if concat_result.returncode != 0:
+        raise RuntimeError(f"ffmpeg concat failed: {concat_result.stderr.strip()}")
+
+    if finish_command is not None:
+        finish_progress = (
+            (lambda percent: progress_callback(90.0 + min(100.0, max(0.0, percent)) * 0.1))
+            if progress_callback is not None
+            else None
+        )
+        finish_result = _run_ffmpeg_with_resource_gate(
+            effective_settings,
+            finish_command,
+            duration_seconds=total_duration,
+            progress_callback=finish_progress,
+            timeout=_render_timeout_seconds(effective_settings, total_duration),
+            resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback,
+            control_callback=control_callback,
+        )
+        if finish_result.returncode != 0:
+            _remove_failed_output(output_path)
+            raise RuntimeError(f"ffmpeg finish pass failed: {finish_result.stderr.strip()}")
+
+    if not _valid_media_output(effective_settings, output_path):
+        _remove_failed_output(output_path)
+        raise RuntimeError("segmented final render produced an invalid or incomplete media file")
+
+    preview = {
+        "status": "ready",
+        "source_path": str(source_path),
+        "output_path": str(output_path),
+        "clip_count": len(clips),
+        "clips": clips,
+        "encoding_passes": 1,
+        "mode": "segmented",
+        "segment_workers": workers,
+        "vertical": vertical,
+        "burn_subtitles": burn_subtitles,
+        "subtitle_filename": subtitle_filename or "",
+        "platform": _primary_platform(settings),
+        "bgm_path": str(settings.bgm_path) if settings.bgm_path else "",
+        "mix": {
+            "source_audio_volume": settings.source_audio_volume,
+            "bgm_volume": settings.bgm_volume,
+        },
+        "segment_commands": commands,
+        "concat_command": concat_command,
+        "finish_command": finish_command or [],
+        "command": finish_command or concat_command,
+        "configured_encoder": settings.render_video_encoder,
+        "effective_encoder": effective_settings.render_video_encoder,
+        "encoder_fallback_reason": fallback_reason or "",
+    }
+    write_json_atomic(job_dir / "final_render_preview.json", preview)
+    shutil.rmtree(segments_dir, ignore_errors=True)
+    if refresh_web_preview:
+        _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
+    return output_path
+
+
+def build_segment_render_command(
+    settings: Settings,
+    source_path: Path,
+    clip: dict[str, Any],
+    output_path: Path,
+    *,
+    post_filters: list[str],
+) -> list[str]:
+    """Render one kept clip via input seeking so dropped ranges are never decoded."""
+    start = float(clip["start"])
+    end = float(clip["end"])
+    duration = max(0.0, end - start)
+    video_filters: list[str] = []
+    if settings.render_output_fps > 0:
+        video_filters.append(f"fps={settings.render_output_fps}")
+    video_filters.extend(post_filters)
+    command = [
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{start:.6f}",
+        "-i",
+        str(source_path),
+        "-t",
+        f"{duration:.6f}",
+    ]
+    if video_filters:
+        command.extend(["-vf", ",".join(video_filters)])
+    command.extend(["-af", "aresample=async=1:first_pts=0"])
+    command.extend(_encoding_args(settings, final=True))
+    command.extend(["-movflags", "+faststart", str(output_path)])
+    return command
+
+
+def build_concat_command(settings: Settings, segment_paths: list[Path], output_path: Path) -> list[str]:
+    if not segment_paths:
+        raise RuntimeError("segmented render produced no segments to concat")
+    list_path = output_path.parent / f".{output_path.name}.concat.txt"
+    lines = [
+        f"file '{str(path.resolve()).replace(chr(92), '/')}'"
+        for path in segment_paths
+    ]
+    write_text_atomic(list_path, "\n".join(lines) + "\n")
+    return [
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+
+
+def build_segment_finish_command(
+    settings: Settings,
+    merged_path: Path,
+    output_path: Path,
+    *,
+    subtitle_path: Path | None,
+    bgm_path: Path | None,
+    duration: float,
+) -> list[str]:
+    """Single short pass over the merged output: burn subtitles and/or mix BGM."""
+    command: list[str] = [
+        str(settings.ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(merged_path),
+    ]
+    filter_parts: list[str] = []
+    if subtitle_path is not None:
+        filter_parts.append(f"[0:v]subtitles='{_ffmpeg_filter_path(subtitle_path)}'[outv]")
+    if bgm_path is not None:
+        command.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
+        filter_parts.append(f"[0:a]volume={_volume_value(settings.source_audio_volume)}[voice]")
+        filter_parts.append(
+            f"[1:a]atrim=duration={max(0.1, duration):.3f},asetpts=PTS-STARTPTS,"
+            f"volume={_volume_value(settings.bgm_volume)}[bgm]"
+        )
+        filter_parts.append("[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[outa]")
+    command.extend(["-filter_complex", ";".join(filter_parts)])
+    command.extend(["-map", "[outv]" if subtitle_path is not None else "0:v"])
+    command.extend(["-map", "[outa]" if bgm_path is not None else "0:a"])
+    command.extend(
+        _segmented_finish_encoding_args(
+            settings,
+            reencode_video=subtitle_path is not None,
+            remix_audio=bgm_path is not None,
+        )
+    )
+    command.extend(["-movflags", "+faststart", str(output_path)])
+    return command
+
+
+def _segmented_finish_encoding_args(settings: Settings, *, reencode_video: bool, remix_audio: bool) -> list[str]:
+    args = _encoding_args(settings, final=True)
+    if not reencode_video:
+        _replace_arg_value(args, "-c:v", "copy")
+    if not remix_audio:
+        _replace_arg_value(args, "-c:a", "copy")
+        while "-b:a" in args:
+            index = args.index("-b:a")
+            del args[index:index + 2]
+    return args
+
+
+def _subtitle_burn_path(job_dir: Path, subtitle_filename: str | None) -> Path:
+    if subtitle_filename:
+        subtitles_path = (job_dir / subtitle_filename).resolve()
+        try:
+            subtitles_path.relative_to(job_dir.resolve())
+        except ValueError as exc:
+            raise RuntimeError("subtitle file must stay inside the job directory") from exc
+    else:
+        subtitles_path = job_dir / "subtitles_clipped.ass"
+        if not subtitles_path.exists():
+            subtitles_path = job_dir / "subtitles.ass"
+    if not subtitles_path.exists():
+        raise RuntimeError("subtitles.ass is missing; run subtitle styling before final render")
+    return subtitles_path
 
 
 def generate_highlight_render_preview(
@@ -272,6 +592,117 @@ def render_highlight_video(
     write_json_atomic(job_dir / "highlight_render_preview.json", preview)
     _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
+
+
+def render_platform_variants(
+    settings: Settings,
+    job_dir: Path,
+    source_path: Path,
+    *,
+    primary_vertical: bool,
+    burn_subtitles: bool = False,
+    force: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
+) -> dict[str, Any]:
+    """Render per-platform export variants (e.g. 9:16 douyin + 16:9 bilibili).
+
+    The primary final.mp4 already covers the first export platform's aspect;
+    each additional platform with a different aspect gets its own render with
+    a matching crop geometry, subtitle preset and encoder settings.
+    """
+    from .plans import PLATFORM_PRESETS
+
+    targets = platform_variant_targets(settings, primary_vertical=primary_vertical)
+    variants_dir = job_dir / "variants"
+    variants_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = variants_dir / "platform_variants.json"
+    if not targets:
+        payload = {
+            "status": "skipped",
+            "primary_vertical": primary_vertical,
+            "variants": {},
+            "notes": ["All export platforms share the primary render's aspect ratio."],
+        }
+        write_json_atomic(manifest_path, payload)
+        return payload
+
+    variants: dict[str, Any] = {}
+    for platform, vertical in targets:
+        ass_preset = ASS_PRESET_BY_PLATFORM.get(platform, settings.ass_preset)
+        platform_settings = replace(
+            settings,
+            export_platforms=(platform,),
+            ass_preset=ass_preset,
+        )
+        subtitle_filename = f"subtitles_clipped_{platform}.ass"
+        output_path = render_final_video(
+            platform_settings,
+            job_dir,
+            source_path,
+            force=force,
+            vertical=vertical,
+            burn_subtitles=burn_subtitles,
+            subtitle_filename=subtitle_filename,
+            output_filename=f"variants/{platform}.mp4",
+            progress_callback=progress_callback,
+            resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback,
+            control_callback=control_callback,
+            refresh_web_preview=False,
+        )
+        preset = PLATFORM_PRESETS.get(platform, {})
+        variants[platform] = {
+            "file": str(output_path.relative_to(job_dir)),
+            "vertical": vertical,
+            "resolution": preset.get("resolution", "source"),
+            "ass_preset": ass_preset,
+        }
+    payload = {
+        "status": "ready",
+        "primary_vertical": primary_vertical,
+        "variants": variants,
+        "notes": ["Variants re-render from the source with per-platform geometry and subtitles."],
+    }
+    write_json_atomic(manifest_path, payload)
+    return payload
+
+
+ASS_PRESET_BY_PLATFORM = {
+    "douyin": "douyin",
+    "bilibili": "bilibili",
+    "youtube_shorts": "douyin",
+}
+
+
+def platform_variant_targets(
+    settings: Settings, *, primary_vertical: bool
+) -> list[tuple[str, bool]]:
+    """Export platforms needing their own render, as (platform, vertical) pairs."""
+    from .plans import PLATFORM_PRESETS
+
+    primary = _primary_platform(settings)
+    targets: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for raw in getattr(settings, "export_platforms", ()):
+        platform = str(raw).strip().lower()
+        if not platform or platform in seen:
+            continue
+        seen.add(platform)
+        preset = PLATFORM_PRESETS.get(platform)
+        if not preset:
+            continue
+        width_text, _, height_text = str(preset.get("resolution", "")).partition("x")
+        try:
+            vertical = int(height_text) > int(width_text)
+        except ValueError:
+            continue
+        if platform == primary and vertical == primary_vertical:
+            continue
+        targets.append((platform, vertical))
+    return targets
 
 
 def render_web_preview(
@@ -774,18 +1205,7 @@ def _final_post_filters(
             filters.append("scale=1080:1920:force_original_aspect_ratio=increase")
             filters.append("crop=1080:1920")
     if burn_subtitles:
-        if subtitle_filename:
-            subtitles_path = (job_dir / subtitle_filename).resolve()
-            try:
-                subtitles_path.relative_to(job_dir.resolve())
-            except ValueError as exc:
-                raise RuntimeError("subtitle file must stay inside the job directory") from exc
-        else:
-            subtitles_path = job_dir / "subtitles_clipped.ass"
-            if not subtitles_path.exists():
-                subtitles_path = job_dir / "subtitles.ass"
-        if not subtitles_path.exists():
-            raise RuntimeError("subtitles.ass is missing; run subtitle styling before final render")
+        subtitles_path = _subtitle_burn_path(job_dir, subtitle_filename)
         filters.append(f"subtitles='{_ffmpeg_filter_path(subtitles_path)}'")
     return filters
 
