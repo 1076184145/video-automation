@@ -39,7 +39,7 @@ export function renderNewJobForm(disclosures = {}, library = {}, profileOptionsH
       <div class="new-job-wizard">
         <section class="wizard-step-card" id="new-step-source">
           <div class="wizard-step-head">
-            <span class="wizard-step-index">01</span>
+            <span class="wizard-step-index">1</span>
             <div>
               <h2>${t("new.wizard_source_title")}</h2>
               <p>${t("new.wizard_source_note")}</p>
@@ -78,7 +78,7 @@ export function renderNewJobForm(disclosures = {}, library = {}, profileOptionsH
         </section>
         <section class="wizard-step-card" id="new-step-goal">
           <div class="wizard-step-head">
-            <span class="wizard-step-index">02</span>
+            <span class="wizard-step-index">2</span>
             <div>
               <h2>${t("new.wizard_goal_title")}</h2>
               <p>${t("new.wizard_goal_note")}</p>
@@ -144,7 +144,7 @@ export function renderNewJobForm(disclosures = {}, library = {}, profileOptionsH
         </section>
         <section class="wizard-step-card wizard-step-run" id="new-step-run">
           <div class="wizard-step-head">
-            <span class="wizard-step-index">03</span>
+            <span class="wizard-step-index">3</span>
             <div>
               <h2>${t("new.wizard_run_title")}</h2>
               <p>${t("new.wizard_run_note")}</p>
@@ -161,9 +161,9 @@ export function renderNewJobForm(disclosures = {}, library = {}, profileOptionsH
 
 export function renderWizardRail() {
   const steps = [
-    ["new-step-source", "01", "new.wizard_source_title"],
-    ["new-step-goal", "02", "new.wizard_goal_title"],
-    ["new-step-run", "03", "new.wizard_run_title"]
+    ["new-step-source", "1", "new.wizard_source_title"],
+    ["new-step-goal", "2", "new.wizard_goal_title"],
+    ["new-step-run", "3", "new.wizard_run_title"]
   ];
   return `
     <nav class="wizard-rail" aria-label="${t("new.wizard_nav")}">
@@ -212,7 +212,7 @@ export function batchListHtml(paths, limit) {
       ${paths.map((path) => `
         <div class="batch-item" data-motion-item data-motion-key="batch-path:${escapeHtml(path)}">
           <span>${escapeHtml(basename(path))}</span>
-          <button class="button compact-button" type="button" data-remove-batch="${escapeHtml(path)}">${t("new.batch_remove")}</button>
+          <button class="batch-remove-button" type="button" data-remove-batch="${escapeHtml(path)}" aria-label="${t("new.batch_remove")}" title="${t("new.batch_remove")}">×</button>
         </div>
       `).join("")}
     </div>

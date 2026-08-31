@@ -1,6 +1,14 @@
 import { t } from "./i18n.js";
 
 const ENV_KEY_MAP = {
+  INPUT_RECORDINGS_DIR: "input_recordings",
+  JOBS_DIR: "job_outputs",
+  LOGS_DIR: "logs",
+  FFMPEG_PATH: "ffmpeg",
+  FFPROBE_PATH: "ffprobe",
+  AUDIOWAVEFORM_PATH: "audiowaveform",
+  WHISPER_BIN: "whisper",
+  DEMUCS_PATH: "demucs",
   WHISPER_BACKEND: "backend",
   WHISPER_MODEL: "whisper_model",
   WHISPER_MODEL_FALLBACKS: "model_fallbacks",

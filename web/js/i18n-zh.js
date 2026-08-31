@@ -457,6 +457,7 @@ Object.assign(zh, {
 
 Object.assign(zh, {
   "common.copy": "复制",
+  "common.edit": "修改",
   "common.copy_path": "复制本地路径",
   "common.copy_path_failed": "复制路径失败：",
   "job.play_clip": "播放这个片段",
@@ -569,6 +570,8 @@ Object.assign(zh, {
   "settings.note": "常用配置可直接保存；高级路径和敏感部署项仍可编辑 .env。",
   "settings.edit_title": "常用配置",
   "settings.edit_note": "保存后会写入 .env 并热重载，正在处理的任务仍使用启动时的配置。",
+  "settings.edit_paths": "本地目录与工具路径",
+  "settings.edit_paths_note": "这里保存配置值；健康检查会同时显示工具实际解析到的本机路径。项目根目录需在启动前通过 VIDEO_AUTOMATION_ROOT 设置。",
   "settings.edit_whisper": "转写",
   "settings.edit_detection": "剪辑检测",
   "settings.edit_subtitles": "字幕",
@@ -605,7 +608,23 @@ Object.assign(zh, {
   "health.transcription_install_note": "请在项目目录运行下面的安装命令来补齐 FunASR / Faster-Whisper 依赖。Whisper CLI 只是临时兜底，适合先跑通流程。",
   "health.switch_to_cli": "临时切换到 Whisper CLI",
   "health.switching_backend": "正在切换...",
-  "health.switched_backend": "已切换到 Whisper CLI"
+  "health.switched_backend": "已切换到 Whisper CLI",
+  "health.fix_in_settings": "前往设置修复",
+  "health.cover_missing_title": "本地封面生成依赖缺失",
+  "health.cover_missing_note": "缺失：{names}。当前本地封面后端可能无法启动。",
+  "health.cover_recommended_title": "安装本地图像生成库或切换为云端 API",
+  "health.cover_recommended_note": "本地生图需要安装 PyTorch 与 Diffusers 系列库；若已有 API Key，建议直接使用云端生成以节省显存与磁盘空间。",
+  "health.cover_install_note": "在项目目录运行以下安装命令补齐本地生图依赖：",
+  "health.switch_to_api_cover": "切换为云端 API 封面",
+  "health.switched_cover_api": "已切换为云端 API 封面生成",
+  "health.path_copied": "路径已复制到剪贴板",
+  "health.command_copied": "安装命令已复制到剪贴板",
+  "health.copy_unavailable": "无法自动复制，请手动复制：",
+  "health.copy_install_command": "复制安装命令",
+  "health.configure_api_cover": "配置云端封面 API",
+  "health.configured_value": "配置值",
+  "health.edit_in_settings": "前往设置修改",
+  "health.config_var": "配置变量"
 });
 
 Object.assign(zh, {
@@ -949,6 +968,7 @@ Object.assign(zh, {
   "settings.secret_migration_button": "迁移到系统凭据库",
   "settings.secret_migration_done": "密钥已迁移到系统凭据库",
   "settings.secret_migration_failed": "密钥迁移失败：",
+  "settings.secret_migration_failed_preserved": "迁移失败，原密钥仍保留在 .env 中。请确认当前 Windows 用户可以使用系统凭据管理器后重试。",
   "settings.key.allow_remote": "允许非本机 API 绑定",
   "settings.key.min_free_disk_bytes": "任务磁盘保留字节数",
   "settings.key.job_disk_multiplier": "任务空间估算倍数",

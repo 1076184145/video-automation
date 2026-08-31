@@ -455,6 +455,7 @@ Object.assign(en, {
 
 Object.assign(en, {
   "common.copy": "Copy",
+  "common.edit": "Edit",
   "common.copy_path": "Copy local path",
   "common.copy_path_failed": "Copy path failed: ",
   "job.play_clip": "Play this clip",
@@ -567,6 +568,8 @@ Object.assign(en, {
   "settings.note": "Common settings can be saved here; advanced paths and sensitive deployment values can still be edited in .env.",
   "settings.edit_title": "Common Settings",
   "settings.edit_note": "Saving writes to .env and hot-reloads settings. Jobs already running keep their startup settings.",
+  "settings.edit_paths": "Local directories & tool paths",
+  "settings.edit_paths_note": "These are the configured values; Health also shows the local path each tool resolves to. Set the project root with VIDEO_AUTOMATION_ROOT before startup.",
   "settings.edit_whisper": "Transcription",
   "settings.edit_detection": "Cut Detection",
   "settings.edit_subtitles": "Subtitles",
@@ -603,7 +606,23 @@ Object.assign(en, {
   "health.transcription_install_note": "Run the command below from the project directory to install FunASR / Faster-Whisper dependencies. Whisper CLI is only a temporary fallback for getting the pipeline running.",
   "health.switch_to_cli": "Temporarily switch to Whisper CLI",
   "health.switching_backend": "Switching...",
-  "health.switched_backend": "Switched to Whisper CLI"
+  "health.switched_backend": "Switched to Whisper CLI",
+  "health.fix_in_settings": "Fix in Settings",
+  "health.cover_missing_title": "Local cover dependencies missing",
+  "health.cover_missing_note": "Missing: {names}. The local cover generator may not start.",
+  "health.cover_recommended_title": "Install local image runtime or switch to Cloud API",
+  "health.cover_recommended_note": "Local cover generation requires PyTorch and Diffusers packages; if you have configured an API key, consider using cloud generation to save VRAM and disk space.",
+  "health.cover_install_note": "Run the command below from the project directory to install local cover dependencies:",
+  "health.switch_to_api_cover": "Switch to API Cover Provider",
+  "health.switched_cover_api": "Switched to API Cover Provider",
+  "health.path_copied": "Path copied to clipboard",
+  "health.command_copied": "Install command copied to clipboard",
+  "health.copy_unavailable": "Automatic copy is unavailable; copy manually:",
+  "health.copy_install_command": "Copy install command",
+  "health.configure_api_cover": "Configure cloud cover API",
+  "health.configured_value": "Configured value",
+  "health.edit_in_settings": "Edit in Settings",
+  "health.config_var": "Config Variable"
 });
 
 Object.assign(en, {
@@ -943,6 +962,7 @@ Object.assign(en, {
   "settings.secret_migration_button": "Migrate to credential store",
   "settings.secret_migration_done": "Keys migrated to the operating-system credential store",
   "settings.secret_migration_failed": "Key migration failed:",
+  "settings.secret_migration_failed_preserved": "Migration failed and the original keys remain in .env. Verify that the current Windows user can access Credential Manager, then retry.",
   "settings.key.allow_remote": "Allow non-loopback API binding",
   "settings.key.min_free_disk_bytes": "Job disk reserve in bytes",
   "settings.key.job_disk_multiplier": "Job space estimate multiplier",

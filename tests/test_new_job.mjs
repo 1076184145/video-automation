@@ -24,6 +24,7 @@ const {
   renderNewJobFormForTest,
   shouldConfirmBrowserUploadForTest,
 } = await import("../web/js/new-job.js");
+const { batchListHtml } = await import("../web/js/new-job-view.js");
 
 test("new job keeps the primary path visible and collapses secondary input methods", () => {
   const html = renderNewJobFormForTest();
@@ -45,7 +46,19 @@ test("new job collapses low-frequency processing controls and uses a three-step 
   assert.match(html, /name="detect_silence"/);
   assert.match(html, /id="save-current-profile"/);
   assert.equal((html.match(/data-wizard-target=/g) || []).length, 3);
+  assert.equal((html.match(/class="wizard-step-index">[123]</g) || []).length, 3);
+  assert.doesNotMatch(html, /class="wizard-step-index">0[123]</);
   assert.doesNotMatch(html, /id="new-step-ai"/);
+});
+
+test("batch items use an accessible one-click close control", () => {
+  const html = batchListHtml(["D:\\recordings\\sample.mp4"], 30);
+
+  assert.match(html, /class="batch-remove-button"/);
+  assert.match(html, /data-remove-batch=/);
+  assert.match(html, /aria-label="移除"/);
+  assert.match(html, />×<\/button>/);
+  assert.doesNotMatch(html, />移除<\/button>/);
 });
 
 test("new job restores disclosure preferences without changing the main workflow", () => {

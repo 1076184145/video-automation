@@ -364,14 +364,21 @@ def local_ai_health(settings: Settings) -> list[dict[str, Any]]:
         try:
             import importlib.util
 
-            exists = importlib.util.find_spec(module_name) is not None
+            spec = importlib.util.find_spec(module_name)
+            exists = spec is not None
+            if spec and spec.origin:
+                origin_p = Path(spec.origin)
+                display_path = str(origin_p.parent if origin_p.name == "__init__.py" else origin_p)
+            else:
+                display_path = f"python:{module_name}"
         except Exception:
             exists = False
+            display_path = f"python:{module_name}"
         required = settings.cover_provider.strip().lower() == "local"
         checks.append(
             {
                 "name": f"local_cover_{module_name}",
-                "path": f"python:{module_name}",
+                "path": display_path,
                 "exists": exists,
                 "required": required,
                 "optional": not required,
@@ -690,9 +697,10 @@ def _missing_local_cover_files(model_path: Path) -> list[str]:
 
 def _path_check(name: str, path: Path, *, required: bool) -> dict[str, Any]:
     exists = path.is_file()
+    display_path = str(path.resolve()) if exists else str(path)
     return {
         "name": name,
-        "path": str(path),
+        "path": display_path,
         "exists": exists,
         "required": required,
         "optional": not required,
@@ -704,9 +712,10 @@ def _path_check(name: str, path: Path, *, required: bool) -> dict[str, Any]:
 def _cover_model_check(model_path: Path, *, required: bool) -> dict[str, Any]:
     missing = _missing_local_cover_files(model_path)
     exists = not missing
+    display_path = str(model_path.resolve()) if model_path.exists() else str(model_path)
     return {
         "name": "local_cover_model",
-        "path": str(model_path),
+        "path": display_path,
         "exists": exists,
         "required": required,
         "optional": not required,

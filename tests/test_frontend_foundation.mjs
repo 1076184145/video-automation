@@ -216,6 +216,31 @@ test("design system exposes true light and dark themes without transition-all", 
   assert.doesNotMatch(source, /transition:\s*all\b/);
 });
 
+test("timeline hover tooltip uses inverse theme colors for readable contrast", async () => {
+  const source = await readFile(new URL("../web/css/style.css", import.meta.url), "utf8");
+  const tooltipRule = source.match(/\.tooltip\s*\{([^}]*)\}/s)?.[1] || "";
+
+  assert.match(source, /--tooltip-bg:\s*var\(--text-primary\)/);
+  assert.match(source, /--tooltip-text:\s*var\(--bg-panel\)/);
+  assert.match(tooltipRule, /background:\s*var\(--tooltip-bg\)/);
+  assert.match(tooltipRule, /color:\s*var\(--tooltip-text\)/);
+  assert.match(tooltipRule, /border:\s*1px solid var\(--tooltip-border\)/);
+  assert.doesNotMatch(tooltipRule, /color:\s*var\(--text-primary\)/);
+});
+
+test("new-job checkbox controls stay vertically centered with their labels", async () => {
+  const source = await readFile(new URL("../web/css/style.css", import.meta.url), "utf8");
+  const checkboxRule = source.match(/\.check input\[type="checkbox"\][^{]*\{([^}]*)\}/s)?.[1] || "";
+  const checkRule = source.match(/\.check\s*\{([^}]*)\}/s)?.[1] || "";
+
+  assert.match(source, /\.field\s*>\s*label\s*\{/);
+  assert.doesNotMatch(source, /\.field\s+label\s*\{/);
+  assert.match(checkboxRule, /flex:\s*0 0 auto/);
+  assert.match(checkboxRule, /margin:\s*0/);
+  assert.match(checkRule, /display:\s*flex/);
+  assert.match(checkRule, /align-items:\s*center/);
+});
+
 test("glass effects stay on navigation and overlays instead of ordinary panels", async () => {
   const source = await readFile(new URL("../web/css/style.css", import.meta.url), "utf8");
 

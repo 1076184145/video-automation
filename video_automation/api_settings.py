@@ -10,6 +10,13 @@ from .io_utils import write_text_atomic
 
 
 EDITABLE_ENV_KEYS = {
+    "INPUT_RECORDINGS_DIR",
+    "JOBS_DIR",
+    "LOGS_DIR",
+    "FFMPEG_PATH",
+    "FFPROBE_PATH",
+    "AUDIOWAVEFORM_PATH",
+    "WHISPER_BIN",
     "WHISPER_BACKEND",
     "WHISPER_MODEL",
     "WHISPER_MODEL_FALLBACKS",
@@ -115,6 +122,45 @@ class CredentialBackend(Protocol):
 class CredentialUpdateError(RuntimeError):
     """Raised when a secret cannot be committed to the OS credential store."""
 
+    def __init__(self, key: str, reason: str):
+        self.key = key
+        self.reason = reason
+        super().__init__(f"{reason}: {key}")
+
+
+def _store_verified_secret(
+    store: CredentialBackend,
+    *,
+    key: str,
+    reference: str,
+    secret: str,
+) -> None:
+    try:
+        store.set(reference, secret)
+    except Exception as exc:
+        raise CredentialUpdateError(key, "credential write failed") from exc
+    try:
+        committed = store.get(reference)
+    except Exception as exc:
+        raise CredentialUpdateError(key, "credential verification failed") from exc
+    if committed != secret:
+        raise CredentialUpdateError(key, "credential verification failed")
+
+
+def _delete_verified_secret(
+    store: CredentialBackend,
+    *,
+    key: str,
+    reference: str,
+) -> None:
+    try:
+        store.delete(reference)
+        committed = store.get(reference)
+    except Exception as exc:
+        raise CredentialUpdateError(key, "credential deletion failed") from exc
+    if committed is not None:
+        raise CredentialUpdateError(key, "credential deletion failed")
+
 
 def normalize_env_updates(raw_updates: dict[str, Any]) -> dict[str, str]:
     updates: dict[str, str] = {}
@@ -198,15 +244,17 @@ def apply_settings_updates(
                 or values.get(reference_key)
                 or CONFIG_SECRET_REFERENCES[key]
             ).strip()
-            try:
-                if secret:
-                    store.set(reference, secret)
-                    reference_updates[reference_key] = reference
-                else:
-                    store.delete(reference)
-                    removed_keys.add(reference_key)
-            except Exception as exc:
-                raise CredentialUpdateError(f"credential store rejected {key}") from exc
+            if secret:
+                _store_verified_secret(
+                    store,
+                    key=key,
+                    reference=reference,
+                    secret=secret,
+                )
+                reference_updates[reference_key] = reference
+            else:
+                _delete_verified_secret(store, key=key, reference=reference)
+                removed_keys.add(reference_key)
             removed_keys.add(key)
     update_env_file(
         root,
@@ -239,12 +287,17 @@ def migrate_legacy_secrets(
             or values.get(reference_key)
             or CONFIG_SECRET_REFERENCES[key]
         ).strip()
-        try:
-            store.set(reference, secret)
-        except Exception as exc:
-            raise CredentialUpdateError(f"credential store rejected {key}") from exc
+        _store_verified_secret(
+            store,
+            key=key,
+            reference=reference,
+            secret=secret,
+        )
         reference_updates[reference_key] = reference
-    update_env_file(root, reference_updates, remove_keys=set(secrets))
+    try:
+        update_env_file(root, reference_updates, remove_keys=set(secrets))
+    except OSError as exc:
+        raise CredentialUpdateError(".env", "credential references could not be saved") from exc
     return set(secrets)
 
 
