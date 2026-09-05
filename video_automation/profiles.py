@@ -6,6 +6,20 @@ from typing import Any
 from .config import Settings
 
 
+# Public CLI/API flag names mapped to the pipeline's keyword arguments.
+PIPELINE_FLAG_NAMES = {
+    "detect_silence": "detect_silence_enabled",
+    "detect_freeze": "detect_freeze_enabled",
+    "detect_scenes": "detect_scenes_enabled",
+    "render_review": "render_review_enabled",
+    "render_final": "render_final_enabled",
+    "vertical": "vertical_enabled",
+    "burn_subtitles": "burn_subtitles_enabled",
+    "plan_crop": "plan_crop_enabled",
+    "plan_uvr": "plan_uvr_enabled",
+}
+
+
 PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     "fast": {
         "detect_silence": True,
@@ -72,20 +86,9 @@ def profile_flags(profile: str | None) -> dict[str, bool]:
 
 def apply_profile_flags(options: dict[str, Any], profile: str | None) -> dict[str, Any]:
     merged = dict(options)
-    names = {
-        "detect_silence": "detect_silence_enabled",
-        "detect_freeze": "detect_freeze_enabled",
-        "detect_scenes": "detect_scenes_enabled",
-        "render_review": "render_review_enabled",
-        "render_final": "render_final_enabled",
-        "vertical": "vertical_enabled",
-        "burn_subtitles": "burn_subtitles_enabled",
-        "plan_crop": "plan_crop_enabled",
-        "plan_uvr": "plan_uvr_enabled",
-    }
     for name, enabled in profile_flags(profile).items():
         if enabled:
-            merged[names.get(name, name)] = True
+            merged[PIPELINE_FLAG_NAMES.get(name, name)] = True
     return merged
 
 

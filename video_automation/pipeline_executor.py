@@ -442,64 +442,59 @@ def process_job(
                 return stage_name in stage_selection
             return default and (stage_selection is None or stage_name in stage_selection)
 
-        stages = [
-            PipelineStage("probe", PIPELINE_STAGE_SPECS["probe"].status, enabled("probe", True), probe_stage),
-            PipelineStage("detect_corruption", PIPELINE_STAGE_SPECS["detect_corruption"].status, enabled("detect_corruption", settings.source_integrity_scan_enabled), corruption_stage),
-            PipelineStage("extract_audio", PIPELINE_STAGE_SPECS["extract_audio"].status, enabled("extract_audio", True), extract_audio_stage),
-            PipelineStage("transcribe", PIPELINE_STAGE_SPECS["transcribe"].status, enabled("transcribe", True), transcribe_stage),
-            PipelineStage("detect_silence", PIPELINE_STAGE_SPECS["detect_silence"].status, enabled("detect_silence", detect_silence_enabled), silence_stage),
-            PipelineStage("detect_freeze", PIPELINE_STAGE_SPECS["detect_freeze"].status, enabled("detect_freeze", detect_freeze_enabled), freeze_stage),
-            PipelineStage("detect_scenes", PIPELINE_STAGE_SPECS["detect_scenes"].status, enabled("detect_scenes", detect_scenes_enabled), scenes_stage),
-            PipelineStage("plan_cuts", PIPELINE_STAGE_SPECS["plan_cuts"].status, enabled("plan_cuts", True), cuts_stage),
-            PipelineStage("refine_cuts", PIPELINE_STAGE_SPECS["refine_cuts"].status, enabled("refine_cuts", getattr(settings, "clip_refinement_enabled", True)), refine_cuts_stage),
-            PipelineStage("plan_crop", PIPELINE_STAGE_SPECS["plan_crop"].status, enabled("plan_crop", plan_crop_enabled or vertical_enabled), crop_stage),
-            PipelineStage("style_subtitles", PIPELINE_STAGE_SPECS["style_subtitles"].status, enabled("style_subtitles", (not skip_transcribe) or burn_subtitles_enabled), subtitles_stage),
-            PipelineStage("plan_uvr", PIPELINE_STAGE_SPECS["plan_uvr"].status, enabled("plan_uvr", plan_uvr_enabled), uvr_stage),
-            PipelineStage("plan_render", PIPELINE_STAGE_SPECS["plan_render"].status, enabled("plan_render", True), render_preview_stage),
-            PipelineStage("render_review", PIPELINE_STAGE_SPECS["render_review"].status, enabled("render_review", render_review_enabled), render_review_stage),
-            PipelineStage("render_final", PIPELINE_STAGE_SPECS["render_final"].status, enabled("render_final", render_final_enabled), render_final_stage),
-            PipelineStage(
+        # Keep execution order and enablement beside each stage's implementation.
+        stage_definitions = [
+            ("probe", True, probe_stage),
+            ("detect_corruption", settings.source_integrity_scan_enabled, corruption_stage),
+            ("extract_audio", True, extract_audio_stage),
+            ("transcribe", True, transcribe_stage),
+            ("detect_silence", detect_silence_enabled, silence_stage),
+            ("detect_freeze", detect_freeze_enabled, freeze_stage),
+            ("detect_scenes", detect_scenes_enabled, scenes_stage),
+            ("plan_cuts", True, cuts_stage),
+            ("refine_cuts", getattr(settings, "clip_refinement_enabled", True), refine_cuts_stage),
+            ("plan_crop", plan_crop_enabled or vertical_enabled, crop_stage),
+            ("style_subtitles", (not skip_transcribe) or burn_subtitles_enabled, subtitles_stage),
+            ("plan_uvr", plan_uvr_enabled, uvr_stage),
+            ("plan_render", True, render_preview_stage),
+            ("render_review", render_review_enabled, render_review_stage),
+            ("render_final", render_final_enabled, render_final_stage),
+            (
                 "render_platform_variants",
-                PIPELINE_STAGE_SPECS["render_platform_variants"].status,
-                enabled(
-                    "render_platform_variants",
-                    render_final_enabled
-                    and getattr(settings, "platform_variants_enabled", False)
-                    and bool(platform_variant_targets(settings, primary_vertical=vertical_enabled)),
-                ),
+                render_final_enabled
+                and getattr(settings, "platform_variants_enabled", False)
+                and bool(platform_variant_targets(settings, primary_vertical=vertical_enabled)),
                 render_platform_variants_stage,
             ),
-            PipelineStage(
+            (
                 "render_web_preview",
-                PIPELINE_STAGE_SPECS["render_web_preview"].status,
-                enabled(
-                    "render_web_preview",
-                    getattr(settings, "web_preview_enabled", True)
-                    and (render_review_enabled or render_final_enabled),
-                ),
+                getattr(settings, "web_preview_enabled", True)
+                and (render_review_enabled or render_final_enabled),
                 render_web_preview_stage,
             ),
         ]
         web_preview_dependencies = {"render_final"} if render_final_enabled else {"render_review"}
         stages = [
-            replace(
-                stage,
+            PipelineStage(
+                name,
+                PIPELINE_STAGE_SPECS[name].status,
+                enabled(name, default),
+                run,
                 dependencies=frozenset(
                     web_preview_dependencies
-                    if stage.name == "render_web_preview"
-                    else PIPELINE_STAGE_DEPENDENCIES[stage.name]
+                    if name == "render_web_preview"
+                    else PIPELINE_STAGE_DEPENDENCIES[name]
                 ),
-                exclusive_resources=_stage_exclusive_resources(settings, stage.name),
+                exclusive_resources=_stage_exclusive_resources(settings, name),
             )
-            for stage in stages
+            for name, default, run in stage_definitions
         ]
         database_path = (
             library_database_path(settings)
             if hasattr(settings, "jobs_dir")
             else Path(job.job_dir).parent.parent / "library.sqlite3"
         )
-        stage_repository = StageRunRepository(database_path)
-        context.stage_repository = stage_repository
+        context.stage_repository = StageRunRepository(database_path)
         context.max_parallel_stages = 3
         if control_callback is None:
             run_pipeline(progress, job, stages, context)

@@ -29,7 +29,7 @@ from .pipeline_scheduler import (
     expand_stage_selection,
     run_pipeline,
 )
-from .profiles import apply_profile_settings, profile_flags
+from .profiles import PIPELINE_FLAG_NAMES, apply_profile_settings, profile_flags
 
 
 def _positive_int(value: str) -> int:
@@ -101,95 +101,32 @@ def main(argv: list[str] | None = None) -> int:
         print_status(settings, as_json=args.json)
         return 0
 
+    options = {
+        "force": args.force,
+        **{keyword: getattr(args, flag) for flag, keyword in PIPELINE_FLAG_NAMES.items()},
+        "skip_transcribe": args.skip_transcribe,
+        "progress_enabled": args.progress,
+    }
     if args.resume:
-        resume_jobs(
-            settings,
-            force=args.force,
-            detect_silence_enabled=args.detect_silence,
-            detect_freeze_enabled=args.detect_freeze,
-            detect_scenes_enabled=args.detect_scenes,
-            render_review_enabled=args.render_review,
-            render_final_enabled=args.render_final,
-            vertical_enabled=args.vertical,
-            burn_subtitles_enabled=args.burn_subtitles,
-            plan_crop_enabled=args.plan_crop,
-            plan_uvr_enabled=args.plan_uvr,
-            skip_transcribe=args.skip_transcribe,
-            progress_enabled=args.progress,
-        )
+        resume_jobs(settings, **options)
         return 0
 
     if args.batch:
-        return process_batch(
-            settings,
-            args.batch,
-            force=args.force,
-            detect_silence_enabled=args.detect_silence,
-            detect_freeze_enabled=args.detect_freeze,
-            detect_scenes_enabled=args.detect_scenes,
-            render_review_enabled=args.render_review,
-            render_final_enabled=args.render_final,
-            vertical_enabled=args.vertical,
-            burn_subtitles_enabled=args.burn_subtitles,
-            plan_crop_enabled=args.plan_crop,
-            plan_uvr_enabled=args.plan_uvr,
-            skip_transcribe=args.skip_transcribe,
-            progress_enabled=args.progress,
-        )
+        return process_batch(settings, args.batch, **options)
 
     if args.once:
-        process_file(
-            settings,
-            args.once,
-            force=args.force,
-            detect_silence_enabled=args.detect_silence,
-            detect_freeze_enabled=args.detect_freeze,
-            detect_scenes_enabled=args.detect_scenes,
-            render_review_enabled=args.render_review,
-            render_final_enabled=args.render_final,
-            vertical_enabled=args.vertical,
-            burn_subtitles_enabled=args.burn_subtitles,
-            plan_crop_enabled=args.plan_crop,
-            plan_uvr_enabled=args.plan_uvr,
-            skip_transcribe=args.skip_transcribe,
-            progress_enabled=args.progress,
-        )
+        process_file(settings, args.once, **options)
         return 0
 
-    watch(
-        settings,
-        force=args.force,
-        detect_silence_enabled=args.detect_silence,
-        detect_freeze_enabled=args.detect_freeze,
-        detect_scenes_enabled=args.detect_scenes,
-        render_review_enabled=args.render_review,
-        render_final_enabled=args.render_final,
-        vertical_enabled=args.vertical,
-        burn_subtitles_enabled=args.burn_subtitles,
-        plan_crop_enabled=args.plan_crop,
-        plan_uvr_enabled=args.plan_uvr,
-        skip_transcribe=args.skip_transcribe,
-        progress_enabled=args.progress,
-    )
+    watch(settings, **options)
     return 0
 
 
 def _apply_profile_to_args(args: argparse.Namespace) -> None:
     flags = profile_flags(getattr(args, "profile", None))
-    mapping = {
-        "detect_silence": "detect_silence",
-        "detect_freeze": "detect_freeze",
-        "detect_scenes": "detect_scenes",
-        "render_review": "render_review",
-        "render_final": "render_final",
-        "vertical": "vertical",
-        "burn_subtitles": "burn_subtitles",
-        "plan_crop": "plan_crop",
-        "plan_uvr": "plan_uvr",
-    }
-    for option, attr in mapping.items():
+    for option in PIPELINE_FLAG_NAMES:
         if flags.get(option):
-            setattr(args, attr, True)
+            setattr(args, option, True)
 
 
 def bootstrap_dirs(settings: Settings) -> None:
@@ -373,17 +310,23 @@ def load_batch_items(
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"failed to read batch file: {exc}") from exc
 
-    default_force = force or bool(_get_option(payload, "force", False))
-    default_detect_silence = detect_silence_enabled or bool(_get_option(payload, "detect_silence", False))
-    default_detect_freeze = detect_freeze_enabled or bool(_get_option(payload, "detect_freeze", False))
-    default_detect_scenes = detect_scenes_enabled or bool(_get_option(payload, "detect_scenes", False))
-    default_render_review = render_review_enabled or bool(_get_option(payload, "render_review", False))
-    default_render_final = render_final_enabled or bool(_get_option(payload, "render_final", False))
-    default_vertical = vertical_enabled or bool(_get_option(payload, "vertical", False))
-    default_burn_subtitles = burn_subtitles_enabled or bool(_get_option(payload, "burn_subtitles", False))
-    default_plan_crop = plan_crop_enabled or bool(_get_option(payload, "plan_crop", False))
-    default_plan_uvr = plan_uvr_enabled or bool(_get_option(payload, "plan_uvr", False))
-    default_skip_transcribe = skip_transcribe or bool(_get_option(payload, "skip_transcribe", False))
+    defaults = {
+        "force": force,
+        "detect_silence": detect_silence_enabled,
+        "detect_freeze": detect_freeze_enabled,
+        "detect_scenes": detect_scenes_enabled,
+        "render_review": render_review_enabled,
+        "render_final": render_final_enabled,
+        "vertical": vertical_enabled,
+        "burn_subtitles": burn_subtitles_enabled,
+        "plan_crop": plan_crop_enabled,
+        "plan_uvr": plan_uvr_enabled,
+        "skip_transcribe": skip_transcribe,
+    }
+    defaults = {
+        name: enabled or bool(_get_option(payload, name, False))
+        for name, enabled in defaults.items()
+    }
     raw_items = payload.get("files") if isinstance(payload, dict) else payload
     if not isinstance(raw_items, list):
         raise RuntimeError("batch file must be a JSON array or an object with a files array")
@@ -406,17 +349,10 @@ def load_batch_items(
             source_path = base_dir / source_path
         items.append(BatchItem(
             source_path=source_path,
-            force=bool(item_options.get("force", default_force)),
-            detect_silence_enabled=bool(item_options.get("detect_silence", default_detect_silence)),
-            detect_freeze_enabled=bool(item_options.get("detect_freeze", default_detect_freeze)),
-            detect_scenes_enabled=bool(item_options.get("detect_scenes", default_detect_scenes)),
-            render_review_enabled=bool(item_options.get("render_review", default_render_review)),
-            render_final_enabled=bool(item_options.get("render_final", default_render_final)),
-            vertical_enabled=bool(item_options.get("vertical", default_vertical)),
-            burn_subtitles_enabled=bool(item_options.get("burn_subtitles", default_burn_subtitles)),
-            plan_crop_enabled=bool(item_options.get("plan_crop", default_plan_crop)),
-            plan_uvr_enabled=bool(item_options.get("plan_uvr", default_plan_uvr)),
-            skip_transcribe=bool(item_options.get("skip_transcribe", default_skip_transcribe)),
+            **{
+                PIPELINE_FLAG_NAMES.get(name, name): bool(item_options.get(name, default))
+                for name, default in defaults.items()
+            },
         ))
     return items
 
@@ -443,39 +379,25 @@ def watch(
     skip_transcribe: bool,
     progress_enabled: bool,
 ) -> None:
+    options = {
+        "force": force,
+        "detect_silence_enabled": detect_silence_enabled,
+        "detect_freeze_enabled": detect_freeze_enabled,
+        "detect_scenes_enabled": detect_scenes_enabled,
+        "render_review_enabled": render_review_enabled,
+        "render_final_enabled": render_final_enabled,
+        "vertical_enabled": vertical_enabled,
+        "burn_subtitles_enabled": burn_subtitles_enabled,
+        "plan_crop_enabled": plan_crop_enabled,
+        "plan_uvr_enabled": plan_uvr_enabled,
+        "skip_transcribe": skip_transcribe,
+        "progress_enabled": progress_enabled,
+    }
     try:
-        watch_with_watchdog(
-            settings,
-            force=force,
-            detect_silence_enabled=detect_silence_enabled,
-            detect_freeze_enabled=detect_freeze_enabled,
-            detect_scenes_enabled=detect_scenes_enabled,
-            render_review_enabled=render_review_enabled,
-            render_final_enabled=render_final_enabled,
-            vertical_enabled=vertical_enabled,
-            burn_subtitles_enabled=burn_subtitles_enabled,
-            plan_crop_enabled=plan_crop_enabled,
-            plan_uvr_enabled=plan_uvr_enabled,
-            skip_transcribe=skip_transcribe,
-            progress_enabled=progress_enabled,
-        )
+        watch_with_watchdog(settings, **options)
     except ImportError:
         logging.info("watchdog is unavailable; falling back to polling")
-        watch_with_polling(
-            settings,
-            force=force,
-            detect_silence_enabled=detect_silence_enabled,
-            detect_freeze_enabled=detect_freeze_enabled,
-            detect_scenes_enabled=detect_scenes_enabled,
-            render_review_enabled=render_review_enabled,
-            render_final_enabled=render_final_enabled,
-            vertical_enabled=vertical_enabled,
-            burn_subtitles_enabled=burn_subtitles_enabled,
-            plan_crop_enabled=plan_crop_enabled,
-            plan_uvr_enabled=plan_uvr_enabled,
-            skip_transcribe=skip_transcribe,
-            progress_enabled=progress_enabled,
-        )
+        watch_with_polling(settings, **options)
 
 
 def watch_with_watchdog(

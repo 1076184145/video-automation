@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,7 +76,7 @@ from .library_api import (
 from .llm_tools import generate_highlights, generate_metadata
 from .pipeline_spec import PIPELINE_STAGE_SPECS
 from .publish import generate_publish_package
-from .profiles import apply_profile_flags, apply_profile_settings
+from .profiles import PIPELINE_FLAG_NAMES, apply_profile_flags, apply_profile_settings
 from .project_exports import generate_project_exports
 from .render import render_final_video, render_highlight_video
 from .segments import generate_platform_segments
@@ -194,12 +196,9 @@ def _execute_queue_item(settings: Settings, item: dict[str, Any]) -> None:
             "selected_stages": [retry_stage],
             "expand_selected_dependencies": False,
             "completion_status": "needs_review",
-            "control_callback": control_callback,
         })
-        process_job(job_settings, job, **options)
-    else:
-        options["control_callback"] = control_callback
-        process_job(job_settings, job, **options)
+    options["control_callback"] = control_callback
+    process_job(job_settings, job, **options)
     if job.status == "failed":
         raise RuntimeError(job.error or "job failed")
 
@@ -241,35 +240,23 @@ def _execute_managed_job_command(
             platforms=_string_list(payload.get("platforms")),
             force=bool(payload.get("force", False)),
         )
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "generate_metadata":
+    elif command == "generate_metadata":
         generate_metadata(
             settings,
             job.job_dir,
             platform=str(payload.get("platform") or "douyin"),
             force=bool(payload.get("force", False)),
         )
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "generate_highlights":
+    elif command == "generate_highlights":
         generate_highlights(settings, job.job_dir, force=bool(payload.get("force", False)))
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "generate_publish_package":
+    elif command == "generate_publish_package":
         generate_publish_package(
             settings,
             job.job_dir,
             platforms=_string_list(payload.get("platforms")),
             force=bool(payload.get("force", False)),
         )
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "generate_project_export":
+    elif command == "generate_project_export":
         generate_project_exports(
             settings,
             job.job_dir,
@@ -277,10 +264,7 @@ def _execute_managed_job_command(
             include_clips=bool(payload.get("include_clips", False)),
             force=bool(payload.get("force", False)),
         )
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "translate_subtitles":
+    elif command == "translate_subtitles":
         target_language = str(payload.get("target_language") or "zh").strip() or "zh"
         translate_subtitles(
             settings,
@@ -288,10 +272,7 @@ def _execute_managed_job_command(
             target_language=target_language,
             force=bool(payload.get("force", False)),
         )
-        check_control()
-        _publish_job_dir_event(job.job_dir)
-        return
-    if command == "render_highlight":
+    elif command == "render_highlight":
         highlight_cut = payload.get("highlight_cut") if isinstance(payload.get("highlight_cut"), dict) else {}
         status_path = job.job_dir / "highlight_render_status.json"
         status_base = {
@@ -300,36 +281,18 @@ def _execute_managed_job_command(
             "selected_clip_count": highlight_cut.get("selected_clip_count", 0),
             "started_at": datetime.now().isoformat(timespec="seconds"),
         }
-        try:
-            write_json_atomic(status_path, {**status_base, "status": "rendering", "message": "Rendering highlight video."})
+        with _managed_render_status(job, status_path, status_base, "highlight video") as (on_wait, on_acquired):
             render_highlight_video(
                 settings,
                 job.job_dir,
                 job.source_path,
                 force=True,
-                resource_wait_callback=lambda: write_json_atomic(
-                    status_path, {**status_base, "status": "waiting_for_gpu", "message": "Waiting for GPU to render highlight video."}
-                ),
-                resource_acquired_callback=lambda: write_json_atomic(
-                    status_path, {**status_base, "status": "rendering", "message": "GPU available. Rendering highlight video."}
-                ),
+                resource_wait_callback=on_wait,
+                resource_acquired_callback=on_acquired,
                 control_callback=control_callback,
             )
-            write_json_atomic(status_path, {
-                **status_base,
-                "status": "done",
-                "completed_at": datetime.now().isoformat(timespec="seconds"),
-            })
-        except QueueControlRequested:
-            write_json_atomic(status_path, {**status_base, "status": "canceled"})
-            raise
-        except Exception as exc:
-            write_json_atomic(status_path, {**status_base, "status": "failed", "error": str(exc)})
-            raise
-        finally:
-            _publish_job_dir_event(job.job_dir)
         return
-    if command == "render_translated_subtitles":
+    elif command == "render_translated_subtitles":
         target_language = str(payload.get("target_language") or "zh").strip() or "zh"
         output_filename = str(payload.get("output_filename") or translated_final_video_name(target_language))
         status_path = job.job_dir / f"subtitle_translation_render_{target_language}.json"
@@ -339,8 +302,7 @@ def _execute_managed_job_command(
             "started_at": datetime.now().isoformat(timespec="seconds"),
         }
         preview = read_json_file(job.job_dir / "final_render_preview.json") or {}
-        try:
-            write_json_atomic(status_path, {**status_base, "status": "rendering", "message": "Rendering translated subtitles."})
+        with _managed_render_status(job, status_path, status_base, "translated subtitles") as (on_wait, on_acquired):
             render_final_video(
                 settings,
                 job.job_dir,
@@ -350,29 +312,50 @@ def _execute_managed_job_command(
                 burn_subtitles=True,
                 subtitle_filename=translated_clipped_ass_name(target_language),
                 output_filename=output_filename,
-                resource_wait_callback=lambda: write_json_atomic(
-                    status_path, {**status_base, "status": "waiting_for_gpu", "message": "Waiting for GPU to render translated subtitles."}
-                ),
-                resource_acquired_callback=lambda: write_json_atomic(
-                    status_path, {**status_base, "status": "rendering", "message": "GPU available. Rendering translated subtitles."}
-                ),
+                resource_wait_callback=on_wait,
+                resource_acquired_callback=on_acquired,
                 control_callback=control_callback,
             )
-            write_json_atomic(status_path, {
-                **status_base,
-                "status": "done",
-                "completed_at": datetime.now().isoformat(timespec="seconds"),
-            })
-        except QueueControlRequested:
-            write_json_atomic(status_path, {**status_base, "status": "canceled"})
-            raise
-        except Exception as exc:
-            write_json_atomic(status_path, {**status_base, "status": "failed", "error": str(exc)})
-            raise
-        finally:
-            _publish_job_dir_event(job.job_dir)
         return
-    raise RuntimeError(f"unsupported managed job command: {command}")
+    else:
+        raise RuntimeError(f"unsupported managed job command: {command}")
+    check_control()
+    _publish_job_dir_event(job.job_dir)
+
+
+@contextmanager
+def _managed_render_status(
+    job: Job,
+    status_path: Path,
+    status_base: dict[str, Any],
+    description: str,
+) -> Iterator[tuple[Callable[[], None], Callable[[], None]]]:
+    """Persist render transitions and notify clients even on failure or cancellation."""
+    try:
+        write_json_atomic(status_path, {
+            **status_base, "status": "rendering", "message": f"Rendering {description}.",
+        })
+        yield (
+            lambda: write_json_atomic(status_path, {
+                **status_base, "status": "waiting_for_gpu", "message": f"Waiting for GPU to render {description}.",
+            }),
+            lambda: write_json_atomic(status_path, {
+                **status_base, "status": "rendering", "message": f"GPU available. Rendering {description}.",
+            }),
+        )
+        write_json_atomic(status_path, {
+            **status_base,
+            "status": "done",
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        })
+    except QueueControlRequested:
+        write_json_atomic(status_path, {**status_base, "status": "canceled"})
+        raise
+    except Exception as exc:
+        write_json_atomic(status_path, {**status_base, "status": "failed", "error": str(exc)})
+        raise
+    finally:
+        _publish_job_dir_event(job.job_dir)
 
 
 def _queue_control_action(settings: Settings, queue_id: str) -> str | None:
@@ -407,15 +390,7 @@ def _queued_process_config(settings: Settings, payload: dict[str, Any]) -> tuple
         )
     options = apply_profile_flags({
         "force": bool(effective.get("force", False)),
-        "detect_silence_enabled": bool(effective.get("detect_silence", False)),
-        "detect_freeze_enabled": bool(effective.get("detect_freeze", False)),
-        "detect_scenes_enabled": bool(effective.get("detect_scenes", False)),
-        "render_review_enabled": bool(effective.get("render_review", False)),
-        "render_final_enabled": bool(effective.get("render_final", False)),
-        "vertical_enabled": bool(effective.get("vertical", False)),
-        "burn_subtitles_enabled": bool(effective.get("burn_subtitles", False)),
-        "plan_crop_enabled": bool(effective.get("plan_crop", False)),
-        "plan_uvr_enabled": bool(effective.get("plan_uvr", False)),
+        **{keyword: bool(effective.get(flag, False)) for flag, keyword in PIPELINE_FLAG_NAMES.items()},
         "skip_transcribe": bool(effective.get("skip_transcribe", False)),
         "progress_enabled": False,
         "whisper_language": str(effective.get("whisper_language") or "").strip() or None,
