@@ -121,12 +121,10 @@ Optional features:
 - Demucs audio separation
 - A separately configured publishing connector; manual packages remain the fallback
 
-External AI features require a key from the provider you select; local Hugging
-Face mode does not. Keys entered in
-**Settings** are stored in the operating-system credential store; the private
-`.env` contains only a reference. Existing plaintext `.env` keys can be migrated
-from the warning shown in **Settings**. See [`.env.example`](.env.example) for
-available settings.
+External AI features require a provider key; local Hugging Face mode does not. Keys entered in
+**Settings** use the OS credential store, while `.env` contains only a reference. Plaintext
+migration deletes the source only after verified readback and preserves it on failure. **Health**
+shows resolved paths; editable directory and tool values are in **Settings**. See [`.env.example`](.env.example).
 
 Semantic highlight analysis samples the full transcript and returns precise
 intervals; those intervals drive the highlight cut and cover context instead of
@@ -177,6 +175,8 @@ Open **Health** and use **Auto-fix Dependencies**. Source users can run:
 ```powershell
 .\venv\Scripts\python.exe .\run_worker.py --health
 ```
+
+Missing Python AI runtimes show copyable install commands and safe fallback actions in **Health**; they are not installed silently.
 
 **The first job is slow**
 

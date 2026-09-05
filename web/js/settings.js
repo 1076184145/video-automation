@@ -29,6 +29,20 @@ const SETTINGS_OPEN_GROUPS_KEY = "videoAutomationOpenSettingsGroupsV2";
 
 const editableGroups = [
   {
+    title: "settings.edit_paths",
+    note: "settings.edit_paths_note",
+    fields: [
+      { env: "INPUT_RECORDINGS_DIR", path: ["directories", "input_recordings"] },
+      { env: "JOBS_DIR", path: ["directories", "job_outputs"] },
+      { env: "LOGS_DIR", path: ["directories", "logs"] },
+      { env: "FFMPEG_PATH", path: ["paths", "ffmpeg"] },
+      { env: "FFPROBE_PATH", path: ["paths", "ffprobe"] },
+      { env: "AUDIOWAVEFORM_PATH", path: ["paths", "audiowaveform"] },
+      { env: "WHISPER_BIN", path: ["paths", "whisper"] },
+      { env: "DEMUCS_PATH", path: ["paths", "demucs"] },
+    ]
+  },
+  {
     title: "settings.edit_whisper",
     fields: [
       { env: "WHISPER_BACKEND", path: ["whisper", "backend"], type: "select", options: ["faster-whisper", "cli"] },
@@ -266,12 +280,21 @@ function bindCredentialMigration(context) {
       if (!context.isActive?.()) return;
       context.render?.(payload, t("settings.secret_migration_done"));
     } catch (error) {
-      if (context.isActive?.()) showToast(`${t("settings.secret_migration_failed")} ${error.message}`, "error");
+      if (!context.isActive?.()) return;
+      const preserved = Boolean(error?.payload?.error?.plaintext_preserved);
+      showToast(
+        preserved
+          ? t("settings.secret_migration_failed_preserved")
+          : `${t("settings.secret_migration_failed")} ${error.message}`,
+        "error",
+      );
     } finally {
       if (button.isConnected) setButtonLoading(button, false);
     }
   });
 }
+
+export const editableGroupsForTest = editableGroups;
 
 export function renderLocalPreferences(preferences = {}) {
   const clips = preferences.clip_feedback || {};

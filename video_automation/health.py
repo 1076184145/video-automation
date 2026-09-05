@@ -117,7 +117,8 @@ def _build_health_payload(settings: Settings) -> dict[str, Any]:
         status = "ok" if exists else "optional_missing" if optional else "missing"
         result = {
             "name": name,
-            "path": str(path),
+            "path": _resolve_display_path(path, kind),
+            "configured_path": str(path),
             "exists": exists,
             "required": not optional,
             "optional": optional,
@@ -173,7 +174,6 @@ def _build_health_payload(settings: Settings) -> dict[str, Any]:
         "warnings": warnings,
     }
 
-
 def _storage_health(settings: Settings) -> dict[str, Any]:
     target = settings.jobs_dir if settings.jobs_dir.exists() else settings.root
     try:
@@ -209,7 +209,7 @@ def _render_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
     exists = bool(probe["available"])
     return [{
         "name": "h264_nvenc",
-        "path": str(settings.ffmpeg_path),
+        "path": _resolve_display_path(settings.ffmpeg_path, "exe"),
         "exists": exists,
         "required": True,
         "optional": False,
@@ -237,7 +237,7 @@ def _faster_whisper_runtime_checks(settings: Settings, *, optional: bool = False
     faster_exists = importlib.util.find_spec("faster_whisper") is not None
     checks.append({
         "name": "faster_whisper",
-        "path": "python:faster_whisper",
+        "path": _resolve_module_path("faster_whisper"),
         "exists": faster_exists,
         "required": not optional,
         "optional": optional,
@@ -261,7 +261,7 @@ def _faster_whisper_runtime_checks(settings: Settings, *, optional: bool = False
         version = str(exc)
     checks.append({
         "name": "ctranslate2_cuda",
-        "path": "python:ctranslate2",
+        "path": _resolve_module_path("ctranslate2"),
         "exists": cuda_exists,
         "required": not optional,
         "optional": optional,
@@ -276,7 +276,7 @@ def _funasr_runtime_checks(settings: Settings, *, optional: bool = False) -> lis
     funasr_exists = importlib.util.find_spec("funasr") is not None
     checks.append({
         "name": "funasr",
-        "path": "python:funasr",
+        "path": _resolve_module_path("funasr"),
         "exists": funasr_exists,
         "required": not optional,
         "optional": optional,
@@ -286,7 +286,7 @@ def _funasr_runtime_checks(settings: Settings, *, optional: bool = False) -> lis
     torch_exists = importlib.util.find_spec("torch") is not None
     checks.append({
         "name": "torch",
-        "path": "python:torch",
+        "path": _resolve_module_path("torch"),
         "exists": torch_exists,
         "required": not optional,
         "optional": optional,
@@ -307,7 +307,7 @@ def _funasr_runtime_checks(settings: Settings, *, optional: bool = False) -> lis
             version = str(exc)
     checks.append({
         "name": "torch_cuda",
-        "path": "python:torch.cuda",
+        "path": _resolve_module_path("torch"),
         "exists": cuda_exists,
         "required": not optional,
         "optional": optional,
@@ -322,11 +322,12 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
     if provider not in {"openai", "openai-compatible", "openrouter", "google", "local"}:
         return []
     pillow_exists = importlib.util.find_spec("PIL") is not None
+    pillow_path = _resolve_module_path("PIL")
     if provider == "local":
         return [
             {
                 "name": "pillow",
-                "path": "python:PIL",
+                "path": pillow_path,
                 "exists": pillow_exists,
                 "required": True,
                 "optional": False,
@@ -339,7 +340,7 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
     return [
         {
             "name": "pillow",
-            "path": "python:PIL",
+            "path": pillow_path,
             "exists": pillow_exists,
             "required": False,
             "optional": True,
@@ -374,7 +375,7 @@ def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
         {
             "name": "llm_model",
             "path": (
-                str(settings.local_llm_model_path)
+                _resolve_display_path(settings.local_llm_model_path, "file")
                 if llm_provider == "local"
                 else "env:LLM_MODEL"
             ),
@@ -386,7 +387,7 @@ def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
         },
         {
             "name": "demucs",
-            "path": str(settings.demucs_path),
+            "path": _resolve_display_path(settings.demucs_path, "optional_exe"),
             "exists": demucs_exists,
             "required": demucs_required,
             "optional": not demucs_required,
@@ -585,6 +586,39 @@ def _path_exists(path: Path, kind: str) -> bool:
     if kind in {"exe", "optional_exe"} and not path.is_absolute():
         return shutil.which(str(path)) is not None
     return False
+
+
+def _resolve_display_path(path: Path | str, kind: str) -> str:
+    if isinstance(path, Path):
+        if path.exists():
+            return str(path.resolve())
+        if kind in {"exe", "optional_exe"} and not path.is_absolute():
+            found = shutil.which(str(path))
+            if found:
+                return found
+        return str(path)
+    if isinstance(path, str) and path.strip():
+        p = Path(path)
+        if p.exists():
+            return str(p.resolve())
+        if kind in {"exe", "optional_exe"} and not p.is_absolute():
+            found = shutil.which(path)
+            if found:
+                return found
+    return str(path)
+
+
+def _resolve_module_path(module_name: str) -> str:
+    try:
+        spec = importlib.util.find_spec(module_name)
+        if spec and spec.origin:
+            origin_p = Path(spec.origin)
+            if origin_p.name == "__init__.py":
+                return str(origin_p.parent)
+            return str(origin_p)
+    except Exception:
+        pass
+    return f"python:{module_name}"
 
 
 def _first_version_line(path: Path) -> str:

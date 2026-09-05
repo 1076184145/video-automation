@@ -6,6 +6,37 @@ import { escapeHtml } from "./utils.js";
 
 const INSTALLABLE_CHECKS = new Set(["ffmpeg_path", "ffprobe_path"]);
 const TRANSCRIPTION_CHECKS = new Set(["faster_whisper", "ctranslate2_cuda"]);
+const COVER_LOCAL_CHECKS = new Set([
+  "pillow",
+  "local_cover_transformers",
+  "local_cover_diffusers",
+  "local_cover_accelerate",
+  "local_cover_bitsandbytes",
+]);
+const FASTER_WHISPER_INSTALL_COMMAND = "python -m pip install -r requirements-transcription-faster.txt";
+const LOCAL_COVER_INSTALL_COMMAND = "python -m pip install -r requirements-local-ai.txt";
+const HEALTH_CHECK_CONFIG = {
+  root: { env: "VIDEO_AUTOMATION_ROOT" },
+  input_recordings_dir: { env: "INPUT_RECORDINGS_DIR", editable: true },
+  jobs_dir: { env: "JOBS_DIR", editable: true },
+  logs_dir: { env: "LOGS_DIR", editable: true },
+  ffmpeg_path: { env: "FFMPEG_PATH", editable: true },
+  ffprobe_path: { env: "FFPROBE_PATH", editable: true },
+  audiowaveform_path: { env: "AUDIOWAVEFORM_PATH", editable: true },
+  whisper_bin: { env: "WHISPER_BIN", editable: true },
+  faster_whisper: { env: "WHISPER_BACKEND", editable: true },
+  funasr: { env: "WHISPER_BACKEND", editable: true },
+  ctranslate2_cuda: { env: "FASTER_WHISPER_DEVICE", editable: true },
+  h264_nvenc: { env: "RENDER_VIDEO_ENCODER", editable: true },
+  demucs: { env: "DEMUCS_PATH", editable: true },
+  cover_api_key: { env: "COVER_API_KEY", editable: true },
+  llm_model: { env: "LLM_MODEL", editable: true },
+  llm_openai_api_key: { env: "OPENAI_API_KEY", editable: true },
+  llm_google_api_key: { env: "GOOGLE_API_KEY", editable: true },
+  local_llm_model: { env: "LOCAL_LLM_MODEL_PATH", editable: true },
+  local_llm_server: { env: "LOCAL_LLM_SERVER_PATH", editable: true },
+  local_cover_model: { env: "LOCAL_COVER_MODEL_PATH", editable: true },
+};
 const HEALTH_CHECK_LABEL_KEYS = {
   root: "health.check.root",
   input_recordings_dir: "health.check.input_recordings_dir",
@@ -25,7 +56,15 @@ const HEALTH_CHECK_LABEL_KEYS = {
   cover_api_key: "health.check.cover_api_key",
   llm_model: "health.check.llm_model",
   llm_openai_api_key: "health.check.llm_api_key",
+  llm_google_api_key: "health.check.llm_google_api_key",
   demucs: "health.check.demucs",
+  local_llm_model: "health.check.local_llm_model",
+  local_llm_server: "health.check.local_llm_server",
+  local_cover_model: "health.check.local_cover_model",
+  local_cover_transformers: "health.check.local_cover_transformers",
+  local_cover_diffusers: "health.check.local_cover_diffusers",
+  local_cover_accelerate: "health.check.local_cover_accelerate",
+  local_cover_bitsandbytes: "health.check.local_cover_bitsandbytes",
 };
 
 export async function renderHealth(_match, { signal } = {}) {
@@ -40,6 +79,8 @@ export async function renderHealth(_match, { signal } = {}) {
     if (isActive()) app.innerHTML = loadingState(t("common.loading"));
   }, 150);
 
+  app.addEventListener("click", handleCopyAction);
+
   async function load() {
     const version = ++loadVersion;
     try {
@@ -48,8 +89,7 @@ export async function renderHealth(_match, { signal } = {}) {
       latestPayload = payload;
       clearTimeout(loadingTimer);
       renderPayload(payload);
-      bindInstallButton();
-      bindRecoveryButtons();
+      bindRenderedActions();
       startEvents();
     } catch (error) {
       clearTimeout(loadingTimer);
@@ -64,27 +104,50 @@ export async function renderHealth(_match, { signal } = {}) {
     app.innerHTML = renderHealthPayloadForTest(payload);
   }
 
+  function bindRenderedActions() {
+    bindInstallButton();
+    bindRecoveryButtons();
+  }
+
+  async function handleCopyAction(event) {
+    const button = event.target?.closest?.("[data-copy-text]");
+    if (!button || !app.contains(button)) return;
+    const value = button.getAttribute("data-copy-text") || "";
+    if (!value) return;
+    if (!navigator.clipboard?.writeText) {
+      showToast(`${t("health.copy_unavailable")} ${value}`, "info");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast(t(button.hasAttribute("data-install-command") ? "health.command_copied" : "health.path_copied"), "success");
+    } catch {
+      showToast(`${t("health.copy_unavailable")} ${value}`, "info");
+    }
+  }
+
   function bindInstallButton() {
-    const button = document.getElementById("install-health-tools");
-    if (!button) return;
-    button.addEventListener("click", async () => {
-      setButtonLoading(button, true, t("health.autofix_running"));
-      try {
-        const response = await API.installHealthTools({ install_ffmpeg: true });
-        if (!isActive()) return;
-        updateInstallState(response.tools_install || {});
-        showToast(t("health.autofix_started"), "success");
-      } catch (error) {
-        if (!isActive()) return;
-        showToast(`${t("health.autofix_failed")} ${error.message}`, "error");
-        setButtonLoading(button, false);
-      }
+    const buttons = document.querySelectorAll("#install-health-tools, #overview-install-tools");
+    buttons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        setButtonLoading(button, true, t("health.autofix_running"));
+        try {
+          const response = await API.installHealthTools({ install_ffmpeg: true });
+          if (!isActive()) return;
+          updateInstallState(response.tools_install || {});
+          showToast(t("health.autofix_started"), "success");
+        } catch (error) {
+          if (!isActive()) return;
+          showToast(`${t("health.autofix_failed")} ${error.message}`, "error");
+          setButtonLoading(button, false);
+        }
+      });
     });
   }
 
   function bindRecoveryButtons() {
-    const switchButton = document.getElementById("switch-whisper-cli");
-    if (switchButton) {
+    const switchButtons = document.querySelectorAll("#switch-whisper-cli, #overview-switch-whisper-cli");
+    switchButtons.forEach((switchButton) => {
       switchButton.addEventListener("click", async () => {
         setButtonLoading(switchButton, true, t("health.switching_backend"));
         try {
@@ -92,8 +155,7 @@ export async function renderHealth(_match, { signal } = {}) {
           if (!isActive()) return;
           latestPayload = payload;
           renderPayload(payload);
-          bindInstallButton();
-          bindRecoveryButtons();
+          bindRenderedActions();
           showToast(t("health.switched_backend"), "success");
         } catch (error) {
           if (!isActive()) return;
@@ -101,7 +163,25 @@ export async function renderHealth(_match, { signal } = {}) {
           setButtonLoading(switchButton, false);
         }
       });
-    }
+    });
+    const coverSwitchButtons = document.querySelectorAll("#switch-cover-api, #overview-switch-cover-api");
+    coverSwitchButtons.forEach((coverSwitchButton) => {
+      coverSwitchButton.addEventListener("click", async () => {
+        setButtonLoading(coverSwitchButton, true);
+        try {
+          const payload = await API.updateSettings({ env: { COVER_PROVIDER: "openai" } });
+          if (!isActive()) return;
+          latestPayload = payload;
+          renderPayload(payload);
+          bindRenderedActions();
+          showToast(t("health.switched_cover_api"), "success");
+        } catch (error) {
+          if (!isActive()) return;
+          showToast(`${t("common.error")} ${error.message}`, "error");
+          setButtonLoading(coverSwitchButton, false);
+        }
+      });
+    });
   }
 
   function startEvents() {
@@ -122,8 +202,7 @@ export async function renderHealth(_match, { signal } = {}) {
       if (payload?.checks) {
         latestPayload = payload;
         renderPayload(payload);
-        bindInstallButton();
-        bindRecoveryButtons();
+        bindRenderedActions();
       }
     });
   }
@@ -134,12 +213,10 @@ export async function renderHealth(_match, { signal } = {}) {
     const target = document.getElementById("health-install-panel");
     if (latestPayload && target) {
       target.outerHTML = renderInstallPanel(latestPayload);
-      bindInstallButton();
-      bindRecoveryButtons();
+      bindRenderedActions();
     } else if (latestPayload && ["running", "done", "failed"].includes(String(state.status || ""))) {
       renderPayload(latestPayload);
-      bindInstallButton();
-      bindRecoveryButtons();
+      bindRenderedActions();
     }
     if (state.status === "done") {
       showToast(t("health.autofix_done"), "success");
@@ -157,6 +234,7 @@ export async function renderHealth(_match, { signal } = {}) {
     disposed = true;
     loadVersion += 1;
     clearTimeout(loadingTimer);
+    app.removeEventListener("click", handleCopyAction);
     if (events) events.close();
   }
 }
@@ -208,7 +286,7 @@ export function renderHealthPayloadForTest(payload = {}) {
         </div>
         ${missingList}
       </div>
-      ${canStart ? `<a class="button primary health-start-action" href="#/new">${t("health.start_job")}</a>` : ""}
+      ${renderOverviewAction(payload, canStart)}
     </section>
     ${renderHealthWarnings(warnings)}
     ${renderStorageStatus(payload.storage || {})}
@@ -216,6 +294,45 @@ export function renderHealthPayloadForTest(payload = {}) {
     ${renderRecoveryPanel(payload)}
     ${renderHealthDetails(checks)}
   `;
+}
+
+function renderOverviewAction(payload, canStart) {
+  if (canStart) {
+    return `<a class="button primary health-start-action" href="#/new">${t("health.start_job")}</a>`;
+  }
+  const actions = [];
+  const installableMissing = installableMissingChecks(payload);
+  const state = payload.tools_install || {};
+  const active = state.status === "running";
+  if (installableMissing.length) {
+    actions.push(`<button class="button primary" id="overview-install-tools" type="button" ${active ? "disabled" : ""}>${active ? t("health.autofix_running") : t("health.autofix_button")}</button>`);
+  }
+  const checks = Array.isArray(payload.checks) ? payload.checks : [];
+  const missingTranscription = checks.some((check) => !check.exists && TRANSCRIPTION_CHECKS.has(check.name));
+  const whisperCliReady = checks.some((check) => check.name === "whisper_bin" && check.exists);
+  const backend = String(payload.settings?.whisper?.backend || "");
+  if (missingTranscription) {
+    if (whisperCliReady && backend !== "cli") {
+      actions.push(`<button class="button primary" id="overview-switch-whisper-cli" type="button">${t("health.switch_to_cli")}</button>`);
+    }
+    actions.push(copyCommandButton(FASTER_WHISPER_INSTALL_COMMAND));
+  }
+  const missingCover = checks.some((check) => !check.exists && COVER_LOCAL_CHECKS.has(check.name));
+  if (missingCover && String(payload.settings?.covers?.provider || "") === "local") {
+    actions.push(copyCommandButton(LOCAL_COVER_INSTALL_COMMAND));
+    const coverKeyReady = Boolean(payload.settings?.covers?.cover_api_key_configured || payload.settings?.covers?.openai_api_key_configured);
+    actions.push(coverKeyReady
+      ? `<button class="button" id="overview-switch-cover-api" type="button">${t("health.switch_to_api_cover")}</button>`
+      : `<a class="button" href="#/settings">${t("health.configure_api_cover")}</a>`);
+  }
+  if (!actions.length) {
+    actions.push(`<a class="button primary" href="#/settings">${t("health.fix_in_settings")}</a>`);
+  }
+  return `<div class="health-overview-actions">${actions.join("")}</div>`;
+}
+
+function copyCommandButton(command) {
+  return `<button class="button" type="button" data-copy-text="${escapeHtml(command)}" data-install-command>${t("health.copy_install_command")}</button>`;
 }
 
 function renderHealthWarnings(warnings) {
@@ -304,15 +421,49 @@ function renderHealthDetails(checks) {
       </summary>
       <div class="health-table-wrap">
         <table class="table">
-          <thead><tr><th>${t("health.tool")}</th><th>${t("common.path")}</th><th>${t("common.status")}</th><th>${t("common.version")}</th></tr></thead>
-          <tbody>${checks.map((check) => `
+          <thead>
             <tr>
-              <td>${escapeHtml(healthCheckLabel(check.name))}</td>
-              <td><code>${escapeHtml(check.path)}</code></td>
+              <th>${t("health.tool")}</th>
+              <th>${t("common.path")}</th>
+              <th>${t("common.status")}</th>
+              <th>${t("common.version")}</th>
+            </tr>
+          </thead>
+          <tbody>${checks.map((check) => {
+            const config = HEALTH_CHECK_CONFIG[String(check.name || "")];
+            const displayPath = String(check.path || "");
+            const configuredPath = String(check.configured_path || "");
+            const showConfiguredPath = configuredPath && configuredPath !== displayPath;
+            const isLocalPath = displayPath && !displayPath.startsWith("python:") && !displayPath.startsWith("env:");
+            return `
+            <tr>
+              <td>
+                <div class="health-tool-cell">
+                  <strong>${escapeHtml(healthCheckLabel(check.name))}</strong>
+                  ${config?.env ? `<span class="health-env-tag" title="${t("health.config_var")}: ${escapeHtml(config.env)}">${escapeHtml(config.env)}</span>` : ""}
+                </div>
+              </td>
+              <td>
+                <div class="health-path-cell">
+                  <code>${escapeHtml(displayPath)}</code>
+                  ${showConfiguredPath ? `<small class="health-configured-path">${t("health.configured_value")}: <code>${escapeHtml(configuredPath)}</code></small>` : ""}
+                  ${isLocalPath ? `
+                    <button class="health-path-copy" type="button" data-copy-text="${escapeHtml(displayPath)}" title="${t("common.copy")}">
+                      ${t("common.copy")}
+                    </button>
+                  ` : ""}
+                  ${config?.editable ? `
+                    <a class="health-path-edit-link" href="#/settings" title="${t("health.edit_in_settings")}">
+                      ${t("common.edit")}
+                    </a>
+                  ` : ""}
+                </div>
+              </td>
               <td>${healthStatusBadge(check)}</td>
               <td>${escapeHtml(check.version || "")}</td>
             </tr>
-          `).join("")}</tbody>
+          `;
+          }).join("")}</tbody>
         </table>
       </div>
     </details>
@@ -332,31 +483,72 @@ function renderRecoveryPanel(payload) {
     if (check.exists) return false;
     return TRANSCRIPTION_CHECKS.has(check.name);
   });
-  if (!missingTranscription.length) return "";
-  const whisperCliReady = checks.some((check) => check.name === "whisper_bin" && check.exists);
-  const backend = String(payload.settings?.whisper?.backend || "");
-  const missingNames = missingTranscription.map((check) => healthCheckLabel(check.name)).join(", ");
-  const installCommand = "python -m pip install -r requirements-transcription-faster.txt";
-  const cliAction = whisperCliReady && backend !== "cli"
-    ? `<button class="button" id="switch-whisper-cli" type="button">${t("health.switch_to_cli")}</button>`
-    : "";
-  return `
-    <section class="panel health-recovery-panel">
-      <div class="panel-head">
-        <div>
-          <h2>${t("health.transcription_missing_title")}</h2>
-          <p>${escapeHtml(template(t("health.transcription_missing_note"), { names: missingNames }))}</p>
+  const missingCover = checks.filter((check) => {
+    if (check.exists) return false;
+    return COVER_LOCAL_CHECKS.has(check.name);
+  });
+  const coverProvider = String(payload.settings?.covers?.provider || "");
+
+  let transcriptionHtml = "";
+  if (missingTranscription.length) {
+    const whisperCliReady = checks.some((check) => check.name === "whisper_bin" && check.exists);
+    const backend = String(payload.settings?.whisper?.backend || "");
+    const missingNames = missingTranscription.map((check) => healthCheckLabel(check.name)).join(", ");
+    const cliAction = whisperCliReady && backend !== "cli"
+      ? `<button class="button" id="switch-whisper-cli" type="button">${t("health.switch_to_cli")}</button>`
+      : "";
+    transcriptionHtml = `
+      <section class="panel health-recovery-panel">
+        <div class="panel-head">
+          <div>
+            <h2>${t("health.transcription_missing_title")}</h2>
+            <p>${escapeHtml(template(t("health.transcription_missing_note"), { names: missingNames }))}</p>
+          </div>
+          <div class="health-recovery-actions">
+            ${copyCommandButton(FASTER_WHISPER_INSTALL_COMMAND)}
+            ${cliAction}
+          </div>
         </div>
-        ${cliAction}
-      </div>
-      <div class="notice">
-        <strong>${t("health.transcription_recommended_title")}</strong>
-        <span>${t("health.transcription_recommended_note")}</span>
-      </div>
-      <p class="muted">${t("health.transcription_install_note")}</p>
-      <code class="health-command">${escapeHtml(installCommand)}</code>
-    </section>
-  `;
+        <div class="notice">
+          <strong>${t("health.transcription_recommended_title")}</strong>
+          <span>${t("health.transcription_recommended_note")}</span>
+        </div>
+        <p class="muted">${t("health.transcription_install_note")}</p>
+        <code class="health-command">${escapeHtml(FASTER_WHISPER_INSTALL_COMMAND)}</code>
+      </section>
+    `;
+  }
+
+  let coverHtml = "";
+  if (missingCover.length && coverProvider === "local") {
+    const missingCoverNames = missingCover.map((check) => healthCheckLabel(check.name)).join(", ");
+    const coverKeyReady = Boolean(payload.settings?.covers?.cover_api_key_configured || payload.settings?.covers?.openai_api_key_configured);
+    const coverAction = coverKeyReady
+      ? `<button class="button" id="switch-cover-api" type="button">${t("health.switch_to_api_cover")}</button>`
+      : `<a class="button" href="#/settings">${t("health.configure_api_cover")}</a>`;
+    coverHtml = `
+      <section class="panel health-recovery-panel">
+        <div class="panel-head">
+          <div>
+            <h2>${t("health.cover_missing_title")}</h2>
+            <p>${escapeHtml(template(t("health.cover_missing_note"), { names: missingCoverNames }))}</p>
+          </div>
+          <div class="health-recovery-actions">
+            ${copyCommandButton(LOCAL_COVER_INSTALL_COMMAND)}
+            ${coverAction}
+          </div>
+        </div>
+        <div class="notice">
+          <strong>${t("health.cover_recommended_title")}</strong>
+          <span>${t("health.cover_recommended_note")}</span>
+        </div>
+        <p class="muted">${t("health.cover_install_note")}</p>
+        <code class="health-command">${escapeHtml(LOCAL_COVER_INSTALL_COMMAND)}</code>
+      </section>
+    `;
+  }
+
+  return transcriptionHtml + coverHtml;
 }
 
 function isOptionalCheck(check) {

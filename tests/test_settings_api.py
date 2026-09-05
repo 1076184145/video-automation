@@ -56,6 +56,20 @@ class SettingsApiTests(unittest.TestCase):
             },
         )
 
+    def test_normalize_env_updates_accepts_local_directory_and_tool_paths(self) -> None:
+        updates = {
+            "INPUT_RECORDINGS_DIR": r"D:\media\recordings",
+            "JOBS_DIR": r"D:\media\jobs",
+            "LOGS_DIR": r"D:\media\logs",
+            "FFMPEG_PATH": r"D:\tools\ffmpeg.exe",
+            "FFPROBE_PATH": r"D:\tools\ffprobe.exe",
+            "AUDIOWAVEFORM_PATH": r"D:\tools\audiowaveform.exe",
+            "WHISPER_BIN": r"D:\tools\whisper.exe",
+            "DEMUCS_PATH": r"D:\tools\demucs.exe",
+        }
+
+        self.assertEqual(_normalize_env_updates(updates), updates)
+
     def test_normalize_env_updates_accepts_native_waveform_toggle(self) -> None:
         self.assertEqual(
             _normalize_env_updates({"NATIVE_WAVEFORM_ENABLED": "false"}),
@@ -145,6 +159,23 @@ class SettingsApiTests(unittest.TestCase):
                 migrate_legacy_secrets(root, credential_store=FailingStore())
 
             self.assertIn("OPENAI_API_KEY=keep-until-committed", env_path.read_text(encoding="utf-8"))
+
+    def test_secret_migration_verifies_keyring_before_removing_plaintext(self) -> None:
+        class NonCommittingStore(MemoryCredentialStore):
+            def set(self, reference: str, secret: str) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / ".env"
+            env_path.write_text("OPENAI_API_KEY=keep-until-verified\n", encoding="utf-8")
+
+            with self.assertRaises(CredentialUpdateError) as raised:
+                migrate_legacy_secrets(root, credential_store=NonCommittingStore())
+
+            self.assertEqual(raised.exception.key, "OPENAI_API_KEY")
+            self.assertEqual(raised.exception.reason, "credential verification failed")
+            self.assertIn("OPENAI_API_KEY=keep-until-verified", env_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

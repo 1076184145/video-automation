@@ -77,7 +77,70 @@ test("missing transcription modules prioritize Faster-Whisper installation with 
   assert.match(html, /medium 主模型与 small 回退模型/);
   assert.match(html, /id="switch-whisper-cli"/);
   assert.match(html, /临时切换到 Whisper CLI/);
+  assert.match(html, /data-install-command/);
+  assert.match(html, /复制安装命令/);
   assert.match(html, /python -m pip install -r requirements-transcription-faster\.txt/);
+});
+
+test("combined local AI failures expose concrete repair choices in the overview", () => {
+  const html = renderHealthPayloadForTest({
+    ok: false,
+    checks: [
+      requiredChecks[0],
+      requiredChecks[1],
+      { name: "whisper_bin", path: "whisper", exists: true, optional: true, status: "ok" },
+      { name: "faster_whisper", path: "python:faster_whisper", exists: false, optional: false, status: "missing" },
+      { name: "local_cover_transformers", path: "python:transformers", exists: false, optional: false, status: "missing" },
+      { name: "local_cover_diffusers", path: "python:diffusers", exists: false, optional: false, status: "missing" },
+    ],
+    settings: {
+      whisper: { backend: "faster-whisper" },
+      covers: { provider: "local", cover_api_key_configured: false, openai_api_key_configured: false },
+    },
+  });
+
+  assert.match(html, /class="health-overview-actions"/);
+  assert.match(html, /id="overview-switch-whisper-cli"/);
+  assert.match(html, /requirements-transcription-faster\.txt/);
+  assert.match(html, /requirements-local-ai\.txt/);
+  assert.match(html, /配置云端封面 API/);
+});
+
+test("health details distinguish resolved paths from editable configured values", () => {
+  const html = renderHealthPayloadForTest({
+    checks: [
+      {
+        name: "root",
+        path: "D:\\video-automation",
+        configured_path: "D:\\video-automation",
+        exists: true,
+        optional: false,
+        status: "ok",
+      },
+      {
+        name: "ffmpeg_path",
+        path: "D:\\tools\\ffmpeg.exe",
+        configured_path: "ffmpeg",
+        exists: true,
+        optional: false,
+        status: "ok",
+      },
+      {
+        name: "local_cover_transformers",
+        path: "python:transformers",
+        exists: false,
+        optional: true,
+        status: "optional_missing",
+      },
+    ],
+  });
+
+  assert.match(html, /VIDEO_AUTOMATION_ROOT/);
+  assert.doesNotMatch(html, /PROJECT_ROOT/);
+  assert.match(html, /FFMPEG_PATH/);
+  assert.match(html, /配置值:\s*<code>ffmpeg<\/code>/);
+  assert.match(html, /data-copy-text="D:\\tools\\ffmpeg\.exe"/);
+  assert.doesNotMatch(html, /requirements-local-ai\.txt/);
 });
 
 test("optional components do not block the ready state", () => {

@@ -27,12 +27,32 @@ const {
 } = await import("../web/js/settings-schema.js");
 const { t } = await import("../web/js/i18n.js");
 const {
+  editableGroupsForTest,
   normalizeSettingsMessage,
   firstInvalidChangedSettingsControl,
   recommendedSettingsUpdates,
   renderEditableGroup,
   renderSettingsSnapshot,
 } = await import("../web/js/settings.js");
+
+test("settings exposes editable local directory and tool paths", () => {
+  const pathGroup = editableGroupsForTest.find((group) => group.title === "settings.edit_paths");
+  assert.ok(pathGroup);
+  assert.deepEqual(
+    pathGroup.fields.map((field) => field.env),
+    [
+      "INPUT_RECORDINGS_DIR",
+      "JOBS_DIR",
+      "LOGS_DIR",
+      "FFMPEG_PATH",
+      "FFPROBE_PATH",
+      "AUDIOWAVEFORM_PATH",
+      "WHISPER_BIN",
+      "DEMUCS_PATH",
+    ],
+  );
+  assert.equal(settingEnvLabel("FFMPEG_PATH"), "FFmpeg 程序");
+});
 
 test("editable settings use creator-facing Chinese labels", () => {
   assert.equal(settingEnvLabel("WHISPER_BACKEND"), "转写后端");

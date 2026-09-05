@@ -81,11 +81,18 @@ class SystemRoutes:
             self._json(
                 {
                     "error": {
-                        "code": "credential_store_unavailable",
-                        "message": f"Unable to migrate secure credentials: {exc}",
+                        "code": "credential_migration_failed",
+                        "message": (
+                            "The operating-system credential store could not complete the migration. "
+                            "Plaintext values were kept in .env. Verify that the current OS user can "
+                            "access the credential manager, then retry."
+                        ),
+                        "key": exc.key,
+                        "reason": exc.reason,
+                        "plaintext_preserved": True,
                     }
                 },
-                status=503,
+                status=500 if exc.key == ".env" else 503,
             )
             return
         updated_settings = Settings.load()
