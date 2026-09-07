@@ -23,8 +23,81 @@ const {
   localPathFromFileForTest,
   renderNewJobFormForTest,
   shouldConfirmBrowserUploadForTest,
+  selectRecordingPaths,
+  deleteRecordingSelection,
 } = await import("../web/js/new-job.js");
 const { batchListHtml } = await import("../web/js/new-job-view.js");
+
+test("upload progress reuses its notice and updates text, width and accessibility value", async () => {
+  const { updateUploadProgress } = await import("../web/js/new-job-view.js");
+  let replacements = 0;
+  let markup = "";
+  const label = { textContent: "" };
+  const value = { textContent: "" };
+  const bar = { setAttribute(name, text) { this[name] = text; } };
+  const fill = { style: {} };
+  const container = {
+    set innerHTML(html) { replacements++; markup = html; },
+    querySelector(selector) {
+      return {
+        "[data-upload-progress-notice]": replacements ? bar : null,
+        ".upload-progress-head span": label,
+        ".upload-progress-head strong": value,
+        '[role="progressbar"]': bar,
+        ".upload-progress > span": fill,
+      }[selector];
+    },
+  };
+  for (const percent of [0, 1, 38, 38, 70, 100]) updateUploadProgress(container, "0/1", percent);
+  assert.equal(replacements, 1);
+  assert.match(markup, /data-motion-seen="1"/);
+  assert.equal(value.textContent, "100%");
+  assert.equal(fill.style.width, "100%");
+  assert.equal(bar["aria-valuenow"], "100");
+  updateUploadProgress(container, "1/2", 50);
+  assert.match(label.textContent, /1\/2/);
+  assert.equal(replacements, 1);
+  // A terminal message replaces the progress notice; the next upload creates a new one.
+  replacements = 0;
+  updateUploadProgress(container, "0/1", 0);
+  assert.equal(replacements, 1);
+});
+
+test("batch deletion runs serially and retains individual failures", async () => {
+  const files = ["a", "b", "c"].map((name) => ({ relative_path: `${name}.mp4`, path: name }));
+  let active = 0;
+  const calls = [];
+  const result = await deleteRecordingSelection(files, async (path) => {
+    assert.equal(active++, 0);
+    calls.push(path);
+    await Promise.resolve();
+    active--;
+    if (path === "b.mp4") throw new Error("referenced by job");
+  });
+  assert.deepEqual(calls, ["a.mp4", "b.mp4", "c.mp4"]);
+  assert.deepEqual(result.deleted, [files[0], files[2]]);
+  assert.deepEqual(result.failed, [{ file: files[1], error: "referenced by job" }]);
+});
+
+test("batch deletion stops sending requests when leaving the page", async () => {
+  const result = await deleteRecordingSelection([{ relative_path: "a.mp4" }], () => assert.fail("must not delete"), () => true);
+  assert.deepEqual(result, { deleted: [], failed: [] });
+});
+
+test("select all includes collapsed recordings, deduplicates and preserves existing selections", () => {
+  const recordings = Array.from({ length: 20 }, (_, i) => ({ path: `video-${i}.mp4` }));
+  const result = selectRecordingPaths(["other.mp4", "video-0.mp4"], recordings, 30);
+  assert.equal(result.paths.length, 21);
+  assert.equal(result.added, 19);
+  assert.equal(result.skipped, 0);
+  assert.equal(selectRecordingPaths(result.paths, recordings, 30).added, 0);
+});
+
+test("select all respects batch capacity and reports omitted files", () => {
+  const result = selectRecordingPaths(["existing.mp4"], [{ path: "a.mp4" }, { path: "b.mp4" }, { path: "b.mp4" }], 2);
+  assert.deepEqual(result, { paths: ["existing.mp4", "a.mp4"], added: 1, skipped: 1 });
+  assert.deepEqual(selectRecordingPaths([], [], 30), { paths: [], added: 0, skipped: 0 });
+});
 
 test("new job keeps the primary path visible and collapses secondary input methods", () => {
   const html = renderNewJobFormForTest();

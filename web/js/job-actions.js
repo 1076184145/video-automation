@@ -7,7 +7,7 @@ import { STAGES, escapeHtml, formatTime } from "./utils.js";
 export function renderSourceWarning(corrupt) {
   const errorCount = Number(corrupt?.error_count || 0);
   if (!corrupt || corrupt.status === "skipped" || (corrupt.status === "ok" && errorCount < 1)) return "";
-  const time = Number.isFinite(Number(corrupt.first_error_at_seconds))
+  const time = corrupt.first_error_at_seconds != null && Number.isFinite(Number(corrupt.first_error_at_seconds))
     ? formatTime(Number(corrupt.first_error_at_seconds))
     : t("job.corrupt_unknown_time");
   const errors = Array.isArray(corrupt.errors) ? corrupt.errors.slice(0, 3) : [];

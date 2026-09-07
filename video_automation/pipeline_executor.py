@@ -40,6 +40,7 @@ from .stage_runs import StageRunRepository
 from .subtitles import generate_ass_subtitles, generate_clipped_ass_subtitles
 from .task_queue import QueueControlRequested
 from .transcribe import transcribe_audio
+from .unattended_highlights import UnattendedHighlights
 
 
 def _transcription_backend_label(backend: str) -> str:
@@ -120,11 +121,23 @@ def process_job(
             high_quality_audio_path=audio_hq_path,
             manifest=existing_manifest,
         )
+        unattended = bool(getattr(settings, "unattended_highlights_enabled", False))
+        auto_stages = {"evaluate_highlights", "plan_highlights", "render_highlights"}
+        auto_inputs = {"probe", "detect_corruption", "extract_audio", "transcribe", "detect_silence"}
+        if unattended and skip_transcribe:
+            raise ValueError("Unattended highlights require transcription; skip_transcribe is incompatible.")
+        if selected_stages and set(selected_stages) & auto_stages and not unattended:
+            raise ValueError("Enable unattended_highlights explicitly before running automatic highlight stages.")
+        if unattended and selected_stages and set(selected_stages) - auto_stages - auto_inputs:
+            raise ValueError("Unattended highlight mode cannot be mixed with legacy cut/render stages in one run.")
+        automatic = UnattendedHighlights(settings, job.job_dir, job.source_path, force=force, control_callback=control_callback)
 
         def probe_stage(stage_context: PipelineContext) -> None:
             manifest = probe_media(settings, job.source_path, job.job_dir / "manifest.json", force=force)
             if manifest["audio_stream_count"] < 1:
                 raise RuntimeError("source has no audio stream")
+            if unattended and manifest.get("video_stream_count", 0) < 1:
+                raise ValueError("Unattended highlights require a video stream.")
             stage_context.manifest = manifest
             if manifest.get("video_stream_count", 0) > 0:
                 generate_thumbnail(settings, job.source_path, job.job_dir / "thumbnail.jpg", manifest["duration_seconds"], force=force)
@@ -431,6 +444,21 @@ def process_job(
                 ),
             )
 
+        def evaluate_highlights_stage(stage_context: PipelineContext) -> None:
+            automatic.evaluate()
+
+        def plan_highlights_stage(stage_context: PipelineContext) -> None:
+            automatic.plan()
+
+        def render_highlights_stage(stage_context: PipelineContext) -> None:
+            def render(callback: Callable[[float], None], on_wait: Callable[[], None],
+                       on_acquired: Callable[[], None]) -> None:
+                result = automatic.render(progress_callback=callback, resource_wait_callback=on_wait,
+                                          resource_acquired_callback=on_acquired)
+                if result["status"] != "done":
+                    stage_context.require_review(f"Automatic highlights: {result['status']}; see auto_clips/index.json.")
+            run_render_stage("render_highlights", stage_context, render)
+
         stage_selection = (
             expand_stage_selection(selected_stages)
             if expand_selected_dependencies
@@ -438,6 +466,10 @@ def process_job(
         )
 
         def enabled(stage_name: str, default: bool) -> bool:
+            if stage_name in auto_stages and not unattended:
+                return False
+            if unattended and stage_name not in auto_stages | auto_inputs:
+                return False
             if stage_selection is not None and not expand_selected_dependencies:
                 return stage_name in stage_selection
             return default and (stage_selection is None or stage_name in stage_selection)
@@ -448,7 +480,7 @@ def process_job(
             ("detect_corruption", settings.source_integrity_scan_enabled, corruption_stage),
             ("extract_audio", True, extract_audio_stage),
             ("transcribe", True, transcribe_stage),
-            ("detect_silence", detect_silence_enabled, silence_stage),
+            ("detect_silence", detect_silence_enabled or unattended, silence_stage),
             ("detect_freeze", detect_freeze_enabled, freeze_stage),
             ("detect_scenes", detect_scenes_enabled, scenes_stage),
             ("plan_cuts", True, cuts_stage),
@@ -472,6 +504,9 @@ def process_job(
                 and (render_review_enabled or render_final_enabled),
                 render_web_preview_stage,
             ),
+            ("evaluate_highlights", unattended, evaluate_highlights_stage),
+            ("plan_highlights", unattended, plan_highlights_stage),
+            ("render_highlights", unattended, render_highlights_stage),
         ]
         web_preview_dependencies = {"render_final"} if render_final_enabled else {"render_review"}
         stages = [
@@ -501,7 +536,7 @@ def process_job(
         else:
             run_pipeline(progress, job, stages, context, control_callback=control_callback)
         final_status = completion_status or (
-            "done" if render_final_enabled else "needs_review"
+            "done" if (enabled("render_highlights", unattended) if unattended else render_final_enabled) else "needs_review"
         )
         if context.requires_review:
             final_status = "needs_review"
@@ -539,7 +574,7 @@ def process_job(
 def _stage_exclusive_resources(settings: Settings, stage_name: str) -> frozenset[str]:
     if stage_name == "transcribe" and transcription_uses_gpu(settings):
         return frozenset({"gpu"})
-    if stage_name in {"render_review", "render_final", "render_platform_variants", "render_web_preview"} and rendering_uses_gpu(settings):
+    if stage_name == "render_highlights" or (stage_name in {"render_review", "render_final", "render_platform_variants", "render_web_preview"} and rendering_uses_gpu(settings)):
         return frozenset({"gpu"})
     if stage_name == "plan_uvr" and str(getattr(settings, "demucs_device", "")).lower().startswith("cuda"):
         return frozenset({"gpu"})

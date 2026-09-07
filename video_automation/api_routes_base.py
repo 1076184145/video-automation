@@ -9,7 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from .api_context import APIContext
 from .api_http_utils import event_last_id, format_sse, parse_range
-from .api_system import health_response, publish_package_queue, recording_files, tools_install_snapshot
+from .api_system import delete_recording, health_response, publish_package_queue, recording_files, tools_install_snapshot
 from .config import Settings
 from .events import current_event_id, wait_for_events
 from .jobs import list_jobs
@@ -131,6 +131,24 @@ class CoreHTTPRoutes:
 
     def _route_recordings(self, _matched: RouteMatch, _query: str) -> None:
         self._json(recording_files(self.api_context.settings))
+
+    def _route_delete_recording(self, _matched: RouteMatch, _query: str) -> None:
+        payload = self._read_json()
+        if payload is None:
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("relative_path"), str):
+            self._json({"error": "relative_path must be a string"}, status=400)
+            return
+        try:
+            self._json(delete_recording(self.api_context.settings, payload["relative_path"]))
+        except FileNotFoundError:
+            self._json({"error": "recording not found"}, status=404)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=400)
+        except RuntimeError as exc:
+            self._json({"error": str(exc)}, status=409)
+        except OSError:
+            self._json({"error": "cannot move recording; check file permissions or whether it is in use"}, status=409)
 
     def _route_publish_packages(self, _matched: RouteMatch, _query: str) -> None:
         self._json(publish_package_queue(self.api_context.settings))

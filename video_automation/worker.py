@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--watch", action="store_true", help="Watch input recordings directory")
     parser.add_argument("--profile", choices=["fast", "analysis", "douyin", "bilibili", "youtube_shorts"], help="Apply a creator workflow preset")
     parser.add_argument("--force", action="store_true", help="Regenerate outputs")
+    parser.add_argument("--unattended-highlights", action="store_true", help="Opt in to LLM-selected, independently rendered 30-75s vertical clips")
     parser.add_argument("--detect-silence", action="store_true", help="Generate silence.json and silence-based cuts")
     parser.add_argument("--detect-freeze", action="store_true", help="Generate freeze.json with ffmpeg freezedetect")
     parser.add_argument("--detect-scenes", action="store_true", help="Generate scene.json with ffmpeg scene-change detection")
@@ -75,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.load()
     _apply_profile_to_args(args)
     settings = apply_profile_settings(settings, args.profile)
+    if args.unattended_highlights:
+        settings = replace(settings, unattended_highlights_enabled=True)
+    if getattr(settings, "unattended_highlights_enabled", False) and args.skip_transcribe:
+        parser.error("--unattended-highlights cannot be combined with --skip-transcribe")
     bootstrap_dirs(settings)
     configure_root_logger(settings)
 

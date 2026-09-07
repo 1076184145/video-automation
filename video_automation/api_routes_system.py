@@ -245,6 +245,10 @@ class SystemRoutes:
         source = payload.get("path") or payload.get("source_path")
         if not source:
             raise ValueError("missing path")
+        if "unattended_highlights" in payload and type(payload["unattended_highlights"]) is not bool:
+            raise ValueError("unattended_highlights must be a JSON boolean")
+        if payload.get("unattended_highlights", getattr(settings, "unattended_highlights_enabled", False)) and payload.get("skip_transcribe"):
+            raise ValueError("Unattended highlights require transcription")
         try:
             job = create_job(
                 settings,

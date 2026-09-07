@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from urllib.parse import unquote
 from .config import Settings
 from .events import publish_event
 from .health import clear_health_cache, health_payload
-from .io_utils import read_json_file
+from .io_utils import read_json_file, write_json_atomic
 from .jobs import list_jobs
 from .media import MEDIA_EXTENSIONS
 from .process_tree import (
@@ -191,6 +192,8 @@ def recording_files(settings: Settings) -> list[dict[str, Any]]:
         return []
     files: list[dict[str, Any]] = []
     for path in root.rglob("*"):
+        if ".deleted_recordings" in path.relative_to(root).parts:
+            continue
         if not path.is_file() or path.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
         try:
@@ -206,6 +209,36 @@ def recording_files(settings: Settings) -> list[dict[str, Any]]:
             "modified_at": int(stat.st_mtime),
         })
     return sorted(files, key=lambda item: item["modified_at"], reverse=True)[:200]
+
+
+def delete_recording(settings: Settings, relative_path: str) -> dict[str, Any]:
+    """Move an unreferenced recording into a private, recoverable holding area."""
+    root = settings.input_recordings_dir.resolve()
+    relative = Path(relative_path)
+    if not relative_path or relative.is_absolute() or ".." in relative.parts or ".deleted_recordings" in relative.parts:
+        raise ValueError("invalid recording path")
+    candidate = root / relative
+    target = candidate.resolve()
+    if not target.is_relative_to(root) or target == root:
+        raise ValueError("recording must be inside recordings directory")
+    if any(part.is_symlink() for part in [candidate, *candidate.parents] if part != root and part.is_relative_to(root)):
+        raise ValueError("symbolic links cannot be deleted here")
+    if not target.is_file():
+        raise FileNotFoundError("recording not found")
+    if target.suffix.lower() not in MEDIA_EXTENSIONS:
+        raise ValueError("not a supported recording")
+    if any(job.source_path.resolve() == target for job in list_jobs(settings)):
+        raise RuntimeError("recording is referenced by a job; remove the job first")
+    trash = root / ".deleted_recordings"
+    if trash.is_symlink() or trash.resolve() != trash:
+        raise ValueError("invalid recording recovery directory")
+    trash.mkdir(exist_ok=True)
+    recovery_dir = Path(tempfile.mkdtemp(prefix="recording-", dir=trash))
+    # No media extension: recursive watchers must not treat deleted files as input.
+    recovery_file = recovery_dir / "payload.deleted"
+    write_json_atomic(recovery_dir / "restore.json", {"original_path": str(target), "relative_path": str(relative)})
+    target.rename(recovery_file)
+    return {"status": "deleted", "recovery_path": str(recovery_file), "original_path": str(target)}
 
 
 def recording_upload_path(settings: Settings, filename: str) -> Path:

@@ -119,6 +119,9 @@ export const API = {
   async getRecordings(options) {
     return requestJson("/recordings", options);
   },
+  async deleteRecording(relativePath) {
+    return postJson("/recordings/delete", { relative_path: relativePath });
+  },
   async uploadRecording(file, onProgress, options) {
     const query = new URLSearchParams({ filename: file.name });
     return uploadWithProgress(`/recordings/upload?${query.toString()}`, file, onProgress, options);

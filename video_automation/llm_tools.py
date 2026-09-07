@@ -4,6 +4,8 @@ import json
 import math
 import urllib.error
 import urllib.request
+import urllib.parse
+import ipaddress
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -371,6 +373,8 @@ def _request_openai_text(
     schema: dict[str, Any],
     schema_name: str,
 ) -> str:
+    if getattr(settings, "llm_openai_base_url", ""):
+        return _request_compatible_text(settings, system=system, user=user, schema=schema, schema_name=schema_name)
     if not settings.openai_api_key.strip():
         raise provider_configuration_error(
             "OpenAI",
@@ -426,6 +430,62 @@ def _request_openai_text(
     if not text.strip():
         raise StructuredOutputError("OpenAI returned an empty response.")
     return text
+
+
+def _request_compatible_text(
+    settings: Settings, *, system: str, user: str, schema: dict[str, Any], schema_name: str,
+) -> str:
+    """Explicit opt-in Chat Completions endpoint; never auto-discover a cloud host."""
+    base = settings.llm_openai_base_url.rstrip("/")
+    url = urllib.parse.urlsplit(base)
+    try:
+        loopback = url.hostname == "localhost" or ipaddress.ip_address(url.hostname or "").is_loopback
+    except ValueError:
+        loopback = False
+    if (url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password
+            or url.query or url.fragment or (url.scheme == "http" and not loopback)):
+        raise provider_configuration_error("OpenAI-compatible", "request", "provider_unsupported", "Use an HTTPS base URL, or HTTP on loopback only.")
+    key = settings.openai_api_key.strip()
+    if not key and not loopback:
+        raise provider_configuration_error("OpenAI-compatible", "request", "credentials_missing", "OPENAI_API_KEY is not configured.")
+    if not settings.llm_model.strip():
+        raise provider_configuration_error("OpenAI-compatible", "request", "model_missing", "LLM_MODEL is not configured.")
+    mode = settings.llm_response_format
+    if mode not in {"json_schema", "json_object"}:
+        raise provider_configuration_error("OpenAI-compatible", "request", "provider_unsupported", "LLM_RESPONSE_FORMAT must be json_schema or json_object.")
+    response_format: dict[str, Any] = {"type": mode}
+    if mode == "json_schema":
+        response_format["json_schema"] = {"name": schema_name, "strict": True, "schema": schema}
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(base + "/chat/completions", headers=headers, method="POST", data=json.dumps({
+        "model": settings.llm_model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "response_format": response_format,
+        "stream": False,
+    }).encode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=settings.llm_request_timeout_seconds) as response:
+            data = response.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
+            raise StructuredOutputError("Provider response exceeds 2 MiB.")
+        payload = json.loads(data)
+        content = payload["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise StructuredOutputError("Provider returned no text.")
+        return content
+    except urllib.error.HTTPError as exc:
+        # Do not include a provider's echoed request/transcript in persisted errors.
+        detail = exc.read(8192).decode("utf-8", errors="replace")
+        exc.close()
+        classified = provider_http_error("OpenAI-compatible", "request", exc.code, detail)
+        raise ProviderRequestError("OpenAI-compatible", "request", classified.code,
+                                   "HTTP request rejected", http_status=exc.code) from exc
+    except OSError as exc:
+        raise provider_network_error("OpenAI-compatible", "request", exc) from exc
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise StructuredOutputError("Provider returned an invalid Chat Completions response.") from exc
 
 
 def _request_google_text(

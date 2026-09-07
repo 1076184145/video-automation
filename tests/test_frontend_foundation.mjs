@@ -208,11 +208,11 @@ test("app routes use dynamic imports instead of eagerly loading every page", asy
 test("design system exposes true light and dark themes without transition-all", async () => {
   const source = await readFile(new URL("../web/css/style.css", import.meta.url), "utf8");
 
-  assert.match(source, /--canvas:\s*#f8f9f9/i);
+  assert.match(source, /--canvas:\s*#f4f7f8/i);
   assert.match(source, /--surface:\s*#ffffff/i);
   assert.match(source, /:root\[data-theme="dark"\]/);
-  assert.match(source, /--canvas:\s*#000000/i);
-  assert.match(source, /--sidebar-width:\s*216px/);
+  assert.match(source, /--canvas:\s*#121619/i);
+  assert.match(source, /--sidebar-width:\s*208px/);
   assert.doesNotMatch(source, /transition:\s*all\b/);
 });
 

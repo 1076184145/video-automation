@@ -199,6 +199,24 @@ export function uploadProgressHtml(filename, percent) {
   `;
 }
 
+export function updateUploadProgress(container, filename, percent) {
+  if (!container) return;
+  const rounded = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  // Reuse the notice: replacing it on each progress event restarts ui-enter.
+  if (!container.querySelector("[data-upload-progress-notice]")) {
+    container.innerHTML = `<div class="notice" data-upload-progress-notice data-motion-seen="1">${uploadProgressHtml(filename, rounded)}</div>`;
+  }
+  const label = container.querySelector(".upload-progress-head span");
+  const value = container.querySelector(".upload-progress-head strong");
+  const bar = container.querySelector('[role="progressbar"]');
+  const fill = container.querySelector(".upload-progress > span");
+  const text = `${t("new.uploading")} ${filename}`;
+  if (label.textContent !== text) label.textContent = text;
+  if (value.textContent !== `${rounded}%`) value.textContent = `${rounded}%`;
+  bar.setAttribute("aria-valuenow", String(rounded));
+  fill.style.width = `${rounded}%`;
+}
+
 /** Batch box contents; returns "" when the batch is empty. */
 export function batchListHtml(paths, limit) {
   if (!paths.length) return "";
@@ -222,13 +240,24 @@ export function batchListHtml(paths, limit) {
 export function recordingListHtml(recordings, showAll) {
   const visible = showAll ? recordings : recordings.slice(0, 12);
   return `
-    <div class="recording-head">${t("new.pick_recording")}</div>
+    <div class="recording-head">${t("new.pick_recording")}
+      <button class="button compact-button" id="select-all-recordings" type="button">${t("new.select_all_recordings")} (${recordings.length})</button>
+    </div>
+    <p id="recording-selection-message" role="status" aria-live="polite"></p>
+    <div class="clip-toolbar">
+      <label class="check"><input type="checkbox" id="select-recordings-for-delete" />${t("new.delete_select_all")}</label>
+      <button class="button compact-button danger" id="delete-selected-recordings" type="button" disabled>${t("new.delete_selected")} (0)</button>
+    </div>
     <div class="recording-list">
       ${visible.map((file) => `
+        <div class="recording-entry">
+        <input type="checkbox" data-recording-selection="${escapeHtml(file.relative_path || file.name || "")}" aria-label="${escapeHtml(t("new.delete_select_file") + ': ' + (file.relative_path || file.name || ""))}" />
         <button class="recording-item" type="button" data-path="${escapeHtml(file.path)}" data-motion-item>
           <span>${escapeHtml(file.relative_path || basename(file.path))}</span>
           <small>${formatBytes(file.size_bytes)}</small>
         </button>
+        <button class="button compact-button danger" type="button" data-delete-recording="${escapeHtml(file.relative_path || file.name || "")}" title="${t("new.delete_recording")}" aria-label="${escapeHtml(t("new.delete_recording") + ': ' + (file.relative_path || file.name || ""))}">×</button>
+        </div>
       `).join("")}
       ${!showAll && recordings.length > visible.length ? `<button class="button" id="show-all-recordings" type="button">${t("new.show_all_recordings")} (${recordings.length})</button>` : ""}
     </div>

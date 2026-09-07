@@ -15,7 +15,7 @@ import {
   renderSourceWarning,
 } from "./job-actions.js";
 import { renderLiveProgress, renderStage, updateLiveStatus } from "./job-status.js";
-import { renderTranscript } from "./transcript-editor.js";
+import { renderTranscript, syncKeptTranscript } from "./transcript-editor.js";
 import { renderRevisionHistory } from "./revision-history.js";
 import {
   STAGES,
@@ -245,6 +245,7 @@ export function updateJobDetailView(
   if (!isEditingClips) {
     safeRenderHtml("section-clips", () => renderClips(cuts, payload.feedback));
   }
+  syncKeptTranscript(document);
 
   safeRenderHtml("section-covers", () => renderCovers(basename(job.job_dir), files, payload.cover, manifest, cuts, transcript, payload.health));
   safeRenderHtml("section-enhancements", () => renderEnhancements(basename(job.job_dir), files, payload));
