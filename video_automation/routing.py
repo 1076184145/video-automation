@@ -73,6 +73,7 @@ CORE_ROUTER = Router((
     Route("POST", "/settings", "update_settings"),
     Route("POST", "/settings/migrate-secrets", "migrate_settings_secrets"),
     Route("POST", "/recordings/upload", "upload_recording"),
+    Route("POST", "/recordings/delete", "delete_recording"),
     Route("POST", "/jobs/{job_name}/approve", "approve_job"),
     Route("POST", "/jobs/{job_name}/cancel", "cancel_job"),
     Route("POST", "/jobs/{job_name}/cuts", "update_job_cuts"),

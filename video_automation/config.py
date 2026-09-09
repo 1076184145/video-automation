@@ -319,6 +319,16 @@ class Settings:
     demucs_device: str
     audio_separation_timeout_seconds: int
     uvr_path: Path | None
+    unattended_highlights_enabled: bool = False
+    highlight_request_chars: int = 24000
+    highlight_max_clips: int = 12
+    llm_openai_base_url: str = ""
+    llm_response_format: str = "json_schema"
+    llm_request_timeout_seconds: int = 90
+    highlight_llm_checker_enabled: bool = False
+    highlight_graph_enabled: bool = False
+    highlight_graph_concurrency: int = 2
+    highlight_review_max_candidates: int = 36
 
     def cover_api_key_for_provider(self) -> str:
         if self.cover_api_key.strip():
@@ -344,6 +354,16 @@ class Settings:
         local_models_dir = Path(_env("LOCAL_MODELS_DIR", str(root / "models"))).expanduser()
         return cls(
             root=root,
+            unattended_highlights_enabled=_bool_env("UNATTENDED_HIGHLIGHTS_ENABLED", False),
+            highlight_llm_checker_enabled=_bool_env("HIGHLIGHT_LLM_CHECKER_ENABLED", False),
+            highlight_graph_enabled=_bool_env("HIGHLIGHT_GRAPH_ENABLED", False),
+            highlight_graph_concurrency=max(1, min(3, _int_env("HIGHLIGHT_GRAPH_CONCURRENCY", 2))),
+            highlight_review_max_candidates=max(1, min(150, _int_env("HIGHLIGHT_REVIEW_MAX_CANDIDATES", 36))),
+            highlight_request_chars=max(2000, _int_env("HIGHLIGHT_REQUEST_CHARS", 24000)),
+            highlight_max_clips=max(1, min(50, _int_env("HIGHLIGHT_MAX_CLIPS", 12))),
+            llm_openai_base_url=_env("LLM_OPENAI_BASE_URL", "").rstrip("/"),
+            llm_response_format=_env("LLM_RESPONSE_FORMAT", "json_schema"),
+            llm_request_timeout_seconds=max(5, min(600, _int_env("LLM_REQUEST_TIMEOUT_SECONDS", 90))),
             input_recordings_dir=Path(_env("INPUT_RECORDINGS_DIR", str(root / "input" / "recordings"))),
             jobs_dir=Path(_env("JOBS_DIR", str(root / "processing" / "jobs"))),
             logs_dir=Path(_env("LOGS_DIR", str(root / "logs"))),

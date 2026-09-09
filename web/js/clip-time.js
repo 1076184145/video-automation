@@ -1,11 +1,11 @@
-export function formatClipTimeInput(value) {
+export function formatClipTimeInput(value, precision = 1) {
   const total = Math.max(0, Number(value) || 0);
   const whole = Math.floor(total);
   const hours = Math.floor(whole / 3600);
   const minutes = Math.floor((whole % 3600) / 60);
   const seconds = whole % 60;
   const fraction = total - whole;
-  const secondsText = fraction > 0.0005 ? (seconds + fraction).toFixed(1).replace(/\.0$/, "") : String(seconds);
+  const secondsText = fraction > 0.0005 ? (seconds + fraction).toFixed(precision).replace(/\.?0+$/, "") : String(seconds);
   if (hours > 0) return `${hours}时${minutes}分${secondsText}秒`;
   return minutes > 0 ? `${minutes}分${secondsText}秒` : `${secondsText}秒`;
 }

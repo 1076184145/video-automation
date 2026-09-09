@@ -383,6 +383,10 @@ def _queued_process_config(settings: Settings, payload: dict[str, Any]) -> tuple
         effective["recipe_stages"] = recipe.get("stages", [])
     profile = str(effective.get("profile") or "").strip()
     job_settings = apply_profile_settings(settings, profile)
+    if "unattended_highlights" in effective:
+        if type(effective["unattended_highlights"]) is not bool:
+            raise ValueError("unattended_highlights must be a JSON boolean")
+        job_settings = replace(job_settings, unattended_highlights_enabled=effective["unattended_highlights"])
     if "source_integrity_scan" in effective:
         job_settings = replace(
             job_settings,

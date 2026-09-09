@@ -10,7 +10,7 @@ Turn a long local recording into a reviewed short video with transcript, subtitl
 
 ![Video Automation dashboard](docs/assets/dashboard.png)
 
-> Video Automation accepts local video files. URL downloading and livestream recording are not included. Original files are never modified, and platform login or automatic publishing is disabled by default.
+> Video Automation accepts local video files. URL downloading and livestream recording are not included. Original files are never modified, and platform login or automatic publishing is disabled by default. For confirmed damage, use the clip editor's **Exclude damaged time range**, enter source start/end times, then save cuts to rebuild the preview. Undo is available; regenerate existing final outputs separately. Timestamp warnings alone are not proof of damaged frames. **Kept clip text** follows edits immediately; expand the source transcript to edit the full text. Partially retained sentences without word timing are labeled for review.
 
 ## Start in 5 Minutes
 
@@ -19,11 +19,11 @@ Turn a long local recording into a reviewed short video with transcript, subtitl
 1. Download the latest Windows package from [GitHub Releases](https://github.com/1076184145/video-automation/releases).
 2. Install or unzip it, then run `VideoAutomationLite.exe`.
 3. Open **Health**. If FFmpeg or FFprobe is missing, click **Auto-fix Dependencies**.
-4. Open **New Job** and add one local video.
+4. Open **New Job** and add one local video, or use **Add all to batch** in the recordings list (up to 30 files; duplicates are skipped). Delete individually with ×, or check/select all files and use **Delete selected**. After confirmation, unreferenced files move to `.deleted_recordings`; failures are kept and reported. Restore `payload.deleted` manually to the path in `restore.json`. This does not free disk space.
 5. Choose a profile such as **Fast**, **Douyin**, or **Bilibili**, then start processing.
 6. Open the finished job, review it, and download `final.mp4`.
 
-The basic workflow does not require an API key.
+The basic workflow does not require an API key. The responsive workspace supports light/dark themes, compact review filters, and separate batch-add and deletion controls in New Job.
 
 ### Run from source
 
@@ -223,7 +223,7 @@ Open `processing/jobs/`. Do not commit this folder, `.env`, logs, private videos
 The local Web server binds to `127.0.0.1:8765` by default. Non-loopback bindings
 are rejected unless `API_ALLOW_REMOTE=true` is set explicitly. That flag is not
 authentication: remote use still requires a firewall, authenticated reverse
-proxy, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
+proxy, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Opt-in [unattended highlights](docs/UNATTENDED_HIGHLIGHTS.md) (`--unattended-highlights`) produce separate 30–75s MP4s. Optional `HIGHLIGHT_GRAPH_ENABLED=true` adds multi-angle candidates; `HIGHLIGHT_LLM_CHECKER_ENABLED=true` adds full-text review before final deduplication. Both default off; failures remain visible.
 
 ## Privacy and Boundaries
 

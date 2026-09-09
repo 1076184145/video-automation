@@ -14,7 +14,7 @@ export function confirmAction(message, options = {}) {
       <div class="confirm-icon ${tone}" aria-hidden="true">${tone === "primary" ? "→" : "!"}</div>
       <div>
         <h2 id="confirm-dialog-title">${escapeHtml(options.title || "")}</h2>
-        <p id="confirm-dialog-message">${escapeHtml(message)}</p>
+        <p id="confirm-dialog-message"${options.scrollMessage ? ' class="scrollable-confirm-message"' : ""}>${escapeHtml(message)}</p>
       </div>
       <div class="confirm-actions">
         <button class="button" type="button" data-confirm-cancel>${escapeHtml(options.cancelLabel || "Cancel")}</button>

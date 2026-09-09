@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -219,6 +220,75 @@ def render_final_video(
     if refresh_web_preview:
         _refresh_web_preview(settings, job_dir, source_path=output_path, force=True)
     return output_path
+
+
+def render_highlight_edit(
+    settings: Settings, source_path: Path, clip_dir: Path, edit: dict[str, Any], *,
+    progress_callback: ProgressCallback | None = None,
+    resource_wait_callback: Callable[[], None] | None = None,
+    resource_acquired_callback: Callable[[], None] | None = None,
+    control_callback: ControlCallback | None = None,
+) -> Path:
+    """Render one independent EDL/ASS pair with shared hardware gating.
+
+    Render to a temporary sibling; keep any previous completed MP4 on failure.
+    NVENC is tried first in auto mode and can fall back after a runtime failure.
+    """
+    from .cuts import build_filter_complex_with_crossfade
+    from .llm_evaluator import check_control
+
+    output = clip_dir / "final.mp4"
+    temporary = clip_dir / "rendering.mp4"
+    configured = replace(settings, render_video_encoder="h264_nvenc", render_output_fps=edit["fps"])
+    effective, fallback = effective_render_settings(configured)
+    filters = _final_post_filters(clip_dir, vertical=True, burn_subtitles=True, subtitle_filename="subtitles.ass")
+    graph = build_filter_complex_with_crossfade(edit["spans"], post_filters=filters, output_fps=edit["fps"])
+    duration = edit["duration"]
+    for attempt in range(2):
+        check_control(control_callback)
+        command = [str(settings.ffmpeg_path), "-hide_banner", "-y", "-i", str(source_path),
+                   "-filter_complex", graph, "-map", "[outv]", "-map", "[outa]",
+                   *_encoding_args(effective, final=True), "-movflags", "+faststart", str(temporary)]
+        write_json_atomic(clip_dir / "render_plan.json", {
+            "duration": duration, "effective_encoder": effective.render_video_encoder,
+            "encoder_fallback_reason": fallback, "command": command,
+        })
+        result = _run_ffmpeg_with_resource_gate(
+            effective, command, duration_seconds=duration, progress_callback=progress_callback,
+            timeout=_render_timeout_seconds(effective, duration), resource_wait_callback=resource_wait_callback,
+            resource_acquired_callback=resource_acquired_callback, control_callback=control_callback,
+        )
+        check_control(control_callback)
+        if result.returncode == 0 and valid_highlight_output(effective, temporary, duration):
+            temporary.replace(output)
+            return output
+        if effective.render_video_encoder != "h264_nvenc" or attempt:
+            raise RuntimeError(f"Highlight render failed: {result.stderr.strip()[-1200:]}")
+        fallback = "NVENC render failed; retried with libx264."
+        effective = replace(effective, render_video_encoder="libx264")
+    raise AssertionError("unreachable")
+
+
+def valid_highlight_output(settings: Settings, path: Path, expected_duration: float) -> bool:
+    """Require both streams, the vertical frame and the complete planned duration."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+    try:
+        result = subprocess.run([str(settings.ffprobe_path), "-v", "error", "-show_streams", "-of", "json", str(path)],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=30, **process_group_popen_kwargs())
+        if result.returncode:
+            return False
+        streams = json.loads(result.stdout)["streams"]
+        video = next(s for s in streams if s.get("codec_type") == "video")
+        audio = next(s for s in streams if s.get("codec_type") == "audio")
+        a, v = float(audio["duration"]), float(video["duration"])
+        # Two 30fps frames allow muxer/AAC rounding, not a truncated render.
+        return (video["width"] == 1080 and video["height"] == 1920
+                and abs(a - expected_duration) <= 2 / 30 and abs(v - expected_duration) <= 2 / 30
+                and abs(a - v) <= 2 / 30)
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError, StopIteration):
+        return False
 
 
 def _render_final_segmented(

@@ -262,7 +262,7 @@ function pageShell() {
         <a class="button primary" href="#/new">+ ${t("dashboard.new_job") || t("nav.new")}</a>
       </div>
     </section>
-    <div class="pill-row">${["all", "processing", "review", "done", "failed"].map((item) => `
+    <div class="pill-row dashboard-filters">${["all", "processing", "review", "done", "failed"].map((item) => `
       <button class="pill ${filter === item ? "active" : ""}" data-filter="${item}">${t(`status.${item}`)}</button>
     `).join("")}</div>
     <div id="queue-panel"></div>

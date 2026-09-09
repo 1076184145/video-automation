@@ -479,6 +479,7 @@ class PipelineConstructionContracts(BackendFixture):
             "silence_stage", "freeze_stage", "scenes_stage", "cuts_stage", "refine_cuts_stage",
             "crop_stage", "subtitles_stage", "uvr_stage", "render_preview_stage",
             "render_review_stage", "render_final_stage", "render_platform_variants_stage", "render_web_preview_stage",
+            "evaluate_highlights_stage", "plan_highlights_stage", "render_highlights_stage",
         ])
         for stage in stages:
             self.assertEqual(stage.status, PIPELINE_STAGE_SPECS[stage.name].status)
@@ -532,7 +533,7 @@ class PipelineConstructionContracts(BackendFixture):
                 self.assertEqual(stages["render_platform_variants"].enabled, final and variants and targets)
                 self.assertEqual(target_check.call_count, int(final and variants))
                 for name, stage in stages.items():
-                    self.assertEqual(stage.exclusive_resources, frozenset({"gpu"}) if name in {"transcribe", "render_review", "render_final", "render_platform_variants", "render_web_preview"} else frozenset())
+                    self.assertEqual(stage.exclusive_resources, frozenset({"gpu"}) if name in {"transcribe", "render_review", "render_final", "render_platform_variants", "render_web_preview", "render_highlights"} else frozenset())
 
 
 if __name__ == "__main__":

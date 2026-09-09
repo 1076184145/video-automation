@@ -66,6 +66,60 @@ def ass_document(settings: Settings, segments: list[dict[str, Any]], play_res: t
     return _ass_document(settings, segments, play_res)
 
 
+def write_highlight_ass(
+    settings: Settings, sentences: list[dict[str, Any]], spans: list[dict[str, float]], output_path: Path,
+) -> str:
+    """Word-timed ASS karaoke, using the exact media EDL. No invented word times."""
+    from .highlight_edits import map_interval
+
+    plain, groups = [], []
+    for sentence in sentences:
+        words = sentence.get("words") or []
+        if not words:
+            for start, end in map_interval(sentence["start"], sentence["end"], spans):
+                plain.append({"start": start, "end": end, "text": sentence["text"]})
+            continue
+        group: list[dict[str, Any]] = []
+        width = 0.
+        for word in words:
+            for start, end in map_interval(word["start"], word["end"], spans):
+                text = str(word["text"]).strip()
+                # Never expand/filter individual word durations; that would change alignment.
+                text = apply_replacements(text, settings.subtitle_replacements)
+                text = censor_text(text, settings.profanity_words, replacement=settings.subtitle_censor_replacement)
+                if not text:
+                    continue
+                if group and (end - group[0]["start"] > 5 or width + _visual_width(text) > 28
+                              or start - group[-1]["end"] > .5):
+                    groups.append(group)
+                    group, width = [], 0.
+                group.append({"start": start, "end": end, "text": text})
+                width += _visual_width(text)
+        if group:
+            groups.append(group)
+    lines = [_ass_document(settings, _prepare_subtitle_segments(settings, plain), (1080, 1920)).rstrip()]
+    for group in groups:
+        begin, finish = round(group[0]["start"] * 100), round(group[-1]["end"] * 100)
+        if finish <= begin:
+            continue
+        cursor = begin
+        text = r"{\1c&H00FFFF&\2c&HFFFFFF&}"
+        previous = ""
+        for word in group:
+            a, b = max(cursor, round(word["start"] * 100)), round(word["end"] * 100)
+            if a > cursor:
+                text += r"{\k" + str(a - cursor) + "}"  # Empty syllable retains genuine word gaps.
+            token = _escape_ass_text(word["text"])
+            if previous and _needs_word_space(previous[-1], word["text"][0]):
+                token = " " + token
+            text += r"{\kf" + str(max(0, b - a)) + "}" + token
+            cursor = max(a, b)
+            previous = word["text"]
+        lines.append(f"Dialogue: 0,{_ass_time(begin / 100)},{_ass_time(finish / 100)},Default,,0,0,0,,{text}")
+    write_text_atomic(output_path, "\n".join(lines) + "\n")
+    return "mixed" if plain and groups else "word_karaoke" if groups else "sentence_fallback"
+
+
 def play_resolution(job_dir: Path) -> tuple[int, int]:
     """Infer subtitle play resolution from crop plan or source manifest."""
     return _play_resolution(job_dir)

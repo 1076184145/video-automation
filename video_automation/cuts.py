@@ -11,6 +11,91 @@ from .io_utils import read_json_file, write_json_atomic, write_text_atomic
 logger = logging.getLogger(__name__)
 
 
+def snap_to_silence_valley(audio_path: str, raw_time: float, is_start: bool, window_sec: float = .3) -> float:
+    """Find a quiet 10ms RMS local minimum in directional, bounded PCM audio.
+
+    Unsupported audio or no genuinely quiet valley leaves the boundary unchanged.
+    Callers must additionally protect word/VAD intervals before accepting a snap.
+    Only the nearby frames are read, never the full recording.
+    """
+    import math
+    import struct
+    import wave
+
+    if not math.isfinite(raw_time) or raw_time < 0 or not math.isfinite(window_sec) or not 0 <= window_sec <= 1:
+        raise ValueError("Invalid acoustic boundary/search window.")
+    try:
+        with wave.open(str(audio_path), "rb") as source:
+            rate, channels = source.getframerate(), source.getnchannels()
+            if source.getsampwidth() != 2 or source.getcomptype() != "NONE":
+                return raw_time
+            duration = source.getnframes() / rate
+            if raw_time > duration:
+                return raw_time
+            lo, hi = (max(0., raw_time - window_sec), raw_time) if is_start else (raw_time, min(duration, raw_time + window_sec))
+            first = max(0, int((lo - .01) * rate))
+            source.setpos(first)
+            data = source.readframes(max(0, int((hi + .01) * rate) - first))
+        samples = [sample[0] / 32768. for sample in struct.iter_unpack("<h", data)]
+        # Square channels separately: mixing antiphase stereo before RMS can
+        # manufacture false silence. A prefix sum makes each window O(1).
+        energy = [0.]
+        for i in range(0, len(samples), channels):
+            energy.append(energy[-1] + sum(s * s for s in samples[i:i + channels]) / channels)
+        radius = max(1, round(rate * .005))
+
+        def rms(at: float) -> float:
+            center = round(at * rate) - first
+            left, right = max(0, center - radius), min(len(energy) - 1, center + radius)
+            return math.sqrt(max(0., energy[right] - energy[left]) / (right - left)) if right > left else 1.
+
+        times = [lo + i * .005 for i in range(int((hi - lo) / .005) + 1)] + [hi, raw_time]
+        times = sorted(set(times))
+        levels = [rms(at) for at in times]
+        raw_level = rms(raw_time)
+        valleys = [i for i, level in enumerate(levels)
+                   if level <= .01 and (raw_level <= .01 or level <= raw_level * .5)
+                   and (i == 0 or level <= levels[i - 1])
+                   and (i == len(levels) - 1 or level <= levels[i + 1])]
+        if valleys:
+            best = min(valleys, key=lambda i: (levels[i], abs(times[i] - raw_time)))
+            return round(times[best], 6)
+    except (OSError, EOFError, wave.Error, struct.error):
+        return raw_time
+    return raw_time
+
+
+def build_filter_complex_with_crossfade(
+    clips: list[dict[str, float]], *, post_filters: list[str] | None = None, output_fps: int = 30,
+) -> str:
+    """15ms edge afades plus concat, NOT overlapping acrossfade.
+
+    This keeps audio/video/subtitle durations identical. Plans use a shared
+    frame grid; padding and explicit frame counts avoid concat accumulating
+    one extra video frame (and thus silence) at each splice.
+    """
+    if not clips or output_fps <= 0:
+        raise ValueError("Nonempty edit spans and a positive frame rate are required.")
+    parts, inputs = [], []
+    for i, clip in enumerate(clips):
+        start, end = clip["start"], clip["end"]
+        frames = round((end - start) * output_fps)
+        if frames < 1:
+            raise ValueError("Edit span is shorter than one frame.")
+        duration = frames / output_fps
+        fade = min(.015, duration / 2)
+        parts.append(f"[0:v]trim=start={start:.9f}:end={end:.9f},setpts=PTS-STARTPTS,"
+                     f"fps=fps={output_fps}:start_time=0,tpad=stop_mode=clone:stop_duration=1,"
+                     f"trim=end_frame={frames},setpts=N/({output_fps}*TB)[v{i}]")
+        parts.append(f"[0:a]atrim=start={start:.9f}:end={end:.9f},asetpts=PTS-STARTPTS,"
+                     f"aresample=48000:async=1:first_pts=0,apad,atrim=duration={duration:.9f},"
+                     f"afade=t=in:st=0:d={fade:.6f},afade=t=out:st={duration - fade:.9f}:d={fade:.6f}[a{i}]")
+        inputs.append(f"[v{i}][a{i}]")
+    parts.append(f"{''.join(inputs)}concat=n={len(clips)}:v=1:a=1[cv][outa]")
+    parts.append(f"[cv]{','.join(post_filters or ['null'])}[outv]")
+    return ";".join(parts)
+
+
 def write_cuts_payload(job_dir: Path, payload: dict[str, Any]) -> None:
     """Persist the canonical cuts artifacts as one logical operation."""
     markdown = _render_markdown(payload)

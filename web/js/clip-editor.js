@@ -1,4 +1,6 @@
 import { API } from "./api.js";
+import { excludeDamagedRange } from "./damaged-range.js";
+import { syncKeptTranscript } from "./transcript-editor.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { formatClipTimeInput, parseClipTime } from "./clip-time.js";
 import { t } from "./i18n.js";
@@ -11,6 +13,16 @@ export function renderClips(cuts, feedback) {
   if (!clips.length) return `<div class="empty">${t("job.no_clips")}</div>`;
   const feedbackByClip = clipFeedbackMap(feedback);
   return `
+    <details class="damaged-range-editor">
+      <summary>${t("job.damage_range")}</summary>
+      <p class="muted">${t("job.damage_help")}</p>
+      <div class="clip-toolbar">
+        <label class="field">${t("job.start")} <input id="damage-start" type="text" inputmode="decimal" placeholder="0:10.5" /></label>
+        <label class="field">${t("job.end")} <input id="damage-end" type="text" inputmode="decimal" placeholder="0:12.5" /></label>
+        <button class="button danger" id="exclude-damaged-range" type="button">${t("job.damage_apply")}</button>
+      </div>
+      <p id="damage-range-message" role="status" aria-live="polite"></p>
+    </details>
     <div class="clip-toolbar">
       <button class="button" id="add-clip" type="button">${t("job.add_clip")}</button>
       <button class="button compact-button" id="undo-clips" type="button" disabled title="${t("job.undo_hint")}">${t("job.undo")}</button>
@@ -44,8 +56,8 @@ export function renderClipRow(clip, index, feedback) {
     <td><input type="checkbox" class="clip-select" data-clip-select aria-label="${t("job.select_clip")}" /></td>
     <td>${index + 1}</td>
     <td><label class="check" style="padding:4px;border:none;background:transparent;box-shadow:none;"><input type="checkbox" data-field="keep" ${clip.keep === false ? "" : "checked"} /></label></td>
-    <td><input class="time-input" type="text" inputmode="text" data-field="start" value="${formatClipTimeInput(clip.start || 0)}" title="${t("job.time_format_hint")}" /></td>
-    <td><input class="time-input" type="text" inputmode="text" data-field="end" value="${formatClipTimeInput(clip.end || 0)}" title="${t("job.time_format_hint")}" /></td>
+    <td><input class="time-input" type="text" inputmode="text" data-field="start" value="${formatClipTimeInput(clip.start || 0, 3)}" title="${t("job.time_format_hint")}" /></td>
+    <td><input class="time-input" type="text" inputmode="text" data-field="end" value="${formatClipTimeInput(clip.end || 0, 3)}" title="${t("job.time_format_hint")}" /></td>
     <td>${formatTime(clip.duration)}</td>
     <td><span class="badge optional" title="${escapeHtml(scoreTitle)}">${escapeHtml(String(score))}</span></td>
     <td>${clip.scene_count || 0}</td>
@@ -77,14 +89,22 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
   let draggedRow = null;
   let lastSelectedIndex = -1;
   let inputSnapshot = null;
-  const draftSaver = createDraftSaver(jobName, "cuts", () => collectEditedClips(root));
+  const draft = createDraftSaver(jobName, "cuts", () => collectEditedClips(root));
+  const draftSaver = { ...draft, schedule() { draft.schedule(); syncKeptTranscript(root); } };
   const history = createClipHistory(root, () => {
+    const damageMessage = root.querySelector("#damage-range-message");
+    if (damageMessage) damageMessage.textContent = "";
     setEditing(true);
     draftSaver.schedule();
     setClipMessage(t("job.undo_redo_changed"));
   });
   const disposeHorizontalScroll = bindClipHorizontalScroll(root);
   const handler = async (e) => {
+    if (e.target?.closest?.(".damaged-range-editor summary")) {
+      // Freeze background table replacement while entering source timestamps.
+      setEditing(true);
+      return;
+    }
     const selectBox = e.target?.closest?.("[data-clip-select]");
     if (selectBox) {
       handleClipSelection(root, selectBox, e.shiftKey, lastSelectedIndex);
@@ -112,6 +132,28 @@ export function bindClipEditor(root, jobName, reload, setEditing, seekPreview = 
     const seekButton = e.target?.closest?.("[data-seek-clip]");
     if (seekButton) {
       seekPreview(Number(seekButton.dataset.seekClip || 0));
+      return;
+    }
+    if (e.target.id === "exclude-damaged-range") {
+      const message = root.querySelector("#damage-range-message");
+      const start = parseClipTime(root.querySelector("#damage-start")?.value);
+      const end = parseClipTime(root.querySelector("#damage-end")?.value);
+      try {
+        collectEditedClips(root); // Refuse to transform invalid unsaved row times.
+        const result = excludeDamagedRange(collectClipHistory(root), start, end);
+        if (!result.affected) {
+          message.textContent = t("job.damage_no_overlap");
+          return;
+        }
+        history.push();
+        root.querySelector("#clip-editor-body").innerHTML = result.clips.map((clip, index) => renderClipRow(clip, index)).join("");
+        refreshClipRowNumbers(root);
+        setEditing(true);
+        draftSaver.schedule();
+        message.textContent = t("job.damage_done").replace("{count}", String(result.affected));
+      } catch {
+        message.textContent = t("job.damage_invalid");
+      }
       return;
     }
     if (e.target.id === "add-clip") {
@@ -400,7 +442,8 @@ export function clipFromRow(row) {
     scene_count: Number(row.querySelector("td:nth-child(8)")?.textContent?.trim() || 0),
     transcript_text: row.querySelector('[data-field="content"]')?.value || "",
     subtitle_text: row.querySelector('[data-field="content"]')?.value || "",
-    subtitle_override: row.querySelector('[data-field="content"]')?.dataset.subtitleOverride === "1"
+    subtitle_override: row.querySelector('[data-field="content"]')?.dataset.subtitleOverride === "1",
+    ...collectEditedSubtitle(row)
   };
 }
 

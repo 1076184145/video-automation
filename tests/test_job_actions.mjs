@@ -39,7 +39,7 @@ test("renderSourceWarning keeps decoder errors inside collapsed technical detail
 
   assert.match(html, /source-warning/);
   assert.match(html, /2 decode or timestamp warnings/);
-  assert.match(html, /First issue near 0:12/);
+  assert.match(html, /First issue: 0:12/);
   assert.match(html, /<details class="source-warning-details">/);
   assert.doesNotMatch(html, /<details class="source-warning-details" open/);
   assert.match(html, /<summary>Technical details<\/summary>[\s\S]*bad &lt;frame&gt;/);
@@ -58,4 +58,10 @@ test("renderJobError renders encoded recovery actions", () => {
   assert.match(html, /GPU memory is insufficient/);
   assert.match(html, /data-error-action=/);
   assert.match(html, /Retry/);
+});
+
+test("unknown corruption time is not reported as zero", () => {
+  const html = renderSourceWarning({ status: "corrupt", first_error_at_seconds: null });
+  assert.match(html, /First issue: unknown time/);
+  assert.doesNotMatch(html, /First issue: 0:00/);
 });

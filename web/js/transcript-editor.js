@@ -1,4 +1,6 @@
 import { API } from "./api.js";
+import { parseClipTime } from "./clip-time.js";
+import { projectKeptTranscript } from "./kept-transcript.js";
 import { t } from "./i18n.js";
 import { clearReviewDraft, createDraftSaver } from "./review-drafts.js";
 import { setButtonLoading, showToast } from "./toast.js";
@@ -11,6 +13,12 @@ export function renderTranscript(transcript) {
   if (!segments.length) return `<div class="empty">${t("job.no_transcript")}</div>`;
   const backend = transcriptBackendLabel(transcript);
   return `
+    <section aria-label="${t("job.kept_transcript")}">
+      <strong>${t("job.kept_transcript")}</strong>
+      <p class="muted">${t("job.kept_transcript_help")}</p>
+      <div class="scroll-list" data-kept-transcript></div>
+    </section>
+    <details><summary>${t("job.source_transcript")}</summary>
     <div class="transcript-editor">
       ${backend ? `<div class="transcript-backend"><strong>${t("job.transcript_backend")}</strong> ${backend}</div>` : ""}
       <div class="clip-toolbar">
@@ -25,7 +33,7 @@ export function renderTranscript(transcript) {
       </div>
       <div class="scroll-list" data-transcript-list>${renderTranscriptRows(segments, 0)}</div>
       <script type="application/json" data-transcript-data>${safeJsonForHtml(segments)}</script>
-    </div>
+    </div></details>
   `;
 }
 
@@ -95,6 +103,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     if (e.target?.closest?.(".transcript-editor")) {
       setEditing(true);
       draftSaver.schedule();
+      syncKeptTranscript(root);
     }
   };
   root.addEventListener("click", handler);
@@ -107,7 +116,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
 }
 
 function collectEditedTranscript(root = document) {
-  const state = transcriptStates.get(root);
+  const state = currentTranscriptState(root);
   if (state) {
     syncVisibleTranscriptRows(root, state);
     return state.segments.map((segment) => ({
@@ -128,7 +137,7 @@ function initializeTranscriptState(root) {
   if (!data) return null;
   try {
     const segments = JSON.parse(data.textContent || "[]");
-    const state = { segments: Array.isArray(segments) ? segments : [], page: 0 };
+    const state = { segments: Array.isArray(segments) ? segments : [], page: 0, data };
     transcriptStates.set(root, state);
     return state;
   } catch {
@@ -142,6 +151,8 @@ function syncVisibleTranscriptRows(root, state) {
     if (!Number.isInteger(index) || !state.segments[index]) continue;
     state.segments[index] = {
       ...state.segments[index],
+      // Edited prose no longer has a trustworthy word-to-text alignment.
+      ...(input.value.trim() !== String(state.segments[index].text || "").trim() ? { words: [] } : {}),
       start: Number(input.dataset.start),
       end: Number(input.dataset.end),
       text: input.value.trim(),
@@ -150,7 +161,7 @@ function syncVisibleTranscriptRows(root, state) {
 }
 
 function changeTranscriptPage(root, delta) {
-  const state = transcriptStates.get(root) || initializeTranscriptState(root);
+  const state = currentTranscriptState(root);
   if (!state) return;
   syncVisibleTranscriptRows(root, state);
   const pageCount = Math.max(1, Math.ceil(state.segments.length / TRANSCRIPT_PAGE_SIZE));
@@ -171,3 +182,31 @@ function setTranscriptMessage(message, isError = false) {
   box.innerHTML = `<div class="${isError ? "error" : "notice"}">${message}</div>`;
 }
 export const collectEditedTranscriptForTest = collectEditedTranscript;
+
+function currentTranscriptState(root) {
+  const state = transcriptStates.get(root);
+  return state && state.data === root.querySelector?.("[data-transcript-data]")
+    ? state : initializeTranscriptState(root);
+}
+
+export function syncKeptTranscript(root) {
+  const box = root.querySelector?.("[data-kept-transcript]");
+  const state = currentTranscriptState(root);
+  if (!box || !state) return;
+  syncVisibleTranscriptRows(root, state);
+  const clips = Array.from(root.querySelectorAll("[data-clip-row]")).map((row) => {
+    const content = row.querySelector('[data-field="content"]');
+    return {
+      start: parseClipTime(row.querySelector('[data-field="start"]')?.value),
+      end: parseClipTime(row.querySelector('[data-field="end"]')?.value),
+      keep: row.querySelector('[data-field="keep"]')?.checked !== false,
+      subtitle_override: content?.dataset.subtitleOverride === "1" || content?.value.trim() !== String(content?.dataset.original || "").trim(),
+      subtitle_text: content?.value || "",
+    };
+  });
+  const projected = projectKeptTranscript(state.segments, clips);
+  box.innerHTML = projected.length ? projected.map((segment) => `<div class="transcript-item">
+    <span class="time">${formatTime(segment.start)}–${formatTime(segment.end)}</span>
+    <span>${escapeHtml(segment.text)}${segment.partial ? `<small class="muted"> (${t("job.partial_transcript")})</small>` : ""}</span>
+  </div>`).join("") : `<p class="muted">${t("job.no_kept_transcript")}</p>`;
+}

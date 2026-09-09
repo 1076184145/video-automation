@@ -8,7 +8,7 @@ import {
   recordingListHtml,
   renderNewJobForm,
   summaryCard,
-  uploadProgressHtml,
+  updateUploadProgress,
 } from "./new-job-view.js";
 import { removeWithMotion } from "./motion.js";
 import { setButtonLoading, showToast } from "./toast.js";
@@ -287,7 +287,7 @@ async function uploadRecordings(files, state, options = {}) {
       return sum + (Number(file.size) || 0) * percent / 100;
     }, 0);
     const percent = totalBytes > 0 ? loadedBytes / totalBytes * 100 : 0;
-    setUploadMessage(uploadProgressHtml(`${completed}/${uploadFiles.length} ${t("new.batch_files")}`, percent));
+    updateUploadProgress(document.getElementById("form-error"), `${completed}/${uploadFiles.length} ${t("new.batch_files")}`, percent);
   };
 
   try {
@@ -463,6 +463,89 @@ async function loadRecordings(state) {
 
 function renderRecordingList(target, recordings, showAll, state) {
   target.innerHTML = recordingListHtml(recordings, showAll);
+  const available = new Set(recordings.map((file) => file.relative_path));
+  state.recordingDeleteSelection = new Set([...state.recordingDeleteSelection || []].filter((path) => available.has(path)));
+  const selected = state.recordingDeleteSelection;
+  const all = target.querySelector("#select-recordings-for-delete");
+  const deleteButton = target.querySelector("#delete-selected-recordings");
+  const refreshSelection = () => {
+    all.checked = selected.size > 0 && selected.size === available.size;
+    all.indeterminate = selected.size > 0 && selected.size < available.size;
+    deleteButton.disabled = !selected.size;
+    deleteButton.textContent = `${t("new.delete_selected")} (${selected.size})`;
+    target.querySelectorAll("[data-recording-selection]").forEach((box) => { box.checked = selected.has(box.dataset.recordingSelection); });
+  };
+  all.addEventListener("change", () => {
+    selected.clear();
+    if (all.checked) available.forEach((path) => selected.add(path));
+    refreshSelection();
+  });
+  target.querySelectorAll("[data-recording-selection]").forEach((box) => {
+    box.addEventListener("change", () => {
+      if (box.checked) selected.add(box.dataset.recordingSelection);
+      else selected.delete(box.dataset.recordingSelection);
+      refreshSelection();
+    });
+  });
+  refreshSelection();
+  deleteButton.addEventListener("click", async () => {
+    const files = recordings.filter((file) => selected.has(file.relative_path));
+    if (!files.length || state.recordingDeleteBusy) return;
+    state.recordingDeleteBusy = true;
+    try {
+      if (!await confirmAction(t("new.delete_selected_confirm").replace("{count}", String(files.length)) + "\n\n" + files.map((file) => file.relative_path).join("\n"), {
+        title: t("new.delete_selected"), confirmLabel: t("common.delete"), cancelLabel: t("common.cancel"), scrollMessage: true,
+      })) return;
+      target.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
+      const result = await deleteRecordingSelection(files, (path) => API.deleteRecording(path), () => state.disposed || state.signal.aborted);
+      const removed = new Set(result.deleted.map((file) => file.path));
+      state.batchPaths = state.batchPaths.filter((path) => !removed.has(path));
+      result.deleted.forEach((file) => selected.delete(file.relative_path));
+      if (state.disposed || state.signal.aborted) return;
+      const input = document.getElementById("source-path");
+      if (removed.has(cleanSourcePath(input.value))) { input.value = ""; state.sourcePathBatchMirror = false; }
+      renderBatchList(state);
+      updateWizardSummary(state);
+      await loadRecordings(state);
+      const report = t("new.delete_selected_result").replace("{deleted}", String(result.deleted.length)).replace("{failed}", String(result.failed.length));
+      setUploadMessage(escapeHtml(report) + result.failed.map(({ file, error }) => `<div>${escapeHtml(file.relative_path)}: ${escapeHtml(error)}</div>`).join(""), result.failed.length > 0);
+    } finally { state.recordingDeleteBusy = false; }
+  });
+  target.querySelectorAll("[data-delete-recording]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const relativePath = button.dataset.deleteRecording;
+      if (!await confirmAction(t("new.delete_recording_confirm").replace("{name}", relativePath), {
+        title: t("new.delete_recording"), confirmLabel: t("common.delete"), cancelLabel: t("common.cancel"),
+      })) return;
+      setButtonLoading(button, true);
+      try {
+        const result = await API.deleteRecording(relativePath);
+        const removed = recordings.find((file) => file.relative_path === relativePath);
+        if (removed) {
+          state.batchPaths = state.batchPaths.filter((path) => path !== removed.path);
+          const input = document.getElementById("source-path");
+          if (cleanSourcePath(input.value) === removed.path) { input.value = ""; state.sourcePathBatchMirror = false; }
+        }
+        renderBatchList(state);
+        updateWizardSummary(state);
+        await loadRecordings(state);
+        showToast(t("new.delete_recording_done") + result.recovery_path, "success");
+      } catch (error) {
+        showToast(t("new.delete_recording_failed") + error.message, "error");
+      } finally { setButtonLoading(button, false); }
+    });
+  });
+  target.querySelector("#select-all-recordings")?.addEventListener("click", () => {
+    const result = selectRecordingPaths(state.batchPaths, recordings, BATCH_PATH_LIMIT);
+    state.batchPaths = result.paths;
+    // Bulk selection must survive edits to the single-source input.
+    state.sourcePathBatchMirror = false;
+    renderBatchList(state);
+    updateWizardSummary(state);
+    target.querySelector("#recording-selection-message").textContent = t("new.select_all_recordings_result")
+      .replace("{added}", String(result.added)).replace("{skipped}", String(result.skipped))
+      .replace("{limit}", String(BATCH_PATH_LIMIT));
+  });
   target.querySelectorAll("[data-path]").forEach((button) => {
     button.addEventListener("click", () => {
       document.getElementById("source-path").value = button.dataset.path || "";
@@ -473,6 +556,32 @@ function renderRecordingList(target, recordings, showAll, state) {
   document.getElementById("show-all-recordings")?.addEventListener("click", () => {
     renderRecordingList(target, recordings, true, state);
   });
+}
+
+export async function deleteRecordingSelection(files, deleteFile, shouldStop = () => false) {
+  const deleted = [];
+  const failed = [];
+  // Serial requests avoid a burst of source-reference scans and filesystem moves.
+  for (const file of files) {
+    if (shouldStop()) break;
+    try { await deleteFile(file.relative_path); deleted.push(file); }
+    catch (error) { failed.push({ file, error: String(error.message || error) }); }
+  }
+  return { deleted, failed };
+}
+
+export function selectRecordingPaths(existing, recordings, limit) {
+  const paths = [...existing];
+  const seen = new Set(paths);
+  let skipped = 0;
+  for (const recording of recordings) {
+    const path = cleanSourcePath(recording.path || "");
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    if (paths.length >= limit) { skipped += 1; continue; }
+    paths.push(path);
+  }
+  return { paths, added: paths.length - existing.length, skipped };
 }
 
 function applyProfile(event, state) {
