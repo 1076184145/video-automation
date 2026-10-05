@@ -5,7 +5,6 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import queue
-import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,6 +29,20 @@ from .pipeline_scheduler import (
     run_pipeline,
 )
 from .profiles import PIPELINE_FLAG_NAMES, apply_profile_settings, profile_flags
+
+__all__ = [
+    "main", "health_payload", "_raise_for_severe_source_corruption",
+    "_transcription_backend_label", "create_empty_transcripts", "PipelineStage",
+    "build_pipeline_batches", "expand_stage_selection", "run_pipeline",
+    "Any", "BatchItem", "Iterable", "Job", "MEDIA_EXTENSIONS", "PIPELINE_FLAG_NAMES",
+    "Path", "ProgressReporter", "RotatingFileHandler", "Settings", "annotations",
+    "apply_profile_settings", "argparse", "bootstrap_dirs", "cleanup_jobs",
+    "configure_root_logger", "create_job", "dataclass", "find_resume_jobs",
+    "health_check", "is_file_stable", "iter_media_files", "json", "list_jobs",
+    "load_batch_items", "logging", "print_status", "process_batch", "process_file",
+    "process_job", "profile_flags", "queue", "replace", "resume_jobs", "time",
+    "watch", "watch_with_polling", "watch_with_watchdog",
+]
 
 
 def _positive_int(value: str) -> int:

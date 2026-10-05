@@ -5,6 +5,7 @@ import base64
 import gc
 import inspect
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -26,12 +27,14 @@ from .provider_errors import (
     provider_http_error,
     provider_network_error,
 )
+from .url_security import require_http_url
 
 if TYPE_CHECKING:
     from .config import Settings
 
 
 LOCAL_AI_PROVIDER_NAME = "Local Hugging Face"
+logger = logging.getLogger(__name__)
 
 _RUNTIME_LOCK = threading.RLock()
 _SERVER_PROCESS: subprocess.Popen[bytes] | None = None
@@ -507,7 +510,7 @@ def _release_cover_pipeline() -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception:
-        pass
+        logger.debug("Could not release local cover pipeline resources", exc_info=True)
 
 
 def _stop_owned_local_llm_server() -> None:
@@ -562,7 +565,7 @@ def _wait_for_local_llm(
 
 
 def _health_status(url: str) -> int | None:
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(require_http_url(url), method="GET")
     try:
         with urllib.request.urlopen(request, timeout=2) as response:
             return int(response.status)
@@ -575,6 +578,7 @@ def _health_status(url: str) -> int | None:
 def _local_llm_endpoint(settings: Settings, endpoint: str) -> str:
     base = settings.local_llm_base_url.strip().rstrip("/")
     _loopback_host_port(base)
+    require_http_url(base)
     if endpoint == "health":
         return f"{base}/health"
     return f"{base}/{endpoint.lstrip('/')}"

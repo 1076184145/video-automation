@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import tempfile
 import unittest
 from dataclasses import replace
@@ -33,6 +34,7 @@ class LocalAiTests(unittest.TestCase):
         self.assertEqual(local_ai._local_cover_dimensions("9:16", 1024), (576, 1024))
         self.assertEqual(local_ai._local_cover_dimensions("16:9", 1024), (1024, 576))
 
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is optional")
     def test_local_cover_reference_is_cropped_to_target_aspect(self) -> None:
         from PIL import Image, ImageDraw
 
@@ -192,7 +194,7 @@ class LocalAiTests(unittest.TestCase):
         )
         self.assertEqual(
             command[command.index("--alias") + 1],
-            settings.llm_model,
+            settings.llm_model.strip() or settings.local_llm_model_path.stem,
         )
         self.assertEqual(command[command.index("--split-mode") + 1], "none")
         self.assertEqual(command[command.index("--main-gpu") + 1], "0")
@@ -201,6 +203,17 @@ class LocalAiTests(unittest.TestCase):
         self.assertEqual(command[command.index("--cors-origins") + 1], "localhost")
         self.assertIn("--no-webui", command)
         self.assertIn("--no-slots", command)
+
+    def test_server_command_uses_explicit_model_alias(self) -> None:
+        settings = replace(
+            Settings.load(),
+            llm_model="custom-alias",
+            local_llm_model_path=Path("model.gguf"),
+        )
+        command = local_ai._local_llm_server_command(
+            settings, Path("llama-server"), "127.0.0.1", 8766,
+        )
+        self.assertEqual(command[command.index("--alias") + 1], "custom-alias")
 
 
 if __name__ == "__main__":

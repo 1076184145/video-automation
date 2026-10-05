@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from .credentials import CONFIG_SECRET_REFERENCES, SystemCredentialStore
 from .io_utils import write_text_atomic
+from .url_security import require_http_url
 
 
 EDITABLE_ENV_KEYS = {
@@ -178,6 +179,8 @@ def normalize_env_updates(raw_updates: dict[str, Any]) -> dict[str, str]:
             raise ValueError(f"setting cannot contain newlines: {key}")
         if any(ord(char) < 32 and char != "\t" for char in value):
             raise ValueError(f"setting contains invalid control characters: {key}")
+        if key in {"COVER_BASE_URL", "GOOGLE_BASE_URL", "LOCAL_LLM_BASE_URL"} and value.strip():
+            require_http_url(value)
         updates[key] = value.strip()
     if not updates:
         raise ValueError("no editable settings provided")

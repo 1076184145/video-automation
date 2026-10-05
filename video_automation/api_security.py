@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class UnsafeAPIBindingError(RuntimeError):
@@ -25,6 +26,52 @@ def is_loopback_api_host(host: str) -> bool:
         return True
     mapped = getattr(address, "ipv4_mapped", None)
     return bool(mapped and mapped.is_loopback)
+
+
+def allowed_request_host(
+    host_headers: list[str],
+    *,
+    bound_host: str,
+    bound_port: int,
+    allow_remote: bool,
+    allowed_origins: tuple[str, ...],
+) -> bool:
+    """Reject browser DNS rebinding before any API or static route is served."""
+    if len(host_headers) != 1:
+        return False
+    raw = host_headers[0]
+    if not raw or raw != raw.strip() or any(char in raw for char in "/?#@\\, \t\r\n"):
+        return False
+    try:
+        parsed = urlsplit(f"http://{raw}")
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    if not hostname or parsed.path or parsed.query or parsed.fragment:
+        return False
+    if ":" in hostname and not raw.startswith("["):
+        return False
+    if allow_remote and not is_loopback_api_host(bound_host):
+        return True
+
+    normalized_host = hostname.rstrip(".").lower()
+    local_hosts = {"127.0.0.1", "localhost", "::1"}
+    if bound_host and bound_host not in {"0.0.0.0", "::", "[::]"}:
+        local_hosts.add(bound_host.strip("[]").rstrip(".").lower())
+    if normalized_host in local_hosts and (port or 80) == bound_port:
+        return True
+    for origin in allowed_origins:
+        try:
+            configured = urlsplit(origin)
+            configured_port = configured.port or (443 if configured.scheme == "https" else 80)
+        except ValueError:
+            continue
+        if configured.scheme in {"http", "https"} and configured.hostname:
+            requested_port = port or (443 if configured.scheme == "https" else 80)
+            if (normalized_host, requested_port) == (configured.hostname.rstrip(".").lower(), configured_port):
+                return True
+    return False
 
 
 def api_binding_status(host: str, allow_remote: bool) -> dict[str, Any]:

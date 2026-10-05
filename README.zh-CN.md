@@ -221,7 +221,7 @@ Python AI 运行库缺失时，**健康检查**会提供可复制的安装命令
 
 本地 Web 服务默认只监听 `127.0.0.1:8765`。非回环地址默认会被拒绝，只有显式
 设置 `API_ALLOW_REMOTE=true` 才能启动；这个开关不是身份验证，远程使用仍必须配置
-防火墙、带认证的反向代理和 HTTPS。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+防火墙、带认证的反向代理和 HTTPS。反向代理连接回环服务时，需将对外访问源加入 `API_ALLOWED_ORIGINS`，供 Host 校验使用。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 隐私和功能边界
 

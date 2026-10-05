@@ -86,7 +86,7 @@ def apply_refinement_action(
 
     ordered = tuple(sorted(updated, key=lambda window: window.index))
     kept = [window for window in ordered if window.keep]
-    for previous, current in zip(kept, kept[1:]):
+    for previous, current in zip(kept, kept[1:], strict=False):
         if current.start < previous.end - 0.001:
             raise ValueError("boundary adjustment produced overlapping clips")
     return ordered

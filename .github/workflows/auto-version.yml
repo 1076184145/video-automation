@@ -1,37 +1,54 @@
 name: Auto Version & Release
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "README.md"
-      - "README.zh-CN.md"
-      - "docs/**"
-      - ".gitignore"
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
 
 permissions:
   actions: write
   contents: write
-  pull-requests: write
 
 jobs:
   auto-release:
     name: Auto Version & Release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: auto-version-main
+      cancel-in-progress: false
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+
+      - name: Check tested commit is current
+        id: source
+        run: |
+          git fetch origin main
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo 'continue=false' >> "$GITHUB_OUTPUT"
+          elif [[ "$(git log -1 --format=%s)" == "chore: bump version to "* ]]; then
+            echo 'continue=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'continue=true' >> "$GITHUB_OUTPUT"
+          fi
       
       - name: Configure git
+        if: steps.source.outputs.continue == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       
       - name: Get latest version
+        if: steps.source.outputs.continue == 'true'
         id: version
         run: |
           # Import the package version so __all__ or comments cannot become
@@ -52,6 +69,7 @@ jobs:
           printf 'commits_since=%s\n' "$COMMITS_SINCE" >> "$GITHUB_OUTPUT"
       
       - name: Calculate new version
+        if: steps.source.outputs.continue == 'true'
         id: new_version
         run: |
           CURRENT=${{ steps.version.outputs.current_version }}
@@ -70,7 +88,7 @@ jobs:
           fi
       
       - name: Update version
-        if: steps.new_version.outputs.should_update == 'true'
+        if: steps.source.outputs.continue == 'true' && steps.new_version.outputs.should_update == 'true'
         run: |
           NEW_VERSION=${{ steps.new_version.outputs.version }}
           sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" video_automation/__init__.py
@@ -78,9 +96,10 @@ jobs:
           # 提交版本更新
           git add video_automation/__init__.py
           git commit -m "chore: bump version to $NEW_VERSION"
-          git push
+          git push origin HEAD:main
       
       - name: Create release tag
+        if: steps.source.outputs.continue == 'true'
         id: release_tag
         run: |
           VERSION=${{ steps.new_version.outputs.version }}

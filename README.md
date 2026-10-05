@@ -223,7 +223,7 @@ Open `processing/jobs/`. Do not commit this folder, `.env`, logs, private videos
 The local Web server binds to `127.0.0.1:8765` by default. Non-loopback bindings
 are rejected unless `API_ALLOW_REMOTE=true` is set explicitly. That flag is not
 authentication: remote use still requires a firewall, authenticated reverse
-proxy, and HTTPS. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Opt-in [unattended highlights](docs/UNATTENDED_HIGHLIGHTS.md) (`--unattended-highlights`) produce separate 30–75s MP4s. Optional `HIGHLIGHT_GRAPH_ENABLED=true` adds multi-angle candidates; `HIGHLIGHT_LLM_CHECKER_ENABLED=true` adds full-text review before final deduplication. Both default off; failures remain visible.
+proxy, and HTTPS. For a reverse proxy to a loopback server, add its public origin to `API_ALLOWED_ORIGINS` so the Host check accepts it. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Opt-in [unattended highlights](docs/UNATTENDED_HIGHLIGHTS.md) (`--unattended-highlights`) produce separate 30–75s MP4s. Optional `HIGHLIGHT_GRAPH_ENABLED=true` adds multi-angle candidates; `HIGHLIGHT_LLM_CHECKER_ENABLED=true` adds full-text review before final deduplication. Both default off; failures remain visible.
 
 ## Privacy and Boundaries
 

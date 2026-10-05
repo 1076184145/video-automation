@@ -29,6 +29,7 @@ from .provider_errors import (
     provider_http_error,
     provider_network_error,
 )
+from .url_security import require_http_url
 
 
 ASPECT_SPECS = {
@@ -300,13 +301,13 @@ def _generate_fallback_covers(
         manifest["error"] = ""
         write_json_atomic(manifest_path, manifest)
         return manifest
-    except Exception:
+    except Exception as exc:
         manifest["status"] = "failed"
         manifest["updated_at"] = _now()
         manifest["error_code"] = provider_error_code(error)
         manifest["error"] = str(error)
         write_json_atomic(manifest_path, manifest)
-        raise error
+        raise error from exc
 
 
 def _darken_cover_frame(raw: bytes, factor: float) -> bytes:
@@ -601,7 +602,7 @@ def _google_images(payload: dict[str, Any]) -> tuple[list[str], str]:
 
 
 def _google_model_url(base_url: str, model: str) -> str:
-    base = (base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    base = require_http_url(base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     model_name = model.strip()
     if model_name.startswith("models/"):
         model_name = model_name.removeprefix("models/")
@@ -815,7 +816,7 @@ def _validate_cover_image_dimensions(width: int, height: int) -> None:
 
 
 def _join_url(base_url: str, path: str) -> str:
-    base = (base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    base = require_http_url(base_url or "https://api.openai.com/v1").rstrip("/")
     suffix = path.strip("/")
     return f"{base}/{suffix}"
 
