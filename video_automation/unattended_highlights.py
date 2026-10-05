@@ -236,9 +236,9 @@ class UnattendedHighlights:
             write_json_atomic(report_path, report)
             previous = read_json_file(clip_dir / "result.json") or {}
 
-            def clip_progress(percent: float) -> None:
+            def clip_progress(percent: float, *, clip_index: int = index) -> None:
                 if progress_callback:
-                    progress_callback((index * 100 + max(0., min(100., percent))) / len(plan["edits"]))
+                    progress_callback((clip_index * 100 + max(0., min(100., percent))) / len(plan["edits"]))
 
             try:
                 if (not self.force and previous.get("revision") == revision and previous.get("status") == "done"

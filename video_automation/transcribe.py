@@ -555,7 +555,7 @@ def _normalize_funasr_segments(result: Any, settings: Settings, duration: float)
         weights = [max(1, len(text)) for text in untimed_texts]
         total_weight = sum(weights) or len(untimed_texts)
         cursor = start_at
-        for text, weight in zip(untimed_texts, weights):
+        for text, weight in zip(untimed_texts, weights, strict=True):
             span = max(0.3, remaining * weight / total_weight)
             segments.append({"id": len(segments), "start": round(cursor, 3), "end": round(cursor + span, 3), "text": text})
             cursor += span
@@ -657,8 +657,8 @@ def _segment_words(segment: Any, settings: Settings) -> list[dict[str, Any]]:
         if not word:
             continue
         try:
-            start = round(float(getattr(item, "start")), 3)
-            end = round(float(getattr(item, "end")), 3)
+            start = round(float(item.start), 3)
+            end = round(float(item.end), 3)
         except (TypeError, ValueError):
             continue
         payload: dict[str, Any] = {"start": start, "end": end, "word": word}

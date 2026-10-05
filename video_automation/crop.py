@@ -232,7 +232,7 @@ def _cropdetect_once(ffmpeg_path: str, source_path: Path, seconds: float) -> tup
 
 
 def _median_crop(candidates: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int]:
-    values = list(zip(*candidates))
+    values = list(zip(*candidates, strict=True))
     return tuple(int(sorted(axis)[len(axis) // 2]) for axis in values)  # type: ignore[return-value]
 
 

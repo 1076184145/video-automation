@@ -53,7 +53,7 @@ class HighlightCutTests(unittest.TestCase):
             preview = generate_highlight_render_preview(Settings.load(), job_dir, source_path, force=True)
 
             self.assertEqual(preview["status"], "ready")
-            self.assertEqual(preview["output_path"], str(job_dir / "highlight.mp4"))
+            self.assertEqual(preview["output_path"], str((job_dir / "highlight.mp4").resolve()))
             self.assertEqual(preview["clip_count"], 2)
             self.assertEqual([clip["start"] for clip in preview["clips"]], [10, 30])
             self.assertTrue((job_dir / "highlight_render_preview.json").exists())

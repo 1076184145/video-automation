@@ -23,7 +23,7 @@ def job_runtime_state(
     pipeline_runs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     queue_status = str((queue_item or {}).get("status") or "")
-    queue_pid = safe_int((queue_item or {}).get("worker_pid"))
+    # Queue ownership remains authoritative until cancellation is acknowledged.
     queue_active = queue_status in {"pending", "paused", "running"}
     latest_run = pipeline_runs[0] if pipeline_runs else None
     pipeline_pid = safe_int((latest_run or {}).get("worker_pid"))
@@ -113,7 +113,7 @@ def record_transcript_preferences(
     before_segments = before.get("segments") if isinstance(before.get("segments"), list) else []
     after_segments = after.get("segments") if isinstance(after.get("segments"), list) else []
     recorded = 0
-    for previous, current in zip(before_segments, after_segments):
+    for previous, current in zip(before_segments, after_segments, strict=False):
         if not isinstance(previous, dict) or not isinstance(current, dict):
             continue
         previous_text = str(previous.get("text") or "").strip()

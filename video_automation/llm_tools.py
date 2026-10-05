@@ -24,6 +24,7 @@ from .provider_errors import (
     provider_http_error,
     provider_network_error,
 )
+from .url_security import require_http_url
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -96,7 +97,6 @@ def _heuristic_metadata_payload(job_dir: Path, error: Exception) -> dict[str, An
     """Rule-based metadata used when every LLM provider is unavailable."""
     highlights = read_json_file(job_dir / "highlights.json") or {}
     cuts = read_json_file(job_dir / "cuts.json") or {}
-    transcript = read_json_file(job_dir / "transcript.json") or {}
 
     reasons = [
         str(item.get("reason") or "").strip()
@@ -405,7 +405,7 @@ def _request_openai_text(
         },
     }
     request = urllib.request.Request(
-        OPENAI_RESPONSES_URL,
+        require_http_url(OPENAI_RESPONSES_URL),
         data=json.dumps(request_payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {settings.openai_api_key.strip()}",
@@ -459,7 +459,7 @@ def _request_compatible_text(
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    request = urllib.request.Request(base + "/chat/completions", headers=headers, method="POST", data=json.dumps({
+    request = urllib.request.Request(require_http_url(base + "/chat/completions"), headers=headers, method="POST", data=json.dumps({
         "model": settings.llm_model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "response_format": response_format,
@@ -560,7 +560,7 @@ def _extract_google_text(payload: dict[str, Any]) -> str:
 
 
 def _google_model_url(base_url: str, model: str) -> str:
-    base = (base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    base = require_http_url(base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     model_name = model.strip()
     if model_name.startswith("models/"):
         model_name = model_name.removeprefix("models/")

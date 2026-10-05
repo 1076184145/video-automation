@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import shutil
 import subprocess
 import time
@@ -15,6 +16,9 @@ from .api_security import api_binding_status
 from .api_settings import legacy_secret_keys
 from .config import Settings
 from .render import probe_nvenc_encoder
+
+
+logger = logging.getLogger(__name__)
 
 
 def _transcription_backend_label(backend: str) -> str:
@@ -617,7 +621,7 @@ def _resolve_module_path(module_name: str) -> str:
                 return str(origin_p.parent)
             return str(origin_p)
     except Exception:
-        pass
+        logger.debug("Could not resolve module path for %s", module_name, exc_info=True)
     return f"python:{module_name}"
 
 

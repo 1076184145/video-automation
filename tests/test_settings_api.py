@@ -44,6 +44,12 @@ class SettingsApiTests(unittest.TestCase):
             },
         )
 
+    def test_normalize_env_updates_rejects_non_http_provider_urls(self) -> None:
+        for key in ("COVER_BASE_URL", "GOOGLE_BASE_URL", "LOCAL_LLM_BASE_URL"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "http or https"):
+                    _normalize_env_updates({key: "file:///etc/passwd"})
+
     def test_normalize_env_updates_accepts_batch_pressure_settings(self) -> None:
         self.assertEqual(
             _normalize_env_updates({

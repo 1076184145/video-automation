@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "docs/**"
+      - ".gitignore"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-core.txt pytest Pillow ruff
+      - name: Lint Python
+        run: ruff check video_automation --select F,B
+      - name: Test Python
+        run: python -m pytest -q
+      - name: Test frontend
+        shell: bash
+        run: node --test tests/*.mjs

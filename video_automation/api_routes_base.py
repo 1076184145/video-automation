@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 from .api_context import APIContext
 from .api_http_utils import event_last_id, format_sse, parse_range
 from .api_system import delete_recording, health_response, publish_package_queue, recording_files, tools_install_snapshot
+from .api_security import allowed_request_host
 from .config import Settings
 from .events import current_event_id, wait_for_events
 from .jobs import list_jobs
@@ -334,6 +335,16 @@ class CoreHTTPRoutes:
         )
 
     def _require_allowed_origin(self) -> bool:
+        settings = self.api_context.settings
+        if not allowed_request_host(
+            self.headers.get_all("Host", []),
+            bound_host=str(self.server.server_address[0]),
+            bound_port=self.server.server_port,
+            allow_remote=bool(getattr(settings, "api_allow_remote", False)),
+            allowed_origins=getattr(settings, "api_allowed_origins", ()),
+        ):
+            self._json({"error": "host not allowed"}, status=421)
+            return False
         if self.api_context.origin_is_allowed(self.headers.get("Origin")):
             return True
         self._json({"error": "origin not allowed"}, status=403)

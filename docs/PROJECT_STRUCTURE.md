@@ -6,6 +6,8 @@ This document describes the current file layout. It is a maintenance map only; t
 
 ```text
 video-automation/
+├── .github/workflows/      Cross-platform tests, gated versioning, release builds
+├── pyproject.toml          Python requirement and Ruff configuration
 ├── video_automation/       Python workflow package
 ├── web/                    Local Web dashboard served by --serve
 ├── docs/                   Project documentation
@@ -43,42 +45,86 @@ Do not move `input/`, `processing/`, `logs/`, `models/`, `venv/`, or `.env` as p
 | Unattended highlights | `llm_evaluator.py`, `highlight_graph.py`, `highlight_checker.py`, `highlight_edits.py`, `unattended_highlights.py` | Opt-in sentence-ID multi-angle selection, bounded/durable analysis and full-text review, final NMS, directional RMS/EDL planning, shared subtitle mapping, independent rendering; offline comparison via `tools/compare_highlight_runs.py` |
 | Optional integrations | `plans.py`, `hooks.py`, `cleanup.py`, `llm_tools.py`, `local_ai.py`, `publish.py` | BGM/platform/webhook/UVR plan contracts, external or local LLM metadata/highlights, local Hugging Face covers, publish package, old job cleanup |
 | HTTP routing | `api.py`, `api_context.py`, `routing.py`, `api_routes_base.py`, `api_routes_system.py`, `api_routes_jobs.py`, `api_routes_enhancements.py` | Thin server composition root, thread-safe runtime context, declarative route registry, and domain route handlers |
-| API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind safety, secure settings updates, and health reporting |
+| API support and diagnostics | `api_http_utils.py`, `api_job_utils.py`, `api_system.py`, `api_security.py`, `url_security.py`, `api_settings.py`, `health.py` | HTTP helpers, job response/edit services, tool-install state, bind and Host safety, provider URL validation, secure settings updates, and health reporting |
 | Pipeline execution | `pipeline_context.py`, `pipeline_spec.py`, `pipeline_scheduler.py`, `pipeline_executor.py`, `stage_runs.py` | Typed run context, stage contracts and dependencies, generic dependency scheduler, job-specific stage construction, and durable run state |
 | Entrypoints | `worker.py` | CLI argument handling, batch execution, resume, and file watching |
 
 ## Web Dashboard
 
-`web/` is served directly by `run_worker.py --serve`.
+`web/` is served directly by `run_worker.py --serve`; there is no bundler or frontend build step.
 
 ```text
 web/
 ├── index.html
 ├── css/
+│   ├── fonts.css
 │   └── style.css
 └── js/
-    ├── app.js
-    ├── router.js
+    ├── ai-disclosure.js
     ├── api.js
-    ├── i18n.js
-    ├── i18n-zh.js
-    ├── i18n-en.js
-    ├── utils.js
+    ├── app.js
+    ├── automation.js
+    ├── clip-editor.js
+    ├── clip-time.js
+    ├── confirm-dialog.js
+    ├── cover-panel.js
+    ├── damaged-range.js
     ├── dashboard.js
-    ├── new-job.js
-    ├── job-detail.js
-    ├── settings.js
+    ├── detail-layout.js
+    ├── detail-tabs.js
+    ├── download-section.js
+    ├── enhancement-panel.js
+    ├── error-hints.js
+    ├── event-hub.js
     ├── health.js
-    └── timeline.js
+    ├── i18n-en.js
+    ├── i18n-zh.js
+    ├── i18n.js
+    ├── icons.js
+    ├── job-actions.js
+    ├── job-card.js
+    ├── job-detail-data.js
+    ├── job-detail-view.js
+    ├── job-detail.js
+    ├── job-status.js
+    ├── kept-transcript.js
+    ├── motion.js
+    ├── new-job-view.js
+    ├── new-job.js
+    ├── notifications.js
+    ├── preview-player.js
+    ├── projects.js
+    ├── provider-errors.js
+    ├── publish-center.js
+    ├── review-drafts.js
+    ├── revision-history.js
+    ├── router.js
+    ├── settings-schema.js
+    ├── settings.js
+    ├── shortcut-help.js
+    ├── theme.js
+    ├── timeline.js
+    ├── toast.js
+    ├── transcript-editor.js
+    ├── ui-states.js
+    └── utils.js
 ```
 
 | Area | Files | Responsibility |
 |---|---|---|
-| App shell and routing | `app.js`, `router.js` | Navigation, route registration, language switch rendering |
-| Shared support | `api.js`, `i18n.js`, `i18n-zh.js`, `i18n-en.js`, `utils.js` | Fetch wrapper, language runtime, split translation dictionaries, formatting/status helpers |
-| Pages | `dashboard.js`, `new-job.js`, `job-detail.js`, `settings.js`, `health.js` | Dashboard, task creation, review/editing, settings, health checks |
-| Visualization | `timeline.js` | Canvas timeline, marks, waveform rendering, tooltip behavior |
-| Styling | `css/style.css` | Layout, controls, responsive behavior, dark theme |
+| App shell and navigation | `app.js`, `router.js`, `shortcut-help.js`, `notifications.js`, `theme.js`, `motion.js` | Routes, navigation, shortcuts, notifications, themes, and motion |
+| Shared support and UI | `api.js`, `i18n.js`, `i18n-zh.js`, `i18n-en.js`, `utils.js`, `event-hub.js`, `error-hints.js`, `provider-errors.js`, `icons.js`, `ui-states.js`, `toast.js`, `confirm-dialog.js`, `ai-disclosure.js` | API/events, localization, formatting, error messages, shared controls, and AI disclosures |
+| Workflow pages | `dashboard.js`, `job-card.js`, `new-job.js`, `new-job-view.js`, `automation.js`, `projects.js`, `publish-center.js` | Job lists and creation, automation, project management, and publish packages |
+| Review and editing | `job-detail.js`, `job-detail-data.js`, `job-detail-view.js`, `detail-layout.js`, `detail-tabs.js`, `job-actions.js`, `job-status.js`, `transcript-editor.js`, `kept-transcript.js`, `review-drafts.js`, `revision-history.js`, `enhancement-panel.js`, `download-section.js`, `cover-panel.js`, `preview-player.js` | Job detail data and markup, actions, transcript review, revisions, enhancements, downloads, covers, and playback |
+| Settings and diagnostics | `settings.js`, `settings-schema.js`, `health.js` | Settings forms and schema, credentials, and dependency health |
+| Timeline and clips | `timeline.js`, `clip-editor.js`, `clip-time.js`, `damaged-range.js` | Canvas timeline, waveform, clip controls, time conversion, and invalid ranges |
+| Styling | `css/fonts.css`, `css/style.css` | Local font declarations, design tokens, layout, responsive behavior, and dark theme |
+
+## CI Workflows
+
+- `.github/workflows/test.yml`: Ubuntu and Windows checks with Python 3.11 and Node 20; runs Ruff F/B, the Python test suite, and frontend tests.
+- `.github/workflows/auto-version.yml`: runs after successful main-branch Tests, verifies the tested commit is still current, then updates the version and dispatches the release build.
+- `.github/workflows/release.yml`: builds and publishes the Windows desktop release.
 
 ## Examples
 

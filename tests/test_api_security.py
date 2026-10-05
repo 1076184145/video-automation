@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import unittest
+import http.client
+import tempfile
+import threading
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from video_automation.api import create_server
 from video_automation.api_security import (
     UnsafeAPIBindingError,
+    allowed_request_host,
     api_binding_status,
     is_loopback_api_host,
 )
+from video_automation.config import Settings
 
 
 class ApiSecurityTests(unittest.TestCase):
@@ -39,6 +46,71 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertFalse(status["remote_binding"])
         self.assertTrue(status["allowed"])
         self.assertEqual(status["warning_code"], "")
+
+    def test_host_guard_blocks_rebinding_without_origin_and_keeps_local_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = replace(
+                Settings.load(),
+                root=root,
+                jobs_dir=root / "jobs",
+                logs_dir=root / "logs",
+                api_host="127.0.0.1",
+                api_port=0,
+                api_allow_remote=False,
+                api_allowed_origins=(),
+            )
+            web_root = root / "web"
+            web_root.mkdir()
+            (web_root / "index.html").write_text("ok", encoding="utf-8")
+            server = create_server(settings, start_queue_worker=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_port
+                for host, path, expected in (
+                    (f"evil.example:{port}", "/api/v1/capabilities", 421),
+                    (f"127.0.0.1.evil.example:{port}", "/api/v1/capabilities", 421),
+                    (f"localhost:{port}", "/api/v1/capabilities", 200),
+                    (f"127.0.0.1:{port}", "/", 200),
+                ):
+                    with self.subTest(host=host):
+                        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                        connection.request("GET", path, headers={"Host": host})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        response.read()
+                        connection.close()
+                server.RequestHandlerClass.api_context.replace_settings(
+                    replace(settings, api_allow_remote=True)
+                )
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                connection.request("GET", "/api/v1/capabilities", headers={"Host": f"evil.example:{port}"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 421)
+                response.read()
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_host_guard_rejects_ambiguous_hosts_and_accepts_configured_proxy(self) -> None:
+        common = dict(
+            bound_host="127.0.0.1",
+            bound_port=8765,
+            allow_remote=False,
+            allowed_origins=("https://review.example",),
+        )
+        for headers in ([], ["localhost:8765", "evil.example:8765"],
+                        ["evil.example:8765"], ["localhost:bad"],
+                        ["user@localhost:8765"]):
+            with self.subTest(headers=headers):
+                self.assertFalse(allowed_request_host(headers, **common))
+        self.assertTrue(allowed_request_host(["review.example"], **common))
+        self.assertFalse(allowed_request_host(
+            ["evil.example:8765"], **{**common, "allow_remote": True}
+        ))
 
 
 if __name__ == "__main__":

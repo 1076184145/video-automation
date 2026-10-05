@@ -88,6 +88,37 @@ from .recovery import backup_database, ensure_database_ready, ensure_job_capacit
 from .transcribe import warm_transcription_backend
 from .pipeline_executor import process_job
 
+# Keep the historical composition-root imports available to existing callers.
+__all__ = [
+    "AutomationHTTPServer", "RERUN_STATUS", "create_server", "serve",
+    "_allowed_api_origins", "_default_api_origins", "_normalize_origin",
+    "_event_last_id", "_format_sse", "_parse_range",
+    "_bounded_text", "_job_feedback", "_job_files", "_job_is_terminal",
+    "_job_runtime_state", "_pid_is_alive", "_publish_job_dir_event",
+    "_record_transcript_preferences", "_remove_render_outputs", "_safe_float",
+    "_safe_int", "_save_clip_feedback", "_segments_to_srt", "_srt_time",
+    "_string_list", "_transcript_summary", "_update_transcript_from_editor",
+    "_validate_transcript_segments", "_normalize_env_updates", "_update_env_file",
+    "TOOLS_INSTALL_LOCK", "TOOLS_INSTALL_STATE", "_health_response",
+    "_publish_package_queue", "_recording_files", "_recording_upload_path",
+    "_resume_tombstone_cleanup", "_run_tools_install", "_schedule_tombstone_cleanup",
+    "_set_tools_install_state", "_tools_install_snapshot", "generate_uvr_plan",
+    "APIContext", "Any", "BaseHTTPRequestHandler", "Callable", "CoreHTTPRoutes",
+    "EnhancementRoutes", "Iterator", "Job", "JobRoutes", "PIPELINE_FLAG_NAMES",
+    "PIPELINE_STAGE_SPECS", "Path", "QueueControlRequested", "QueueWorkerProcess",
+    "Settings", "SystemRoutes", "ThreadingHTTPServer", "annotations",
+    "apply_profile_flags", "apply_profile_settings", "apply_runtime_settings_snapshot",
+    "automation_repository_for", "backup_database", "configure_event_store",
+    "contextmanager", "datetime", "ensure_database_ready", "ensure_job_capacity",
+    "generate_cover_candidates", "generate_highlights", "generate_metadata",
+    "generate_platform_segments", "generate_project_exports", "generate_publish_package",
+    "library_database_path", "load_job", "process_job", "queue_repository_for",
+    "read_json_file", "render_final_video", "render_highlight_video", "replace",
+    "require_safe_api_binding", "threading", "translate_subtitles",
+    "translated_clipped_ass_name", "translated_final_video_name",
+    "warm_transcription_backend", "write_json_atomic",
+]
+
 RERUN_STATUS = {name: spec.status for name, spec in PIPELINE_STAGE_SPECS.items()}
 
 
