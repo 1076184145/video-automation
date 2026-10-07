@@ -63,7 +63,10 @@ class JobRoutes:
     def _route_job(self, matched: RouteMatch, _query: str) -> None:
         settings = self.api_context.settings
         job_name = matched.params.get("job_name", "")
-        job = load_job(settings.jobs_dir / job_name / "job.json")
+        job_dir = self._safe_job_dir(job_name)
+        if job_dir is None:
+            return
+        job = load_job(job_dir / "job.json")
         if job is None:
             self._json({"error": "job not found"}, status=404)
             return
@@ -82,11 +85,8 @@ class JobRoutes:
     def _route_approve_job(self, matched: RouteMatch, _query: str) -> None:
         settings = self.api_context.settings
         job_name = matched.params.get("job_name", "")
-        job_dir = (settings.jobs_dir / job_name).resolve()
-        try:
-            job_dir.relative_to(settings.jobs_dir.resolve())
-        except ValueError:
-            self._json({"error": "invalid job"}, status=400)
+        job_dir = self._safe_job_dir(job_name)
+        if job_dir is None:
             return
         job = load_job(job_dir / "job.json")
         if job is None:
@@ -305,11 +305,8 @@ class JobRoutes:
     def _route_delete_job(self, matched: RouteMatch, _query: str) -> None:
         settings = self.api_context.settings
         job_name = matched.params.get("job_name", "")
-        job_dir = (settings.jobs_dir / job_name).resolve()
-        try:
-            job_dir.relative_to(settings.jobs_dir.resolve())
-        except ValueError:
-            self._json({"error": "invalid job"}, status=400)
+        job_dir = self._safe_job_dir(job_name)
+        if job_dir is None:
             return
         if not job_dir.exists():
             self._json({"error": "job not found"}, status=404)
@@ -369,12 +366,8 @@ class JobRoutes:
         self._json({"deleted": job_name, "cleanup_pending": False})
 
     def _load_job_for_mutation(self, job_name: str) -> Job | None:
-        settings = self.api_context.settings
-        job_dir = (settings.jobs_dir / job_name).resolve()
-        try:
-            job_dir.relative_to(settings.jobs_dir.resolve())
-        except ValueError:
-            self._json({"error": "invalid job"}, status=400)
+        job_dir = self._safe_job_dir(job_name)
+        if job_dir is None:
             return None
         job = load_job(job_dir / "job.json")
         if job is None:

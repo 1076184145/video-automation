@@ -268,6 +268,23 @@ def find_existing_job(settings: Settings, source_path: Path) -> Job | None:
     return None
 
 
+def safe_job_dir(jobs_dir: Path, job_name: str) -> Path | None:
+    """Resolve ``job_name`` underneath ``jobs_dir``.
+
+    Route parameters arrive percent-decoded after path matching, so a name
+    such as ``..%2F..%2Foutside`` becomes a real traversal once unquoted.
+    Returns None when the resolved directory escapes ``jobs_dir``; callers
+    must treat None as a rejected request, never fall back to the raw name.
+    """
+    try:
+        base = Path(jobs_dir).resolve()
+        job_dir = (base / job_name).resolve()
+        job_dir.relative_to(base)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return job_dir
+
+
 def load_job(state_path: Path) -> Job | None:
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
