@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import http.client
+import json
+import os
 import tempfile
 import threading
 from dataclasses import replace
@@ -46,6 +48,66 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertFalse(status["remote_binding"])
         self.assertTrue(status["allowed"])
         self.assertEqual(status["warning_code"], "")
+
+    def test_job_routes_reject_encoded_path_traversal(self) -> None:
+        # The router unquotes each matched segment (routing.py), so %2F becomes
+        # a real separator after matching; job_name must never escape jobs_dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "job.json").write_text(
+                json.dumps({"source_path": "secret.mp4", "status": "done"}),
+                encoding="utf-8",
+            )
+            settings = replace(
+                Settings.load(),
+                root=root,
+                jobs_dir=root / "jobs",
+                logs_dir=root / "logs",
+                api_host="127.0.0.1",
+                api_port=0,
+                api_allow_remote=False,
+                api_allowed_origins=(),
+            )
+            settings.jobs_dir.mkdir()
+            web_root = root / "web"
+            web_root.mkdir()
+            (web_root / "index.html").write_text("ok", encoding="utf-8")
+            server = create_server(settings, start_queue_worker=False)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_port
+                paths = [
+                    "/jobs/..%2Foutside",
+                    "/jobs/%2E%2E%2Foutside",
+                    "/jobs/..%2F..%2Foutside",
+                    "/jobs/..",
+                    "/jobs/..%2F",
+                ]
+                if os.name == "nt":
+                    # On Windows a decoded backslash is also a separator.
+                    paths.append("/jobs/..%5Coutside")
+                for path in paths:
+                    with self.subTest(path=path):
+                        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                        connection.request("GET", path, headers={"Host": f"127.0.0.1:{port}"})
+                        response = connection.getresponse()
+                        body = response.read()
+                        self.assertEqual(response.status, 400)
+                        self.assertIn(b"invalid job", body)
+                        connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                connection.request("GET", "/jobs", headers={"Host": f"127.0.0.1:{port}"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_host_guard_blocks_rebinding_without_origin_and_keeps_local_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

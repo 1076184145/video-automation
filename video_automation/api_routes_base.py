@@ -13,7 +13,7 @@ from .api_system import delete_recording, health_response, publish_package_queue
 from .api_security import allowed_request_host
 from .config import Settings
 from .events import current_event_id, wait_for_events
-from .jobs import list_jobs
+from .jobs import list_jobs, safe_job_dir
 from .library_api import dispatch_library_request
 from .routing import CORE_ROUTER, RouteMatch
 
@@ -205,13 +205,16 @@ class CoreHTTPRoutes:
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
-    def _send_job_file(self, job_name: str, filename: str, query: str = "") -> None:
-        settings = self.api_context.settings
-        job_dir = (settings.jobs_dir / job_name).resolve()
-        try:
-            job_dir.relative_to(settings.jobs_dir.resolve())
-        except ValueError:
+    def _safe_job_dir(self, job_name: str) -> Path | None:
+        job_dir = safe_job_dir(self.api_context.settings.jobs_dir, job_name)
+        if job_dir is None:
             self._json({"error": "invalid job"}, status=400)
+            return None
+        return job_dir
+
+    def _send_job_file(self, job_name: str, filename: str, query: str = "") -> None:
+        job_dir = self._safe_job_dir(job_name)
+        if job_dir is None:
             return
         path = (job_dir / filename).resolve()
         try:

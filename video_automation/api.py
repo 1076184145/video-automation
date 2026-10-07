@@ -67,7 +67,7 @@ from .covers import generate_cover_candidates
 from .events import configure_event_store
 from .hooks import generate_uvr_plan
 from .io_utils import read_json_file, write_json_atomic
-from .jobs import Job, load_job
+from .jobs import Job, load_job, safe_job_dir
 from .library_api import (
     automation_repository_for,
     library_database_path,
@@ -192,7 +192,10 @@ def _handler_class(settings: Settings) -> type[BaseHTTPRequestHandler]:
 
 def _execute_queue_item(settings: Settings, item: dict[str, Any]) -> None:
     job_name = str(item.get("job_name") or "")
-    job = load_job(Path(settings.jobs_dir) / job_name / "job.json")
+    job_dir = safe_job_dir(Path(settings.jobs_dir), job_name)
+    if job_dir is None:
+        raise RuntimeError(f"queued job not found: {job_name}")
+    job = load_job(job_dir / "job.json")
     if job is None:
         raise RuntimeError(f"queued job not found: {job_name}")
     ensure_job_capacity(settings, job.source_path)
