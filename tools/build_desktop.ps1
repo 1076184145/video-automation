@@ -18,11 +18,20 @@ if (-not (Test-Path $Python)) {
 Set-Location $Root
 
 if ($InstallDeps) {
-    & $Python -m pip install pywebview pyinstaller
+    & $Python -m pip install -r (Join-Path $Root "requirements-core.txt") pywebview pyinstaller
+    if ($LASTEXITCODE -ne 0) {
+        throw "Desktop dependency installation failed."
+    }
 }
 
 if (-not (Test-Path $PyInstaller)) {
     throw "PyInstaller is not installed. Run: .\tools\build_desktop.ps1 -InstallDeps"
+}
+
+$CertificateCheck = Join-Path $Root "tools\verify_desktop_certificates.py"
+& $Python $CertificateCheck
+if ($LASTEXITCODE -ne 0) {
+    throw "Desktop build certificate check failed. Run with -InstallDeps to update dependencies."
 }
 
 if ($Clean) {
@@ -31,6 +40,14 @@ if ($Clean) {
 }
 
 & $PyInstaller $Spec
+if ($LASTEXITCODE -ne 0) {
+    throw "Desktop build failed."
+}
+
+& $Python $CertificateCheck --bundle (Join-Path $Root "dist\$BundleName")
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged certificate verification failed."
+}
 
 Write-Host ""
 Write-Host "Desktop bundle created:" -ForegroundColor Green

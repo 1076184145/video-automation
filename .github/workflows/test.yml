@@ -26,9 +26,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24.22.1"
       - name: Install test dependencies
         run: python -m pip install -r requirements-core.txt pytest Pillow ruff
       - name: Lint Python
