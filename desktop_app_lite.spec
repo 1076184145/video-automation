@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
+
 
 project_root = Path.cwd()
 datas = [
@@ -9,6 +11,7 @@ datas = [
     (str(project_root / ".env.example"), "."),
     (str(project_root / "docs" / "DESKTOP_LITE_README.md"), "."),
 ]
+datas += copy_metadata("certifi")
 for tool_script in ["check_desktop_tools.ps1", "install_desktop_tools.ps1"]:
     path = project_root / "tools" / tool_script
     if path.exists():
@@ -43,7 +46,7 @@ a = Analysis(
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
-    hiddenimports=["webview"],
+    hiddenimports=["webview", "certifi"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
