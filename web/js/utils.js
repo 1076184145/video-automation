@@ -81,13 +81,6 @@ export function formatDate(value) {
   return date.toLocaleString();
 }
 
-export function progressForStatus(status) {
-  if (status === "done" || status === "needs_review") return 100;
-  if (status === "failed" || status === "canceled") return 100;
-  const index = STAGES.indexOf(stageForStatus(status));
-  return index >= 0 ? Math.round(((index + 1) / STAGES.length) * 100) : 18;
-}
-
 export function progressForJob(job) {
   if (["done", "needs_review", "failed", "canceled"].includes(job?.status)) return 100;
   const stage = job?.current_stage || stageForStatus(job?.status);
