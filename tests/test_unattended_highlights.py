@@ -8,7 +8,6 @@ import struct
 import subprocess
 import tempfile
 import unittest
-import urllib.error
 import wave
 from dataclasses import replace
 from pathlib import Path

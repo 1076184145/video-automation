@@ -1169,11 +1169,6 @@ def _attach_highlights_to_cuts(job_dir: Path, highlights: dict[str, Any]) -> Non
     write_json_atomic(cuts_path, cuts)
 
 
-def _semantic_score_for_clip(clip: dict[str, Any], highlights: list[Any]) -> float:
-    matches = _semantic_matches_for_clip(clip, highlights)
-    return round(max((float(item.get("score") or 0.0) for item in matches), default=0.0), 1)
-
-
 def _semantic_matches_for_clip(clip: dict[str, Any], highlights: list[Any]) -> list[dict[str, Any]]:
     try:
         start = float(clip.get("start") or 0)

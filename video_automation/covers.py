@@ -621,28 +621,6 @@ def _cover_headers(settings: Settings) -> dict[str, str]:
     return headers
 
 
-def _openrouter_images(payload: dict[str, Any]) -> tuple[list[str], str]:
-    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
-    images: list[str] = []
-    content = ""
-    for choice in choices:
-        message = choice.get("message") if isinstance(choice, dict) else None
-        if not isinstance(message, dict):
-            continue
-        if isinstance(message.get("content"), str):
-            content = message["content"]
-        raw_images = message.get("images") if isinstance(message.get("images"), list) else []
-        for item in raw_images:
-            if not isinstance(item, dict):
-                continue
-            image_url = item.get("image_url") or item.get("imageUrl")
-            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
-                images.append(image_url["url"])
-    if not images:
-        raise RuntimeError("OpenRouter response did not include generated images. Check that COVER_MODEL supports image output and COVER_MODALITIES matches the model.")
-    return images, content
-
-
 def _uses_openrouter_images(settings: Settings) -> bool:
     provider = settings.cover_provider.strip().lower()
     return provider == "openrouter" or "openrouter.ai" in settings.cover_base_url.strip().lower()

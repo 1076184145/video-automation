@@ -40,10 +40,6 @@ export function lazyView(importer, exportName) {
   };
 }
 
-export function navigate(hash) {
-  location.hash = hash;
-}
-
 export async function renderRoute(event) {
   if (typeof cleanup === "function") cleanup();
   cleanup = null;

@@ -116,16 +116,6 @@ def _portable_tool_path(root: Path, env_name: str, portable_name: str, fallback_
     return Path(fallback_name)
 
 
-def _portable_optional_tool_path(root: Path, env_name: str, portable_name: str) -> Path:
-    configured = _env(env_name, "")
-    if configured:
-        return Path(configured)
-    portable = root / "tools" / "bin" / portable_name
-    if portable.exists():
-        return portable
-    return Path("")
-
-
 def _float_env(name: str, default: float) -> float:
     raw = _env(name, str(default))
     try:
