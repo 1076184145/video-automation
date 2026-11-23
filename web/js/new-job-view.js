@@ -264,7 +264,7 @@ export function recordingListHtml(recordings, showAll) {
   `;
 }
 
-function formatBytes(value) {
+export function formatBytes(value) {
   const bytes = Number(value) || 0;
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;

@@ -209,7 +209,7 @@ def main() -> int:
     readme = FONTS_DIR / "README.md"
     readme.write_text(
         textwrap.dedent(
-            f"""\
+            """\
             # Bundled Fonts
 
             These fonts are bundled for offline / desktop use.

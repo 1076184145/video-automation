@@ -361,7 +361,7 @@ export const en = {
   "health.missing": "Missing Tools",
   "health.tool": "Tool",
   "settings.title": "Current Settings",
-  "settings.note": "Read-only: edit .env to change these values.",
+  "settings.note": "Common settings can be saved here; advanced paths and sensitive deployment values can still be edited in .env.",
   "settings.directories": "Directories",
   "settings.paths": "Paths",
   "settings.whisper": "Whisper",
@@ -408,7 +408,6 @@ Object.assign(en, {
   "cover.key_missing_google": "GOOGLE_API_KEY or COVER_API_KEY is not configured. Google cover generation requires your own Google key.",
   "cover.usage_note": "Cover generation calls the selected provider's image API. OpenRouter also receives one clear local frame selected across the top semantic moments.",
   "cover.confirm_generate": "Generate AI cover candidates now? This sends the cover prompt and, with OpenRouter, one selected reference frame to the configured provider.",
-  "settings.covers": "AI Covers"
 });
 
 Object.assign(en, {
@@ -437,7 +436,7 @@ Object.assign(en, {
   "enhance.target_ko": "Korean",
   "enhance.target_ja": "Japanese",
   "enhance.publish_package": "Publish Package",
-  "enhance.publish_note": "Create a manual upload checklist. This does not publish automatically.",
+  "enhance.publish_note": "Create Douyin / Bilibili manual upload handoff packages: platform checks, title, description, tags, and upload checklist. This does not log in or publish automatically.",
   "enhance.generate_publish_package": "Generate package",
   "enhance.publish_ready": "Publish package is ready.",
   "enhance.platform": "Target platform",
@@ -587,7 +586,6 @@ Object.assign(en, {
 });
 
 Object.assign(en, {
-  "settings.note": "Common settings can be saved here; advanced paths and sensitive deployment values can still be edited in .env.",
   "settings.edit_title": "Common Settings",
   "settings.edit_note": "Saving writes to .env and hot-reloads settings. Jobs already running keep their startup settings.",
   "settings.edit_paths": "Local directories & tool paths",
@@ -597,7 +595,7 @@ Object.assign(en, {
   "settings.edit_subtitles": "Subtitles",
   "settings.edit_exports": "Rendering & Preview",
   "settings.edit_ai": "AI Keys, Text Model & Covers",
-  "settings.edit_ai_note": "Configure LLM_MODEL for subtitle translation, semantic highlights, titles/descriptions, and configure cover generation here. AI features only use the third-party API keys you provide.",
+  "settings.edit_ai_note": "Configure text and cover AI here. Choose Local Hugging Face to keep transcript text and reference frames on this machine; third-party providers use only the API keys you supply.",
   "settings.edit_modules": "Optional Modules",
   "settings.item_count": "{count} items",
   "settings.snapshot_title": "Advanced Configuration Snapshot",
@@ -649,7 +647,6 @@ Object.assign(en, {
 
 Object.assign(en, {
   "enhance.publish_center": "Publish Center",
-  "enhance.publish_note": "Create Douyin / Bilibili manual upload handoff packages: platform checks, title, description, tags, and upload checklist. This does not log in or publish automatically.",
   "enhance.no_publish_package": "No publish package yet. Select Douyin or Bilibili and generate one.",
   "enhance.publish_title": "Title",
   "enhance.publish_description": "Description",
@@ -920,7 +917,7 @@ Object.assign(en, {
   "settings.option.best": "Best quality",
   "settings.option.demucs": "Local Demucs separation",
   "settings.option.plan": "Plan only",
-  "settings.option.none": "Do not run",
+  "settings.option.none": "No quantization",
   "settings.option.blur": "Blurred background fill",
   "settings.option.crop": "Centered crop"
 });
@@ -1026,7 +1023,6 @@ Object.assign(en, {
   "health.check.local_cover_diffusers": "Diffusers local-image runtime",
   "health.check.local_cover_accelerate": "Accelerate local-image runtime",
   "health.check.local_cover_bitsandbytes": "BitsAndBytes quantization runtime",
-  "settings.edit_ai_note": "Configure text and cover AI here. Choose Local Hugging Face to keep transcript text and reference frames on this machine; third-party providers use only the API keys you supply.",
   "cover.usage_note_local": "Local mode edits a selected reference frame with the image model configured on this machine. The first run loads the model into GPU memory and may take longer.",
   "ai.local_text": "Local mode: transcript text, clip summaries, and subtitles are processed by the configured text model through the loopback llama.cpp server and are not sent to an external AI provider.",
   "ai.local_image": "Local mode: the title, content summary, and selected reference frame are processed by the configured image model on this machine and are not sent to an external AI provider.",
@@ -1049,7 +1045,6 @@ Object.assign(en, {
   "settings.key.local_max_sequence_length": "Local cover prompt token limit",
   "settings.option.local": "Local Hugging Face",
   "settings.option.nf4": "NF4 4-bit (recommended)",
-  "settings.option.none": "No quantization",
   "settings.recommendation.reason.local_ai": "The selected provider runs on this machine and does not require an API key."
 });
 
