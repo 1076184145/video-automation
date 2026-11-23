@@ -329,7 +329,7 @@ export const zh = {
   "health.missing": "有工具缺失",
   "health.tool": "工具名称",
   "settings.title": "当前配置",
-  "settings.note": "只读：如需修改，请编辑 .env 文件。",
+  "settings.note": "常用配置可直接保存；高级路径和敏感部署项仍可编辑 .env。",
   "settings.directories": "目录位置",
   "settings.paths": "路径配置",
   "settings.whisper": "Whisper 配置",
@@ -439,7 +439,7 @@ Object.assign(zh, {
   "enhance.target_ko": "韩文",
   "enhance.target_ja": "日文",
   "enhance.publish_package": "发布包",
-  "enhance.publish_note": "生成手动上传用清单，不会自动发布到平台。",
+  "enhance.publish_note": "生成抖音 / B站手动上传交接包：平台检查、标题、简介、标签和上传清单。当前不会登录账号或自动发布。",
   "enhance.generate_publish_package": "生成发布包",
   "enhance.publish_ready": "发布包已生成。",
   "enhance.platform": "目标平台",
@@ -589,7 +589,6 @@ Object.assign(zh, {
 });
 
 Object.assign(zh, {
-  "settings.note": "常用配置可直接保存；高级路径和敏感部署项仍可编辑 .env。",
   "settings.edit_title": "常用配置",
   "settings.edit_note": "保存后会写入 .env 并热重载，正在处理的任务仍使用启动时的配置。",
   "settings.edit_paths": "本地目录与工具路径",
@@ -599,7 +598,7 @@ Object.assign(zh, {
   "settings.edit_subtitles": "字幕",
   "settings.edit_exports": "渲染与预览",
   "settings.edit_ai": "AI Key、文本模型与封面",
-  "settings.edit_ai_note": "这里配置字幕翻译、语义高光、标题简介等文本 AI 的 LLM_MODEL，也配置封面生成。所有 AI 功能仅使用你自行配置的第三方 API Key。",
+  "settings.edit_ai_note": "这里配置文本 AI 与封面 AI。选择“本地 Hugging Face”后，转写文本和参考帧只在本机处理；选择第三方服务商时，仅使用你自行配置的 API Key。",
   "settings.edit_modules": "可选模块",
   "settings.item_count": "{count} 项",
   "settings.snapshot_title": "高级配置快照",
@@ -651,7 +650,6 @@ Object.assign(zh, {
 
 Object.assign(zh, {
   "enhance.publish_center": "发布中心",
-  "enhance.publish_note": "生成抖音 / B站手动上传交接包：平台检查、标题、简介、标签和上传清单。当前不会登录账号或自动发布。",
   "enhance.no_publish_package": "还没有发布包。选择抖音或 B站后生成即可。",
   "enhance.publish_title": "标题",
   "enhance.publish_description": "简介",
@@ -741,10 +739,6 @@ Object.assign(zh, {
 });
 
 Object.assign(zh, {
-  "ai.disclosure_text": "此操作会把转写文本、剪辑摘要或字幕内容发送到你配置的 AI 服务；请确认素材允许外发。",
-  "ai.disclosure_image": "此操作会把封面标题和内容摘要发送到你配置的图片服务；使用 OpenRouter 时还会发送一张本地抽取的参考帧。请确认素材允许外发。",
-  "ai.usage_text": "预计消耗：1 次或多次文本模型调用，长字幕会分批处理。",
-  "ai.usage_image": "预计计费图片数：所选画幅数量 × 候选数量。",
   "job.feedback_accept": "采纳这个推荐片段",
   "job.feedback_reject": "拒绝这个推荐片段",
   "job.feedback_accept_short": "采纳",
@@ -926,7 +920,7 @@ Object.assign(zh, {
   "settings.option.best": "最佳画质",
   "settings.option.demucs": "Demucs 本地分离",
   "settings.option.plan": "仅生成计划",
-  "settings.option.none": "不执行",
+  "settings.option.none": "不量化",
   "settings.option.blur": "模糊背景填充",
   "settings.option.crop": "居中裁切"
 });
@@ -1032,7 +1026,6 @@ Object.assign(zh, {
   "health.check.local_cover_diffusers": "本地图像 Diffusers 运行库",
   "health.check.local_cover_accelerate": "本地图像 Accelerate 运行库",
   "health.check.local_cover_bitsandbytes": "本地图像 BitsAndBytes 量化库",
-  "settings.edit_ai_note": "这里配置文本 AI 与封面 AI。选择“本地 Hugging Face”后，转写文本和参考帧只在本机处理；选择第三方服务商时，仅使用你自行配置的 API Key。",
   "cover.usage_note_local": "本地模式会使用这台电脑上配置的图像模型编辑参考帧；首次运行需要把模型载入显存，等待时间会更长。",
   "ai.local_text": "本地模式：转写文本、片段摘要和字幕由已配置的文本模型通过仅监听本机的 llama.cpp 服务处理，不会发送给外部 AI 服务商。",
   "ai.local_image": "本地模式：标题、内容摘要和选中的参考帧由已配置的图像模型在本机处理，不会发送给外部 AI 服务商。",
@@ -1055,7 +1048,6 @@ Object.assign(zh, {
   "settings.key.local_max_sequence_length": "本地封面提示词长度",
   "settings.option.local": "本地 Hugging Face",
   "settings.option.nf4": "NF4 四比特（推荐）",
-  "settings.option.none": "不量化",
   "settings.recommendation.reason.local_ai": "所选服务商在本机运行，不需要 API Key。"
 });
 
