@@ -5,6 +5,7 @@ import { t } from "./i18n.js";
 import {
   NEW_JOB_OPTIONS,
   batchListHtml,
+  formatBytes,
   recordingListHtml,
   renderNewJobForm,
   summaryCard,
@@ -838,11 +839,4 @@ function cleanSourcePath(value) {
     path = path.slice(1, -1).trim();
   }
   return path;
-}
-
-function formatBytes(value) {
-  const bytes = Number(value) || 0;
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
 }
