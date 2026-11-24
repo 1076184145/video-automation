@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
-from .plans import PLATFORM_PRESETS
+from .plans import PLATFORM_PRESETS, _preferred_video
 
 
 MAX_PLATFORM_SEGMENTS = 1000
@@ -65,14 +65,6 @@ def generate_platform_segments(
         })
     write_json_atomic(job_dir / "segments_manifest.json", manifest)
     return manifest
-
-
-def _preferred_video(job_dir: Path) -> Path | None:
-    for name in ["final.mp4", "review.mp4"]:
-        path = job_dir / name
-        if path.exists() and path.stat().st_size > 0:
-            return path
-    return None
 
 
 def _normalize_platforms(platforms: list[str]) -> list[str]:

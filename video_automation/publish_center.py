@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
+from .io_utils import _decode
 from .provider_errors import ProviderRequestError
 
 
@@ -35,13 +36,6 @@ def _provider_error_is_retryable(error: ProviderRequestError) -> bool:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _decode(value: str | None, fallback: Any) -> Any:
-    try:
-        return json.loads(value) if value else fallback
-    except (TypeError, ValueError):
-        return fallback
 
 
 class PublishProvider(Protocol):

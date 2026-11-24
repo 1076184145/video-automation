@@ -21,6 +21,7 @@ from typing import Any
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic
+from .llm_tools import _google_model_url
 from .media import run_command
 from .provider_errors import (
     ProviderRequestError,
@@ -599,14 +600,6 @@ def _google_images(payload: dict[str, Any]) -> tuple[list[str], str]:
             "Check that COVER_MODEL supports image output.",
         )
     return images, "\n".join(text_parts).strip()
-
-
-def _google_model_url(base_url: str, model: str) -> str:
-    base = require_http_url(base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-    model_name = model.strip()
-    if model_name.startswith("models/"):
-        model_name = model_name.removeprefix("models/")
-    return f"{base}/models/{model_name}:generateContent"
 
 
 def _cover_headers(settings: Settings) -> dict[str, str]:
