@@ -1026,6 +1026,9 @@ canvas.timeline.is-panning { cursor: grabbing; }
   border-color: var(--accent);
   box-shadow: 0 0 10px var(--accent-dim);
 }
+/* `.clip-editor input` drops the outline and :checked overrides the focus glow, so a focused, checked
+   "keep" box showed no change at all; restore the shared keyboard focus ring. */
+.clip-editor input[type="checkbox"]:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .check input[type="checkbox"]:checked::after, .clip-editor input[type="checkbox"]:checked::after {
   content: "";
   position: absolute;
@@ -1066,6 +1069,8 @@ canvas.timeline.is-panning { cursor: grabbing; }
   border-color: var(--accent);
   outline: none;
 }
+/* Focus was signalled by border colour alone; add the shared focus ring. */
+.transcript-input:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 
 /* Downloads */
 .downloads { display: flex; gap: 12px; flex-wrap: wrap; }
