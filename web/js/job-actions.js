@@ -284,8 +284,18 @@ export function renderReviewActions(quality) {
         ${renderQualityGate(quality)}
         <div id="approve-error"></div>
       </div>
-      <button class="button primary" id="approve-job" type="button">${t("job.approve")}</button>
     </section>
+  `;
+}
+
+// Approve sits in its own bar outside the review panel: the panel's overflow clipping would stop a
+// sticky child, and the bar stays pinned to the top while the creator scrolls the review workspace.
+export function renderReviewBar() {
+  return `
+    <div class="review-action-bar">
+      <span>${t("status.review")}</span>
+      <button class="button primary" id="approve-job" type="button">${t("job.approve")}</button>
+    </div>
   `;
 }
 

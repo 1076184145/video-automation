@@ -674,6 +674,22 @@ kbd {
 /* Panels & Pipeline */
 .panel { padding: 24px; margin-bottom: 24px; position: relative; overflow: hidden; }
 .panel h2 { margin: 0 0 20px; font-size: 24px; line-height: 32px; font-weight: 700; letter-spacing: -0.02em; }
+/* Approve stays reachable while scrolling Job Detail. The slot is a direct child of the page so
+   the sticky range spans the whole workspace (a .panel would clip it). */
+.review-action-sticky { position: sticky; top: 0; z-index: var(--z-sticky); }
+.review-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 24px;
+  padding: 10px 12px 10px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px var(--shadow-soft);
+}
+.review-action-bar > span { color: var(--text-secondary); font-weight: 700; }
 .job-workspace-tabs {
   display: flex;
   gap: 6px;
