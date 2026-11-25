@@ -278,6 +278,8 @@ export const en = {
   "job.save_transcript": "Save Transcript",
   "job.save_transcript_preview": "Transcript saved. Cut suggestions and subtitles were updated; old previews were invalidated.",
   "job.save_transcript_failed": "Save transcript failed: ",
+  "job.transcript_save_locked": "This job is still processing (for example, re-rendering the review preview). You can save the transcript once it finishes.",
+  "job.transcript_unsaved_draft": "Unsaved edits are kept as a local draft.",
   "job.add_clip": "Add Clip",
   "job.delete_job": "Delete Job",
   "job.delete_job_confirm": "Delete this job and all generated files?",

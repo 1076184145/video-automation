@@ -255,6 +255,8 @@ export const zh = {
   "job.save_transcript": "保存转写文本",
   "job.save_transcript_preview": "转写文本已保存，剪辑建议和字幕已更新，旧预览已失效。",
   "job.save_transcript_failed": "保存转写文本失败：",
+  "job.transcript_save_locked": "任务正在处理（例如重新生成审核预览），处理完成后才能保存转写文本。",
+  "job.transcript_unsaved_draft": "未保存的修改已作为草稿保留在本机。",
   "job.add_clip": "添加片段",
   "job.delete_job": "删除任务",
   "job.delete_job_confirm": "确认删除这个任务及其所有产物？",

@@ -104,6 +104,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
       setEditing(true);
       draftSaver.schedule();
       syncKeptTranscript(root);
+      if (root.querySelector("#save-transcript")?.dataset.saveLocked) setTranscriptSaveLock(root, { locked: true, unsaved: true });
     }
   };
   root.addEventListener("click", handler);
@@ -113,6 +114,37 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     root.removeEventListener("input", inputHandler);
     draftSaver.dispose();
   };
+}
+
+// The API rejects transcript saves (HTTP 409) while the job is queued or processing, for example
+// during the review re-render that "Save cuts" starts. Say so before the click: disable the button,
+// show the reason, and note that unsaved edits stay in the local draft. Only a lock set here is
+// lifted here, so the button's own loading state is never touched.
+export function setTranscriptSaveLock(root, { locked = false, unsaved = false } = {}) {
+  const button = root.querySelector("#save-transcript");
+  if (!button) return;
+  let note = root.querySelector("#transcript-save-lock");
+  if (!locked) {
+    if (button.dataset.saveLocked) {
+      delete button.dataset.saveLocked;
+      button.disabled = false;
+      button.removeAttribute("aria-describedby");
+    }
+    note?.remove();
+    return;
+  }
+  button.dataset.saveLocked = "true";
+  button.disabled = true;
+  if (!note) {
+    note = document.createElement("span");
+    note.id = "transcript-save-lock";
+    note.className = "muted";
+    note.setAttribute("role", "status");
+    button.insertAdjacentElement("afterend", note);
+  }
+  const text = unsaved ? `${t("job.transcript_save_locked")} ${t("job.transcript_unsaved_draft")}` : t("job.transcript_save_locked");
+  if (note.textContent !== text) note.textContent = text;
+  button.setAttribute("aria-describedby", note.id);
 }
 
 function collectEditedTranscript(root = document) {
