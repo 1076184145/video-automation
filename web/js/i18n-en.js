@@ -408,6 +408,7 @@ Object.assign(en, {
   "cover.key_missing_openai": "OPENAI_API_KEY or COVER_API_KEY is not configured. Add it to .env and restart the service first.",
   "cover.key_missing_openrouter": "COVER_API_KEY is not configured. OpenRouter cover generation requires your own OpenRouter key.",
   "cover.key_missing_google": "GOOGLE_API_KEY or COVER_API_KEY is not configured. Google cover generation requires your own Google key.",
+  "cover.key_missing_options": "You can also enter the key in Settings, or, if a local cover model is configured on this machine, switch the cover provider to local there.",
   "cover.usage_note": "Cover generation calls the selected provider's image API. OpenRouter also receives one clear local frame selected across the top semantic moments.",
   "cover.confirm_generate": "Generate AI cover candidates now? This sends the cover prompt and, with OpenRouter, one selected reference frame to the configured provider.",
 });

@@ -410,6 +410,7 @@ Object.assign(zh, {
   "cover.key_missing_openai": "未配置 OPENAI_API_KEY 或 COVER_API_KEY。请先在 .env 中填写后重启服务。",
   "cover.key_missing_openrouter": "未配置 COVER_API_KEY。使用 OpenRouter 生成封面时需要填写自己的 OpenRouter Key。",
   "cover.key_missing_google": "未配置 GOOGLE_API_KEY 或 COVER_API_KEY。使用 Google 生成封面时需要填写自己的 Google Key。",
+  "cover.key_missing_options": "也可以在「设置」中填写对应的 Key；如果本机已配置本地封面模型，可以在「设置」里把封面服务商改为 local。",
   "cover.usage_note": "生成封面会调用所选服务商的图片接口；使用 OpenRouter 时，还会发送从多个高分语义时刻中选出的一张清晰本地参考帧。",
   "cover.confirm_generate": "确认开始生成 AI 封面候选图？这会发送封面提示；使用 OpenRouter 时还会发送一张选定的参考帧。",
   "settings.covers": "AI 封面"
