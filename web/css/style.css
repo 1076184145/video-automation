@@ -583,6 +583,8 @@ kbd {
 .badge { display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-full); padding: 6px 12px; font-size: 12px; font-weight: 700; white-space: nowrap; box-shadow: inset 0 1px 0 hsla(0,0%,100%,0.2); }
 .badge.processing { color: #fff; background: var(--status-processing); }
 .badge.review { color: #422006; background: var(--status-review); }
+/* Queued / paused / draft items: waiting for a slot or a user action, not awaiting review. */
+.badge.waiting { color: var(--text-primary); background: var(--bg-surface); border: 1px dashed var(--border-hover); box-shadow: none; }
 .badge.done { color: #052e1b; background: var(--status-done); }
 .badge.failed { color: #fff; background: var(--status-failed); }
 .badge.accent { color: var(--bg-base); background: var(--accent); }

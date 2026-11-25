@@ -223,5 +223,5 @@ function publishStatusGroup(status) {
   if (status === "published") return "done";
   if (status === "failed") return "failed";
   if (["uploading", "processing"].includes(status)) return "processing";
-  return "review";
+  return "waiting";
 }

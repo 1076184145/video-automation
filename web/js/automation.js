@@ -96,7 +96,7 @@ function queueStatusGroup(status) {
   if (status === "failed" || status === "canceled") return "failed";
   if (status === "completed") return "done";
   if (status === "running") return "processing";
-  return "review";
+  return "waiting";
 }
 
 export function bindQueuePanel(root, reload) {
