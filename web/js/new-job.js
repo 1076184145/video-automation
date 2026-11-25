@@ -127,8 +127,27 @@ function bindNewJobDisclosures() {
       // Storage is optional; the page remains fully usable without persistence.
     }
   };
-  sourceTools?.addEventListener("toggle", save);
+  sourceTools?.addEventListener("toggle", () => {
+    // An automatic open (openSourceToolsForRecordings) is not the user's preference; don't store it.
+    if (sourceTools.dataset.autoOpened) {
+      delete sourceTools.dataset.autoOpened;
+      return;
+    }
+    save();
+  });
   processingOptions?.addEventListener("toggle", save);
+}
+
+// Local recordings live inside the "more input methods" disclosure. Open it once per visit when
+// the list has entries, so the recordings are visible without an extra click; a user who closes
+// it again keeps it closed for the rest of the visit.
+function openSourceToolsForRecordings(state) {
+  if (state.sourceToolsAutoOpened) return;
+  state.sourceToolsAutoOpened = true;
+  const sourceTools = document.getElementById("new-job-source-tools");
+  if (!sourceTools || sourceTools.open) return;
+  sourceTools.dataset.autoOpened = "true";
+  sourceTools.open = true;
 }
 
 function bindWizardRail() {
@@ -456,6 +475,7 @@ async function loadRecordings(state) {
       return;
     }
     renderRecordingList(target, recordings, false, state);
+    openSourceToolsForRecordings(state);
   } catch (error) {
     if (isAbortError(error, state.signal) || state.disposed || version !== state.recordingLoadVersion) return;
     target.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
