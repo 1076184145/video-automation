@@ -7,6 +7,7 @@ import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatTime } from "./utils.js";
 export const TRANSCRIPT_PAGE_SIZE = 200;
 const transcriptStates = new WeakMap();
+const transcriptSavesInFlight = new WeakSet();
 
 export function renderTranscript(transcript) {
   const segments = transcript?.segments || [];
@@ -85,6 +86,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     if (e.target.id !== "save-transcript") return;
     const button = e.target;
     setButtonLoading(button, true, t("common.loading"));
+    transcriptSavesInFlight.add(root);
     try {
       await API.updateTranscript(jobName, collectEditedTranscript(root));
       draftSaver.cancel();
@@ -96,7 +98,9 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
       setTranscriptMessage(`${t("job.save_transcript_failed")}${escapeHtml(error.message)}`, true);
       showToast(`${t("job.save_transcript_failed")}${error.message}`, "error");
     } finally {
+      transcriptSavesInFlight.delete(root);
       setButtonLoading(button, false);
+      syncTranscriptSaveButton(root);
     }
   };
   const inputHandler = (e) => {
@@ -118,8 +122,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
 
 // The API rejects transcript saves (HTTP 409) while the job is queued or processing, for example
 // during the review re-render that "Save cuts" starts. Say so before the click: disable the button,
-// show the reason, and note that unsaved edits stay in the local draft. Only a lock set here is
-// lifted here, so the button's own loading state is never touched.
+// show the reason, and note that unsaved edits stay in the local draft.
 export function setTranscriptSaveLock(root, { locked = false, unsaved = false } = {}) {
   const button = root.querySelector("#save-transcript");
   if (!button) return;
@@ -127,14 +130,14 @@ export function setTranscriptSaveLock(root, { locked = false, unsaved = false } 
   if (!locked) {
     if (button.dataset.saveLocked) {
       delete button.dataset.saveLocked;
-      button.disabled = false;
       button.removeAttribute("aria-describedby");
     }
     note?.remove();
+    syncTranscriptSaveButton(root);
     return;
   }
   button.dataset.saveLocked = "true";
-  button.disabled = true;
+  syncTranscriptSaveButton(root);
   if (!note) {
     note = document.createElement("span");
     note.id = "transcript-save-lock";
@@ -145,6 +148,13 @@ export function setTranscriptSaveLock(root, { locked = false, unsaved = false } 
   const text = unsaved ? `${t("job.transcript_save_locked")} ${t("job.transcript_unsaved_draft")}` : t("job.transcript_save_locked");
   if (note.textContent !== text) note.textContent = text;
   button.setAttribute("aria-describedby", note.id);
+}
+
+// Two independent conditions disable Save transcript: the job lock above and a save request still in
+// flight. Whichever ends first must not re-enable the button, so both paths recompute it from both.
+function syncTranscriptSaveButton(root) {
+  const button = root.querySelector("#save-transcript");
+  if (button) button.disabled = Boolean(button.dataset.saveLocked) || transcriptSavesInFlight.has(root);
 }
 
 function collectEditedTranscript(root = document) {
