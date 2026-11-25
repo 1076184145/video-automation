@@ -211,7 +211,7 @@ export function bindDownloadActions(root) {
     button.disabled = true;
     try {
       await copyText(button.dataset.copyPath || "");
-      button.textContent = "OK";
+      button.textContent = t("common.copied");
       setTimeout(() => {
         button.textContent = original || t("common.copy");
         button.disabled = false;
