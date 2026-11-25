@@ -102,27 +102,30 @@ export function renderNewJobFormForTest(disclosures = {}, library = {}) {
   return renderNewJobForm(disclosures, library, renderProfileOptions(recipes));
 }
 
-function loadNewJobDisclosureState() {
+function readStoredDisclosures() {
   try {
     const value = JSON.parse(localStorage.getItem(NEW_JOB_DISCLOSURE_STORAGE_KEY) || "{}");
-    return {
-      sourceTools: Boolean(value?.sourceTools),
-      processingOptions: Boolean(value?.processingOptions),
-    };
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   } catch {
-    return { sourceTools: false, processingOptions: false };
+    return {};
   }
+}
+
+function loadNewJobDisclosureState() {
+  const value = readStoredDisclosures();
+  return {
+    sourceTools: Boolean(value.sourceTools),
+    processingOptions: Boolean(value.processingOptions),
+  };
 }
 
 function bindNewJobDisclosures() {
   const sourceTools = document.getElementById("new-job-source-tools");
   const processingOptions = document.getElementById("new-job-processing-options");
-  const save = () => {
+  // Each disclosure stores only its own key, so a stored key is always a choice the user made there.
+  const save = (key, open) => {
     try {
-      localStorage.setItem(NEW_JOB_DISCLOSURE_STORAGE_KEY, JSON.stringify({
-        sourceTools: Boolean(sourceTools?.open),
-        processingOptions: Boolean(processingOptions?.open),
-      }));
+      localStorage.setItem(NEW_JOB_DISCLOSURE_STORAGE_KEY, JSON.stringify({ ...readStoredDisclosures(), [key]: open }));
     } catch {
       // Storage is optional; the page remains fully usable without persistence.
     }
@@ -133,17 +136,18 @@ function bindNewJobDisclosures() {
       delete sourceTools.dataset.autoOpened;
       return;
     }
-    save();
+    save("sourceTools", Boolean(sourceTools.open));
   });
-  processingOptions?.addEventListener("toggle", save);
+  processingOptions?.addEventListener("toggle", () => save("processingOptions", Boolean(processingOptions.open)));
 }
 
-// Local recordings live inside the "more input methods" disclosure. Open it once per visit when
-// the list has entries, so the recordings are visible without an extra click; a user who closes
-// it again keeps it closed for the rest of the visit.
+// Local recordings live inside the "more input methods" disclosure. When the list has entries and
+// the user has never opened or closed that disclosure themselves, open it once per visit so the
+// recordings are visible without an extra click. A saved choice always wins, on every visit.
 function openSourceToolsForRecordings(state) {
   if (state.sourceToolsAutoOpened) return;
   state.sourceToolsAutoOpened = true;
+  if ("sourceTools" in readStoredDisclosures()) return;
   const sourceTools = document.getElementById("new-job-source-tools");
   if (!sourceTools || sourceTools.open) return;
   sourceTools.dataset.autoOpened = "true";
