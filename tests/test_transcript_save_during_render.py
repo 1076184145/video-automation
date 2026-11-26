@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,10 +16,27 @@ from unittest.mock import patch
 from video_automation import api_routes_jobs
 from video_automation.api import create_server
 from video_automation.jobs import load_job
+from video_automation.library import LibraryRepository
 from video_automation.library_api import library_database_path, preference_repository_for, repository_for
 
 ORIGINAL = [{"start": 0.0, "end": 1.0, "text": "original line"}, {"start": 1.0, "end": 2.0, "text": "second line"}]
 BUSY_ERROR = "job is already rendering_review; wait for it to finish before editing transcript"
+READBACK_SQL = "SELECT * FROM revisions WHERE id = ?"
+
+
+class _FailingReadback:
+    """A library connection whose revision readback SELECT raises while armed; every other statement runs."""
+
+    def __init__(self, connection: sqlite3.Connection, armed: threading.Event) -> None:
+        self._connection, self._armed = connection, armed
+
+    def execute(self, sql: str, *args):
+        if self._armed.is_set() and " ".join(sql.split()) == READBACK_SQL:
+            raise sqlite3.OperationalError("injected revision readback failure")
+        return self._connection.execute(sql, *args)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
 
 
 class TranscriptSaveDuringRenderTests(unittest.TestCase):
@@ -219,6 +237,38 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
 
     def _no_backup_left(self) -> None:
         self.assertEqual([p.name for p in self.settings.jobs_dir.iterdir()], ["job-one"])
+
+    def _fail_revision_readback(self) -> threading.Event:
+        """Codex's injection on 1b0c650: the revision INSERT is left alone and only the SELECT that reads the new
+        row back fails. Set the returned event to arm it."""
+        armed = threading.Event()
+        original = LibraryRepository._connect
+
+        @contextmanager
+        def connect(repository):
+            with original(repository) as connection:
+                yield _FailingReadback(connection, armed)
+        patcher = patch.object(LibraryRepository, "_connect", connect)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return armed
+
+    def _revision_history(self) -> list[tuple]:
+        return [(item["id"], item["revision"], item["kind"])
+                for item in repository_for(self.settings).list_revisions("job-one")]
+
+    def _assert_one_retry_saves(self, text: str, history: list[tuple]) -> None:
+        """The retry after the fault is removed adds exactly one revision, and it holds the saved edit."""
+        status, body = self._save(self._edited(text, "second line"))
+        self.assertEqual(status, 200, body)
+        after = self._revision_history()  # newest first
+        self.assertEqual(after[1:], history)
+        stored = repository_for(self.settings).get_revision(after[0][0])
+        self.assertEqual(body["revision"], stored)  # the response is the stored revision, same shape
+        self.assertEqual([segment["text"] for segment in stored["payload"]["segments"]], [text, "second line"])
+        self.assertEqual(self._texts(), [text, "second line"])
+        self._subtitles_contain(text, "original line")
+        self.assertIsNone(self._save_state())
 
     def test_save_during_managed_render_is_held_then_applied_once(self) -> None:
         queue_id = self._start_managed_render()
@@ -535,6 +585,43 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(self._revision_texts(), [["held edit", "second line"]])
         self._subtitles_contain("held edit", "original line")
+
+    def test_revision_readback_failure_on_a_direct_save_leaves_the_revision_history_unchanged(self) -> None:
+        # Codex P1 on 1b0c650: a failed read of the new revision must not leave that revision committed.
+        self._make_approvable()
+        self._write_job("needs_review")
+        repository_for(self.settings).create_revision("job-one", "cuts", {"clips": []}, summary="earlier cuts save")
+        before, state_before, history = self._job_files(), self._job_state(), self._revision_history()
+        armed = self._fail_revision_readback()
+        armed.set()
+        self.assertEqual(self._save(self._edited("edited line", "second line")),
+                         (400, {"error": "injected revision readback failure"}))
+        armed.clear()
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"approved review video")
+        self._no_backup_left()
+        self.assertEqual(self._revision_history(), history)
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "injected revision readback failure"})
+        self._assert_one_retry_saves("edited line", history)
+
+    def test_revision_readback_failure_on_a_held_apply_leaves_the_revision_history_unchanged(self) -> None:
+        release = self._held_edit_on_a_released_job()
+        repository_for(self.settings).create_revision("job-one", "cuts", {"clips": []}, summary="earlier cuts save")
+        before, state_before, history = self._job_files(), self._job_state(), self._revision_history()
+        armed = self._fail_revision_readback()
+        armed.set()
+        release.set()
+        self.assertTrue(self._wait_for(lambda: (self._save_state() or {}).get("state") == "failed"))
+        armed.clear()
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "injected revision readback failure"})
+        self.assertEqual(len(self.generated), 3)  # the failure came after the new files were generated
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"approved review video")
+        self._no_backup_left()
+        self.assertEqual(self._revision_history(), history)
+        self._assert_one_retry_saves("held edit", history)
 
     def test_status_write_failure_removes_the_new_revision_and_restores_the_files(self) -> None:
         self._make_approvable()

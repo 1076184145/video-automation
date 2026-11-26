@@ -450,7 +450,11 @@ class LibraryRepository:
                     created_at,
                 ),
             )
-        return self.get_revision(revision_id) or {}
+            # Build the response inside the INSERT's transaction: if reading or decoding the row fails, the
+            # INSERT is rolled back with it, so a caller never gets an error for a revision that was kept.
+            stored = connection.execute("SELECT * FROM revisions WHERE id = ?", (revision_id,)).fetchone()
+            created = self._revision_payload(stored, include_payload=True) if stored else {}
+        return created
 
     def delete_revision(self, revision_id: str) -> bool:
         """Undo create_revision for a save that failed right after it (the next save reuses the number)."""

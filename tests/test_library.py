@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from video_automation.library import LibraryRepository
 
@@ -109,6 +112,54 @@ class LibraryRepositoryTests(unittest.TestCase):
         )
         stored = self.repository.get_revision(first["id"])
         self.assertEqual(stored["payload"]["segments"][0]["text"], "第一版")
+
+    def test_create_revision_reads_its_row_back_before_the_commit(self) -> None:
+        # Nothing runs after the commit that could fail the call and leave a committed revision behind.
+        connections: list[list[str]] = []
+        original = LibraryRepository._connect
+
+        class Recording:
+            def __init__(self, connection, log):
+                self._connection, self._log = connection, log
+
+            def execute(self, sql, *args):
+                self._log.append(" ".join(sql.split()))
+                return self._connection.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+        @contextmanager
+        def connect(repository):
+            log: list[str] = []
+            connections.append(log)
+            with original(repository) as connection:
+                yield Recording(connection, log)
+            log.append("<committed>")
+
+        with patch.object(LibraryRepository, "_connect", connect):
+            self.repository.create_revision("job-one", "transcript", {"segments": []})
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0][-3:], [
+            "INSERT INTO revisions(id, job_name, revision, kind, payload_json, summary, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            "SELECT * FROM revisions WHERE id = ?",
+            "<committed>",
+        ])
+
+    def test_create_revision_returns_the_stored_revision_for_both_kinds(self) -> None:
+        for kind, payload in (("transcript", {"segments": [{"start": 0, "end": 1, "text": "第一版"}]}),
+                              ("cuts", {"clips": [{"start": 0, "end": 1, "keep": True}]})):
+            created = self.repository.create_revision("job-one", kind, payload, summary=f"保存{kind}")
+            self.assertEqual(created, self.repository.get_revision(created["id"]))
+            self.assertEqual(set(created), {"id", "job_name", "revision", "kind", "summary", "created_at", "payload"})
+            self.assertEqual(created["payload"], payload)
+
+    def test_a_failed_readback_rolls_the_new_revision_back(self) -> None:
+        with patch.object(LibraryRepository, "_revision_payload", side_effect=sqlite3.OperationalError("read failed")):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.repository.create_revision("job-one", "cuts", {"clips": []})
+        self.assertEqual(self.repository.list_revisions("job-one"), [])
+        self.assertEqual(self.repository.create_revision("job-one", "cuts", {"clips": []})["revision"], 1)
 
     def test_job_contexts_are_loaded_in_bulk_with_latest_revision(self) -> None:
         for name in ("job-a", "job-b"):
