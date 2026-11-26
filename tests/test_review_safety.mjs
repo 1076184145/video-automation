@@ -20,6 +20,7 @@ const {
   clearReviewDraft,
   loadReviewDraft,
   saveReviewDraft,
+  transcriptDraftConfirmed,
 } = await import("../web/js/review-drafts.js");
 const { renderRevisionHistory } = await import("../web/js/revision-history.js");
 
@@ -42,6 +43,22 @@ test("review drafts survive reload and can be cleared after a successful save", 
 
   clearReviewDraft("job-one", "transcript", storage);
   assert.equal(loadReviewDraft("job-one", "transcript", storage), null);
+});
+
+test("a transcript draft is dropped only after a confirmed deferred save that holds exactly its edits", () => {
+  const draft = [{ start: 0, end: 1, text: "edited" }, { start: 1, end: 2.5, text: "second" }];
+  const saved = [{ start: 0, end: 1, text: "edited" }, { start: 1, end: 2.5, text: "second " }];
+  assert.equal(transcriptDraftConfirmed(draft, saved, { state: "applied", error: null }), true);
+  // Matching text alone never clears the draft: a failed apply can leave transcript.json written.
+  assert.equal(transcriptDraftConfirmed(draft, saved, { state: "failed", error: "boom" }), false);
+  assert.equal(transcriptDraftConfirmed(draft, saved, { state: "pending", error: null }), false);
+  assert.equal(transcriptDraftConfirmed(draft, saved, { state: "applying", error: null }), false);
+  assert.equal(transcriptDraftConfirmed(draft, saved, null), false);
+  assert.equal(transcriptDraftConfirmed(draft, saved, undefined), false);
+  // Confirmed, but the draft holds newer edits than the saved transcript: keep it.
+  assert.equal(transcriptDraftConfirmed(draft, [{ ...saved[0], text: "older" }, saved[1]], { state: "applied" }), false);
+  assert.equal(transcriptDraftConfirmed(draft, saved.slice(0, 1), { state: "applied" }), false);
+  assert.equal(transcriptDraftConfirmed(draft, [{ ...saved[0], end: 1.2 }, saved[1]], { state: "applied" }), false);
 });
 
 test("revision history exposes explicit restore actions without rendering payload data", () => {

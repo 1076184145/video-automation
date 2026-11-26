@@ -7,7 +7,7 @@ import { bindDetailResizer, bindTimelineActions, seekPreview } from "./detail-la
 import { bindJobDetailTabs } from "./detail-tabs.js";
 import { bindEnhancementActions } from "./enhancement-panel.js";
 import { eventHub } from "./event-hub.js";
-import { bindTranscriptEditor } from "./transcript-editor.js";
+import { bindTranscriptEditor, showTranscriptSaveState } from "./transcript-editor.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { bindDownloadActions, bindJobActions, bindReviewActions } from "./job-actions.js";
@@ -15,7 +15,7 @@ import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile, shouldA
 import { renderJobDetailShell, updateJobDetailView } from "./job-detail-view.js";
 import { deriveLiveProgress, updateLiveStatus } from "./job-status.js";
 import { restoreNativeVideoControls } from "./preview-player.js";
-import { clearReviewDraft, loadReviewDraft } from "./review-drafts.js";
+import { clearReviewDraft, loadReviewDraft, transcriptDraftConfirmed } from "./review-drafts.js";
 import { bindRevisionHistory } from "./revision-history.js";
 import { renderTimeline } from "./timeline.js";
 import { showToast } from "./toast.js";
@@ -428,8 +428,8 @@ export async function renderJobDetail(match, { signal } = {}) {
         cuts = { ...(cuts || {}), clips: cutsDraft.data };
       }
       let transcriptDraft = loadReviewDraft(name, "transcript");
-      if (transcriptDraft && draftMatchesTranscript(transcriptDraft.data, transcript?.segments)) {
-        // The saved transcript already holds these edits (e.g. a save the server applied after a render).
+      if (transcriptDraft && transcriptDraftConfirmed(transcriptDraft.data, transcript?.segments, job.transcript_save)) {
+        // The server confirmed the deferred save, and the saved transcript holds exactly these edits.
         clearReviewDraft(name, "transcript");
         transcriptDraft = null;
       }
@@ -472,6 +472,7 @@ export async function renderJobDetail(match, { signal } = {}) {
         isEditingTranscript,
         bindPreview: bindPreviewPlayer,
       });
+      showTranscriptSaveState(job.transcript_save);
       if (cutsDraft) isEditingClips = true;
       if (transcriptDraft) isEditingTranscript = true;
       renderedKey = nextKey;
@@ -541,14 +542,4 @@ export async function renderJobDetail(match, { signal } = {}) {
     app.removeEventListener("input", markEditing, true);
     app.removeEventListener("change", markEditing, true);
   };
-}
-
-function draftMatchesTranscript(draft, segments) {
-  if (!Array.isArray(draft) || !Array.isArray(segments) || draft.length !== segments.length) return false;
-  return draft.every((item, index) => {
-    const segment = segments[index] || {};
-    return Math.abs(Number(item?.start) - Number(segment.start)) < 0.0005
-      && Math.abs(Number(item?.end) - Number(segment.end)) < 0.0005
-      && String(item?.text || "").trim() === String(segment.text || "").trim();
-  });
 }

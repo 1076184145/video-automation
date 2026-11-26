@@ -188,6 +188,19 @@ function setTranscriptMessage(message, isError = false) {
   if (!box) return;
   box.innerHTML = `<div class="${isError ? "error" : "notice"}">${message}</div>`;
 }
+
+// Shows the server's state for a save it held during a render (GET /jobs/<name> "transcript_save").
+export function showTranscriptSaveState(state) {
+  const box = document.getElementById("transcript-editor-message");
+  if (!box || !state) return;
+  if (state.state === "failed") {
+    setTranscriptMessage(`${t("job.save_transcript_failed")}${escapeHtml(state.error || "")}`, true);
+  } else if (state.state === "pending" || state.state === "applying") {
+    setTranscriptMessage(t("job.save_transcript_pending"));
+  } else if (state.state === "applied" && box.textContent.trim() === t("job.save_transcript_pending")) {
+    setTranscriptMessage(t("job.save_transcript_preview"));
+  }
+}
 export const collectEditedTranscriptForTest = collectEditedTranscript;
 
 function currentTranscriptState(root) {

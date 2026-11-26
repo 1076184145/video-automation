@@ -42,8 +42,9 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         repository_for(self.settings).index_existing_jobs(self.settings.jobs_dir)
         # Subtitle and preview generation need FFmpeg-era settings; the route behavior is what is under test.
         self.generated = []
+        self.hooks = {}  # name -> callable run inside the patched step (test barrier or forced failure)
         for name in ("generate_ass_subtitles", "generate_clipped_ass_subtitles", "generate_render_preview"):
-            patcher = patch.object(api_routes_jobs, name, side_effect=lambda *a, _n=name, **k: self.generated.append(_n))
+            patcher = patch.object(api_routes_jobs, name, side_effect=lambda *a, _n=name, **k: self._generate(_n))
             patcher.start()
             self.addCleanup(patcher.stop)
         self.server = create_server(self.settings, start_queue_worker=False)
@@ -66,16 +67,36 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
             "updated_at": "2026-11-25T10:00:00",
         }), encoding="utf-8")
 
-    def _post(self, path: str, payload: object) -> tuple[int, dict]:
+    def _generate(self, name: str) -> None:
+        self.generated.append(name)
+        hook = self.hooks.get(name)
+        if hook is not None:
+            hook()
+
+    def _request(self, method: str, path: str, payload: object = None) -> tuple[int, dict]:
         host, port = self.server.server_address
-        connection = http.client.HTTPConnection(host, port, timeout=10)
-        try:
-            connection.request("POST", path, body=json.dumps(payload).encode("utf-8"),
-                               headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            return response.status, json.loads(response.read().decode("utf-8"))
-        finally:
-            connection.close()
+        # GETs are retried: job_files() can stat a job.json temp file that vanishes during a concurrent
+        # save and drop the connection (a separate, pre-existing issue). POSTs are never retried.
+        for attempt in range(1 if method == "POST" else 10):
+            connection = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                body = None if payload is None else json.dumps(payload).encode("utf-8")
+                connection.request(method, path, body=body, headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                return response.status, json.loads(response.read().decode("utf-8"))
+            except (ConnectionError, http.client.RemoteDisconnected):
+                if method == "POST" or attempt == 9:
+                    raise
+                time.sleep(0.05)
+            finally:
+                connection.close()
+        raise AssertionError("unreachable")
+
+    def _post(self, path: str, payload: object) -> tuple[int, dict]:
+        return self._request("POST", path, payload)
+
+    def _save_state(self) -> object:
+        return self._request("GET", "/jobs/job-one")[1].get("transcript_save")
 
     def _save(self, segments: object) -> tuple[int, dict]:
         return self._post("/jobs/job-one/transcript", {"segments": segments})
@@ -165,7 +186,9 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         status, body = self._post("/jobs/job-one/approve", {})
         self.assertEqual((status, body), (409, {"error": "a transcript save is still being applied; try again in a moment"}))
         self.queue.complete(queue_id)
-        self.assertTrue(self._wait_for(lambda: self._transcript_revisions() == 1))
+        # The guard holds until the whole apply has returned, so wait for the confirmed outcome.
+        self.assertTrue(self._wait_for(lambda: self._save_state() == {"state": "applied", "error": None}))
+        self.assertEqual(self._transcript_revisions(), 1)
         # Once applied, approval goes on to the existing quality gate. A transcript save always removes
         # the render outputs, so this fixture (no video) is then blocked by "render_missing", as on base.
         status, body = self._post("/jobs/job-one/approve", {})
@@ -173,17 +196,105 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "quality_gate_failed")
         self.assertIn("render_missing", {item["code"] for item in body["error"]["details"]["blocking"]})
 
-    def test_direct_save_after_the_render_supersedes_the_held_edit(self) -> None:
+    def test_save_is_held_while_the_worker_still_owns_a_job_that_reads_needs_review(self) -> None:
+        # Blocker 1: the worker writes needs_review before it releases its queue item.
+        queue_id = self._start_managed_render()
+        self._finish_render(queue_id, complete_queue=False)
+        self.assertEqual(load_job(self.job_dir / "job.json").status, "needs_review")
+        (self.job_dir / "review.mp4").write_bytes(b"review video being finalized")
+        status, body = self._save(self._edited("edited line", "second line"))
+        self.assertEqual(status, 202, body)
+        self.assertEqual(set(body), {"job", "pending"})
+        time.sleep(0.8)  # several applier polls while the queue item still says running
+        self.assertEqual(self._texts(), ["original line", "second line"])
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"review video being finalized")
+        self.assertEqual(self._transcript_revisions(), 0)
+        self.assertEqual(self.generated, [])
+        self.assertEqual(self._save_state(), {"state": "pending", "error": None})
+
+        self.queue.complete(queue_id)
+        self.assertTrue(self._wait_for(lambda: self._transcript_revisions() == 1))
+        time.sleep(0.6)
+        self.assertEqual(self._texts(), ["edited line", "second line"])
+        self.assertEqual(self._transcript_revisions(), 1)
+        self.assertEqual(self.generated.count("generate_render_preview"), 1)
+        self.assertFalse((self.job_dir / "review.mp4").exists())  # removed by the apply, as by any transcript save
+        self.assertEqual(self._save_state(), {"state": "applied", "error": None})
+
+    def test_second_save_while_the_worker_still_owns_the_job_replaces_the_held_edit(self) -> None:
         queue_id = self._start_managed_render()
         self.assertEqual(self._save(self._edited("held edit", "second line"))[0], 202)
         self._finish_render(queue_id, complete_queue=False)
         status, body = self._save(self._edited("newer edit", "second line"))
-        self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"job", "transcript", "revision"})
+        self.assertEqual(status, 202, body)
         self.queue.complete(queue_id)
-        time.sleep(0.8)
+        self.assertTrue(self._wait_for(lambda: self._transcript_revisions() == 1))
+        time.sleep(0.6)
         self.assertEqual(self._texts(), ["newer edit", "second line"])
         self.assertEqual(self._transcript_revisions(), 1)
+
+    def test_direct_save_after_release_supersedes_a_held_edit_not_yet_applied(self) -> None:
+        with patch.object(api_routes_jobs, "HELD_TRANSCRIPT_POLL_SECONDS", 3.0):
+            queue_id = self._start_managed_render()
+            self.assertEqual(self._save(self._edited("held edit", "second line"))[0], 202)
+            self._finish_render(queue_id)  # released; the applier is still in its first 3 s poll
+            status, body = self._save(self._edited("newer edit", "second line"))
+            self.assertEqual(status, 200, body)
+            self.assertEqual(set(body), {"job", "transcript", "revision"})
+            self.assertIsNone(self._save_state())
+            time.sleep(3.5)  # the applier wakes, finds nothing held, and exits
+        self.assertEqual(self._texts(), ["newer edit", "second line"])
+        self.assertEqual(self._transcript_revisions(), 1)
+
+    def test_approve_stays_blocked_while_the_held_save_is_being_applied(self) -> None:
+        # Blocker 2: the guard must cover the apply itself, not only the wait before it.
+        entered, release = threading.Event(), threading.Event()
+        self.hooks["generate_ass_subtitles"] = lambda: (entered.set(), release.wait(15))
+        queue_id = self._start_managed_render()
+        self.assertEqual(self._save(self._edited("edited line", "second line"))[0], 202)
+        self._finish_render(queue_id)
+        self.assertTrue(entered.wait(10), "the applier did not reach the barrier")
+        guard = (409, {"error": "a transcript save is still being applied; try again in a moment"})
+        try:
+            # A permissive quality gate shows that the transcript guard, not the gate, refuses approval.
+            with patch.object(api_routes_jobs, "evaluate_job_quality", return_value={"blocking": []}):
+                for _ in range(4):
+                    self.assertEqual(self._post("/jobs/job-one/approve", {}), guard)
+                    self.assertEqual(self._save_state(), {"state": "applying", "error": None})
+                    time.sleep(0.2)
+            self.assertEqual(load_job(self.job_dir / "job.json").status, "needs_review")
+        finally:
+            release.set()
+        self.assertTrue(self._wait_for(lambda: self._save_state() == {"state": "applied", "error": None}))
+        self.assertEqual(self._transcript_revisions(), 1)
+        status, body = self._post("/jobs/job-one/approve", {})  # the real gate: the apply removed the render
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"], "quality_gate_failed")
+        self.assertIn("render_missing", {item["code"] for item in body["error"]["details"]["blocking"]})
+
+    def test_failed_held_apply_is_reported_and_a_retry_applies_everything(self) -> None:
+        # Blocker 3: a failure after transcript.json was written must stay visible, never look applied.
+        def fail() -> None:
+            raise RuntimeError("forced subtitle failure")
+        self.hooks["generate_ass_subtitles"] = fail
+        queue_id = self._start_managed_render()
+        self.assertEqual(self._save(self._edited("edited line", "second line"))[0], 202)
+        self._finish_render(queue_id)
+        self.assertTrue(self._wait_for(lambda: (self._save_state() or {}).get("state") == "failed"))
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "forced subtitle failure"})
+        # Same partial write as a failed direct save: transcript.json changed, nothing after it ran.
+        self.assertEqual(self._texts(), ["edited line", "second line"])
+        self.assertEqual(self._transcript_revisions(), 0)
+        self.assertEqual(self.generated, ["generate_ass_subtitles"])
+        self.assertFalse(api_routes_jobs.transcript_save_is_held(load_job(self.job_dir / "job.json")))
+
+        del self.hooks["generate_ass_subtitles"]
+        status, body = self._save(self._edited("edited line", "second line"))  # the retry, job now idle
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._transcript_revisions(), 1)
+        self.assertEqual(self.generated[1:], ["generate_ass_subtitles", "generate_clipped_ass_subtitles",
+                                              "generate_render_preview"])
+        self.assertIsNone(self._save_state())
 
     def test_held_save_waits_through_pause_and_applies_after_cancel(self) -> None:
         queue_id = self._start_managed_render()
