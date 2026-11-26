@@ -33,6 +33,7 @@ from .library_api import (
     library_database_path,
     preference_repository_for,
     record_job_revision,
+    repository_for,
     structured_error,
 )
 from .pipeline_spec import PIPELINE_STAGE_SPECS
@@ -222,12 +223,14 @@ class JobRoutes:
                 hold_transcript_save(self.api_context, job, segments)
                 self._json({"job": self._job_payload(job), "pending": True}, status=202)
                 return
-            # This newer full transcript supersedes a held edit, whether or not it succeeds.
+            # This newer full transcript supersedes a held edit only once it is saved. If it fails, its
+            # files are restored, its caller gets the error, and a held edit stays queued for the applier.
             _bump_transcript_save_generation(key)
             try:
                 transcript, revision = apply_transcript_save(settings, job, segments)
             except Exception as exc:
-                _record_transcript_save_outcome(key, {"state": "failed", "error": str(exc)})
+                if not transcript_save_is_held(job):
+                    _record_transcript_save_outcome(key, {"state": "failed", "error": str(exc)})
                 self._json({"error": str(exc)}, status=400)
                 return
             _clear_transcript_save_state(key)
@@ -524,8 +527,11 @@ def _job_runtime_for(api_context: Any, job: Job) -> dict[str, Any]:
 def apply_transcript_save(settings: Any, job: Job, segments: Any) -> tuple[dict[str, Any], Any]:
     """Write a transcript edit and everything derived from it (the 200 path of the transcript route).
 
-    The file steps are all or nothing: if one fails, every file they touched is put back as it was,
-    so the gate never sees an edited transcript next to subtitles and a preview from before it."""
+    All or nothing up to the revision and the job status: until both are written, every file the save
+    touched can be put back as it was, so a failure never leaves an edited transcript next to subtitles,
+    a preview, a revision or a job status from before it. The revision is written before the status
+    (job.json is then never rewritten for a failed save) and removed again if the status write fails.
+    Preference hints are recorded last and best-effort: by then the edit itself is saved."""
     previous_transcript = read_json_file(job.job_dir / "transcript.json") or {}
     backup = _TranscriptFilesBackup(job.job_dir)
     try:
@@ -540,25 +546,44 @@ def apply_transcript_save(settings: Any, job: Job, segments: Any) -> tuple[dict[
         generate_clipped_ass_subtitles(settings, job.job_dir, force=True)
         remove_render_outputs(job.job_dir)
         generate_render_preview(settings, job.job_dir, job.source_path, force=True)
+        revision = record_job_revision(
+            settings,
+            job.job_dir.name,
+            "transcript",
+            transcript,
+            summary="Saved transcript edits",
+        )
+        try:
+            job.set_status("needs_review")
+        except BaseException:
+            _remove_revision(settings, revision)
+            raise
     except BaseException:
         backup.restore()
         raise
     backup.discard()
-    job.set_status("needs_review")
-    revision = record_job_revision(
-        settings,
-        job.job_dir.name,
-        "transcript",
-        transcript,
-        summary="Saved transcript edits",
-    )
-    record_transcript_preferences(
-        preference_repository_for(settings),
-        job.job_dir.name,
-        previous_transcript,
-        transcript,
-    )
+    try:
+        record_transcript_preferences(
+            preference_repository_for(settings),
+            job.job_dir.name,
+            previous_transcript,
+            transcript,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Saved the transcript for %s but could not record its preference hints", job.job_dir.name,
+            exc_info=True,
+        )
     return transcript, revision
+
+
+def _remove_revision(settings: Any, revision: dict[str, Any]) -> None:
+    try:
+        repository_for(settings).delete_revision(str(revision.get("id") or ""))
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not remove revision %s of a failed transcript save", revision.get("id")
+        )
 
 
 # Every file a transcript save rewrites or removes. Small files are kept in memory; render videos are

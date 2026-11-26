@@ -452,6 +452,12 @@ class LibraryRepository:
             )
         return self.get_revision(revision_id) or {}
 
+    def delete_revision(self, revision_id: str) -> bool:
+        """Undo create_revision for a save that failed right after it (the next save reuses the number)."""
+        with self._connect() as connection:
+            deleted = connection.execute("DELETE FROM revisions WHERE id = ?", (revision_id,)).rowcount
+        return deleted > 0
+
     def get_revision(self, revision_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(

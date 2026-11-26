@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -14,7 +15,7 @@ from unittest.mock import patch
 from video_automation import api_routes_jobs
 from video_automation.api import create_server
 from video_automation.jobs import load_job
-from video_automation.library_api import repository_for
+from video_automation.library_api import library_database_path, preference_repository_for, repository_for
 
 ORIGINAL = [{"start": 0.0, "end": 1.0, "text": "original line"}, {"start": 1.0, "end": 2.0, "text": "second line"}]
 BUSY_ERROR = "job is already rendering_review; wait for it to finish before editing transcript"
@@ -170,6 +171,54 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
 
     def _edited(self, *texts: str) -> list[dict]:
         return [dict(segment, text=text) for segment, text in zip(ORIGINAL, texts, strict=True)]
+
+    def _hold_applier(self) -> threading.Event:
+        """A deterministic barrier after queue release: the held-save applier treats the job as busy
+        until the event is set. The save route decides from the queue and never calls _job_is_idle."""
+        release = threading.Event()
+        real_idle = api_routes_jobs._job_is_idle
+        patcher = patch.object(api_routes_jobs, "_job_is_idle",
+                               side_effect=lambda *a, **k: release.is_set() and real_idle(*a, **k))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return release
+
+    def _held_edit_on_a_released_job(self, text: str = "held edit") -> threading.Event:
+        """Edit A gets 202 while the worker owns the job; the queue then releases the job while the
+        applier is held at the barrier, so A is still pending on an idle job."""
+        release = self._hold_applier()
+        self._make_approvable()
+        queue_id = self._start_managed_render()
+        self.assertEqual(self._save(self._edited(text, "second line"))[0], 202)
+        self._finish_render(queue_id)
+        time.sleep(0.6)  # the applier polls and meets the barrier
+        self.assertEqual(self._save_state(), {"state": "pending", "error": None})
+        return release
+
+    def _sql_trigger(self, sql: str) -> None:
+        """A real SQLite failure inside the library database's own transaction."""
+        repository_for(self.settings)
+        preference_repository_for(self.settings).events()  # both schemas exist before the trigger
+        with sqlite3.connect(library_database_path(self.settings)) as connection:
+            connection.execute(sql)
+        connection.close()
+
+    def _job_state(self) -> bytes:
+        return (self.job_dir / "job.json").read_bytes()
+
+    def _revision_texts(self) -> list[list[str]]:
+        repository = repository_for(self.settings)
+        return [[segment["text"] for segment in repository.get_revision(item["id"])["payload"]["segments"]]
+                for item in repository.list_revisions("job-one") if item.get("kind") == "transcript"]
+
+    def _subtitles_contain(self, wanted: str, unwanted: str) -> None:
+        for name in ("subtitles.ass", "subtitles_clipped.ass"):
+            text = (self.job_dir / name).read_text(encoding="utf-8")
+            self.assertIn(wanted, text, name)
+            self.assertNotIn(unwanted, text, name)
+
+    def _no_backup_left(self) -> None:
+        self.assertEqual([p.name for p in self.settings.jobs_dir.iterdir()], ["job-one"])
 
     def test_save_during_managed_render_is_held_then_applied_once(self) -> None:
         queue_id = self._start_managed_render()
@@ -406,6 +455,144 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         time.sleep(0.6)
         self.assertEqual(self._texts(), ["held edit", "second line"])
         self.assertEqual(self._transcript_revisions(), 1)
+
+    def test_failed_direct_save_after_release_keeps_the_pending_held_edit(self) -> None:
+        # Codex P1 on 9efff49: a valid B supersedes the accepted A only once B is saved.
+        release = self._held_edit_on_a_released_job()
+        before, state_before = self._job_files(), self._job_state()
+
+        def fail() -> None:
+            raise RuntimeError("forced subtitle failure")
+        self.hooks["generate_ass_subtitles"] = fail  # B fails after its transcript.json was written
+        self.assertEqual(self._save(self._edited("newer edit", "second line")),
+                         (400, {"error": "forced subtitle failure"}))
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self._no_backup_left()
+        self.assertEqual(self._save_state(), {"state": "pending", "error": None})
+        self.assertEqual(self._transcript_revisions(), 0)
+        del self.hooks["generate_ass_subtitles"]
+        release.set()
+        self.assertTrue(self._wait_for(lambda: self._save_state() == {"state": "applied", "error": None}))
+        time.sleep(0.6)  # nothing applies a second time
+        self.assertEqual(self._texts(), ["held edit", "second line"])
+        self.assertEqual(self._revision_texts(), [["held edit", "second line"]])
+        self._subtitles_contain("held edit", "newer edit")
+
+    def test_successful_direct_save_after_release_replaces_the_pending_held_edit(self) -> None:
+        release = self._held_edit_on_a_released_job()
+        status, body = self._save(self._edited("newer edit", "second line"))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["revision"]["revision"], 1)
+        self.assertIsNone(self._save_state())
+        release.set()
+        time.sleep(0.6)  # the applier finds nothing held and exits
+        self.assertIsNone(self._save_state())
+        self.assertEqual(self._texts(), ["newer edit", "second line"])
+        self.assertEqual(self._revision_texts(), [["newer edit", "second line"]])
+        self._subtitles_contain("newer edit", "held edit")
+
+    def test_revision_failure_on_a_direct_save_restores_everything_and_a_retry_saves_once(self) -> None:
+        # Codex P1 on 9efff49: the backup is kept until the revision and the status are written.
+        self._make_approvable()
+        self._write_job("needs_review")
+        before, state_before = self._job_files(), self._job_state()
+        self._sql_trigger("CREATE TRIGGER fail_revision BEFORE INSERT ON revisions WHEN NEW.kind = 'transcript' "
+                          "BEGIN SELECT RAISE(ABORT, 'injected revision failure'); END")
+        self.assertEqual(self._save(self._edited("edited line", "second line")),
+                         (400, {"error": "injected revision failure"}))
+        self.assertEqual(self.generated, ["generate_ass_subtitles", "generate_clipped_ass_subtitles",
+                                          "generate_render_preview"])  # failed after the new files existed
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"approved review video")
+        self._no_backup_left()
+        self.assertEqual(self._transcript_revisions(), 0)
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "injected revision failure"})
+        self._sql_trigger("DROP TRIGGER fail_revision")
+        status, body = self._save(self._edited("edited line", "second line"))
+        self.assertEqual(status, 200, body)
+        self.assertIsNone(self._save_state())
+        self.assertEqual(self._revision_texts(), [["edited line", "second line"]])
+        self._subtitles_contain("edited line", "original line")
+
+    def test_revision_failure_on_a_held_apply_restores_everything_and_a_retry_saves_once(self) -> None:
+        release = self._held_edit_on_a_released_job()
+        before, state_before = self._job_files(), self._job_state()
+        self._sql_trigger("CREATE TRIGGER fail_revision BEFORE INSERT ON revisions WHEN NEW.kind = 'transcript' "
+                          "BEGIN SELECT RAISE(ABORT, 'injected revision failure'); END")
+        release.set()
+        self.assertTrue(self._wait_for(lambda: (self._save_state() or {}).get("state") == "failed"))
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "injected revision failure"})
+        self.assertEqual(len(self.generated), 3)
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"approved review video")
+        self._no_backup_left()
+        self.assertEqual(self._transcript_revisions(), 0)
+        self._sql_trigger("DROP TRIGGER fail_revision")
+        status, body = self._save(self._edited("held edit", "second line"))  # the retry, job idle
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._revision_texts(), [["held edit", "second line"]])
+        self._subtitles_contain("held edit", "original line")
+
+    def test_status_write_failure_removes_the_new_revision_and_restores_the_files(self) -> None:
+        self._make_approvable()
+        self._write_job("done")
+        before, state_before = self._job_files(), self._job_state()
+        denied = PermissionError(13, "Access is denied", "job.json")
+        with patch("video_automation.jobs.write_json_atomic", side_effect=denied):
+            status, body = self._save(self._edited("edited line", "second line"))
+        self.assertEqual(status, 400, body)
+        self.assertIn("Access is denied", body["error"])
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._job_state(), state_before)
+        self._no_backup_left()
+        self.assertEqual(self._transcript_revisions(), 0)
+        status, body = self._save(self._edited("edited line", "second line"))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["revision"]["revision"], 1)
+        self.assertEqual(self._revision_texts(), [["edited line", "second line"]])
+        self.assertEqual(load_job(self.job_dir / "job.json").status, "needs_review")
+
+    def _fail_the_second_correction(self) -> None:
+        # The first subtitle correction is stored, the second fails: a partial preference write.
+        self._sql_trigger(
+            "CREATE TRIGGER fail_correction BEFORE INSERT ON preference_events WHEN NEW.kind = 'subtitle_correction' "
+            "AND EXISTS (SELECT 1 FROM preference_events WHERE kind = 'subtitle_correction') "
+            "BEGIN SELECT RAISE(ABORT, 'injected preference failure'); END")
+
+    def _corrections(self) -> int:
+        return sum(1 for event in preference_repository_for(self.settings).events()
+                   if event["kind"] == "subtitle_correction")
+
+    def test_preference_failure_after_a_direct_save_still_reports_the_committed_save(self) -> None:
+        # Preference hints are best-effort: the edit, its outputs and its single revision are already saved.
+        self._write_job("needs_review")
+        self._fail_the_second_correction()
+        status, body = self._save(self._edited("edited line", "edited second"))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["revision"]["revision"], 1)
+        self.assertIsNone(self._save_state())
+        self.assertEqual(self._texts(), ["edited line", "edited second"])
+        self.assertEqual(self._revision_texts(), [["edited line", "edited second"]])
+        self.assertEqual(self._corrections(), 1)
+        self._subtitles_contain("edited second", "original line")
+        self._no_backup_left()
+
+    def test_preference_failure_after_a_held_apply_still_reports_it_applied(self) -> None:
+        release = self._hold_applier()
+        queue_id = self._start_managed_render()
+        self.assertEqual(self._save(self._edited("edited line", "edited second"))[0], 202)
+        self._finish_render(queue_id)
+        self._fail_the_second_correction()
+        release.set()
+        self.assertTrue(self._wait_for(lambda: self._save_state() is not None
+                                       and self._save_state()["state"] in {"applied", "failed"}))
+        self.assertEqual(self._save_state(), {"state": "applied", "error": None})
+        self.assertEqual(self._texts(), ["edited line", "edited second"])
+        self.assertEqual(self._revision_texts(), [["edited line", "edited second"]])
+        self._subtitles_contain("edited second", "original line")
 
     def test_approval_paused_after_the_gate_does_not_commit_over_a_held_save(self) -> None:
         # P1-A, first case: approve passed the real gate, then a save was accepted and applied.
