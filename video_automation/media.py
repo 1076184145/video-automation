@@ -320,10 +320,6 @@ def extract_audio(settings: Settings, source_path: Path, audio_path: Path, *, fo
     extract_audio_outputs(settings, source_path, audio_path, None, force=force)
 
 
-def extract_high_quality_audio(settings: Settings, source_path: Path, audio_path: Path, *, force: bool = False) -> None:
-    extract_audio_outputs(settings, source_path, None, audio_path, force=force)
-
-
 def generate_thumbnail(settings: Settings, source_path: Path, thumbnail_path: Path, duration: float, *, force: bool = False) -> dict[str, Any]:
     payload_path = thumbnail_path.with_suffix(".json")
     if thumbnail_path.exists() and thumbnail_path.stat().st_size > 0 and payload_path.exists() and not force:
