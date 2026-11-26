@@ -31,6 +31,20 @@ export function clearReviewDraft(jobName, kind, storage = localStorage) {
   storage.removeItem(storageKey(jobName, kind));
 }
 
+// A transcript draft may be dropped only after the server confirms that a deferred save finished
+// ("applied"), and only if the saved transcript still holds exactly the draft's edits. Matching text
+// alone is not enough: a failed apply can leave transcript.json written while later steps never ran.
+export function transcriptDraftConfirmed(draft, segments, saveState) {
+  if (saveState?.state !== "applied") return false;
+  if (!Array.isArray(draft) || !Array.isArray(segments) || draft.length !== segments.length) return false;
+  return draft.every((item, index) => {
+    const segment = segments[index] || {};
+    return Math.abs(Number(item?.start) - Number(segment.start)) < 0.0005
+      && Math.abs(Number(item?.end) - Number(segment.end)) < 0.0005
+      && String(item?.text || "").trim() === String(segment.text || "").trim();
+  });
+}
+
 export function createDraftSaver(jobName, kind, readData, delay = 250) {
   let timer = null;
   const flush = () => {

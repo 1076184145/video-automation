@@ -7,7 +7,7 @@ import { bindDetailResizer, bindTimelineActions, seekPreview } from "./detail-la
 import { bindJobDetailTabs } from "./detail-tabs.js";
 import { bindEnhancementActions } from "./enhancement-panel.js";
 import { eventHub } from "./event-hub.js";
-import { bindTranscriptEditor, setTranscriptSaveLock } from "./transcript-editor.js";
+import { bindTranscriptEditor, setTranscriptSaveLock, showTranscriptSaveState } from "./transcript-editor.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { bindDownloadActions, bindJobActions, bindReviewActions } from "./job-actions.js";
@@ -15,7 +15,7 @@ import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile, shouldA
 import { renderJobDetailShell, updateJobDetailView } from "./job-detail-view.js";
 import { deriveLiveProgress, updateLiveStatus } from "./job-status.js";
 import { restoreNativeVideoControls } from "./preview-player.js";
-import { loadReviewDraft } from "./review-drafts.js";
+import { clearReviewDraft, loadReviewDraft, transcriptDraftConfirmed } from "./review-drafts.js";
 import { bindRevisionHistory } from "./revision-history.js";
 import { renderTimeline } from "./timeline.js";
 import { showToast } from "./toast.js";
@@ -434,7 +434,12 @@ export async function renderJobDetail(match, { signal } = {}) {
       if (cutsDraft) {
         cuts = { ...(cuts || {}), clips: cutsDraft.data };
       }
-      const transcriptDraft = loadReviewDraft(name, "transcript");
+      let transcriptDraft = loadReviewDraft(name, "transcript");
+      if (transcriptDraft && transcriptDraftConfirmed(transcriptDraft.data, transcript?.segments, job.transcript_save)) {
+        // The server confirmed the deferred save, and the saved transcript holds exactly these edits.
+        clearReviewDraft(name, "transcript");
+        transcriptDraft = null;
+      }
       if (transcriptDraft) {
         transcript = { ...(transcript || {}), segments: transcriptDraft.data };
       }
@@ -474,6 +479,7 @@ export async function renderJobDetail(match, { signal } = {}) {
         isEditingTranscript,
         bindPreview: bindPreviewPlayer,
       });
+      showTranscriptSaveState(job.transcript_save);
       if (cutsDraft) isEditingClips = true;
       if (transcriptDraft) isEditingTranscript = true;
       syncTranscriptSaveLock(job.status);

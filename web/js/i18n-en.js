@@ -281,6 +281,7 @@ export const en = {
   "job.save_cuts": "Save Clips",
   "job.save_transcript": "Save Transcript",
   "job.save_transcript_preview": "Transcript saved. Cut suggestions and subtitles were updated; old previews were invalidated.",
+  "job.save_transcript_pending": "Transcript received. It will be applied when the current render finishes; your local draft is kept until then.",
   "job.save_transcript_failed": "Save transcript failed: ",
   "job.transcript_save_locked": "This job is still processing (for example, re-rendering the review preview). You can save the transcript once it finishes.",
   "job.transcript_unsaved_draft": "Unsaved edits are kept as a local draft.",

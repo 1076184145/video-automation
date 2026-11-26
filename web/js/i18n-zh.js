@@ -258,6 +258,7 @@ export const zh = {
   "job.save_cuts": "保存剪辑点",
   "job.save_transcript": "保存转写文本",
   "job.save_transcript_preview": "转写文本已保存，剪辑建议和字幕已更新，旧预览已失效。",
+  "job.save_transcript_pending": "转写文本已提交，将在当前渲染结束后自动应用；在此之前本地草稿会保留。",
   "job.save_transcript_failed": "保存转写文本失败：",
   "job.transcript_save_locked": "任务正在处理（例如重新生成审核预览），处理完成后才能保存转写文本。",
   "job.transcript_unsaved_draft": "未保存的修改已作为草稿保留在本机。",

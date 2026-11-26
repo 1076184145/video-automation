@@ -17,9 +17,31 @@ globalThis.window = {
   addEventListener() {},
 };
 
-const { collectEditedTranscriptForTest, renderTranscript } = await import(
+const { collectEditedTranscriptForTest, renderTranscript, showTranscriptSaveState } = await import(
   "../web/js/transcript-editor.js"
 );
+const { t } = await import("../web/js/i18n.js");
+
+test("showTranscriptSaveState reports a held, failed or applied deferred save in the message box", () => {
+  const box = { innerHTML: "", get textContent() { return this.innerHTML.replace(/<[^>]+>/g, ""); } };
+  globalThis.document = { getElementById: (id) => (id === "transcript-editor-message" ? box : null) };
+  try {
+    showTranscriptSaveState(null);
+    assert.equal(box.innerHTML, "");
+    showTranscriptSaveState({ state: "pending", error: null });
+    assert.equal(box.textContent, t("job.save_transcript_pending"));
+    showTranscriptSaveState({ state: "applied", error: null }); // replaces only the pending notice
+    assert.equal(box.textContent, t("job.save_transcript_preview"));
+    showTranscriptSaveState({ state: "applied", error: null }); // leaves any other message alone
+    assert.equal(box.textContent, t("job.save_transcript_preview"));
+    showTranscriptSaveState({ state: "failed", error: "<b>forced</b> failure" });
+    assert.match(box.innerHTML, /^<div class="error">/);
+    assert.match(box.innerHTML, /&lt;b&gt;forced&lt;\/b&gt; failure/);
+    assert.ok(box.innerHTML.includes(t("job.save_transcript_failed")));
+  } finally {
+    delete globalThis.document;
+  }
+});
 
 test("renderTranscript creates editable transcript rows with escaped text", () => {
   const html = renderTranscript({
