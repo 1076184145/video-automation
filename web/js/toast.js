@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 import { escapeHtml } from "./utils.js";
 import { removeWithMotion } from "./motion.js";
 
@@ -8,7 +9,7 @@ export function showToast(message, type = "info", options = {}) {
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.setAttribute("role", type === "error" ? "alert" : "status");
-  toast.innerHTML = `<span>${escapeHtml(String(message || ""))}</span><button type="button" aria-label="Close">×</button>`;
+  toast.innerHTML = `<span>${escapeHtml(String(message || ""))}</span><button type="button" aria-label="${escapeHtml(t("common.close"))}">×</button>`;
   container.appendChild(toast);
 
   const close = () => removeWithMotion(toast, { kind: "toast", duration: 180 });

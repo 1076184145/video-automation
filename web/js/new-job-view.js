@@ -264,9 +264,10 @@ export function recordingListHtml(recordings, showAll) {
   `;
 }
 
+// Binary (1024-based) sizes, labelled with IEC units to match the Health page.
 export function formatBytes(value) {
   const bytes = Number(value) || 0;
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  return `${Math.round(bytes / 1024)} KiB`;
 }

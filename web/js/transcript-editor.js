@@ -7,6 +7,10 @@ import { setButtonLoading, showToast } from "./toast.js";
 import { escapeHtml, formatTime } from "./utils.js";
 export const TRANSCRIPT_PAGE_SIZE = 200;
 const transcriptStates = new WeakMap();
+// Every job page renders into the same root element, so pending saves are tracked by job name and
+// each root remembers which job's editor is bound to it right now.
+const transcriptSavesInFlight = new Set();
+const boundTranscriptJobs = new WeakMap();
 
 export function renderTranscript(transcript) {
   const segments = transcript?.segments || [];
@@ -70,6 +74,8 @@ function transcriptBackendLabel(transcript) {
 
 export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPreview = () => {}) {
   initializeTranscriptState(root);
+  const binding = { jobName };
+  boundTranscriptJobs.set(root, binding);
   const draftSaver = createDraftSaver(jobName, "transcript", () => collectEditedTranscript(root));
   const handler = async (e) => {
     const seekButton = e.target?.closest?.("[data-seek]");
@@ -85,6 +91,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     if (e.target.id !== "save-transcript") return;
     const button = e.target;
     setButtonLoading(button, true, t("common.loading"));
+    transcriptSavesInFlight.add(jobName);
     try {
       await API.updateTranscript(jobName, collectEditedTranscript(root));
       draftSaver.cancel();
@@ -96,7 +103,10 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
       setTranscriptMessage(`${t("job.save_transcript_failed")}${escapeHtml(error.message)}`, true);
       showToast(`${t("job.save_transcript_failed")}${error.message}`, "error");
     } finally {
+      transcriptSavesInFlight.delete(jobName);
       setButtonLoading(button, false);
+      // The root may show another job by now; this recomputes the button for whichever job is bound.
+      syncTranscriptSaveButton(root);
     }
   };
   const inputHandler = (e) => {
@@ -104,6 +114,7 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
       setEditing(true);
       draftSaver.schedule();
       syncKeptTranscript(root);
+      if (root.querySelector("#save-transcript")?.dataset.saveLocked) setTranscriptSaveLock(root, { locked: true, unsaved: true });
     }
   };
   root.addEventListener("click", handler);
@@ -112,7 +123,48 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     root.removeEventListener("click", handler);
     root.removeEventListener("input", inputHandler);
     draftSaver.dispose();
+    if (boundTranscriptJobs.get(root) === binding) boundTranscriptJobs.delete(root);
   };
+}
+
+// The API rejects transcript saves (HTTP 409) while the job is queued or processing, for example
+// during the review re-render that "Save cuts" starts. Say so before the click: disable the button,
+// show the reason, and note that unsaved edits stay in the local draft.
+export function setTranscriptSaveLock(root, { locked = false, unsaved = false } = {}) {
+  const button = root.querySelector("#save-transcript");
+  if (!button) return;
+  let note = root.querySelector("#transcript-save-lock");
+  if (!locked) {
+    if (button.dataset.saveLocked) {
+      delete button.dataset.saveLocked;
+      button.removeAttribute("aria-describedby");
+    }
+    note?.remove();
+    syncTranscriptSaveButton(root);
+    return;
+  }
+  button.dataset.saveLocked = "true";
+  syncTranscriptSaveButton(root);
+  if (!note) {
+    note = document.createElement("span");
+    note.id = "transcript-save-lock";
+    note.className = "muted";
+    note.setAttribute("role", "status");
+    button.insertAdjacentElement("afterend", note);
+  }
+  const text = unsaved ? `${t("job.transcript_save_locked")} ${t("job.transcript_unsaved_draft")}` : t("job.transcript_save_locked");
+  if (note.textContent !== text) note.textContent = text;
+  button.setAttribute("aria-describedby", note.id);
+}
+
+// Two independent conditions disable Save transcript: the job lock above and a save request still in
+// flight for the job shown. Whichever ends first must not re-enable the button, so both paths
+// recompute it from both; another job's pending save never affects it.
+function syncTranscriptSaveButton(root) {
+  const button = root.querySelector("#save-transcript");
+  if (!button) return;
+  const jobName = boundTranscriptJobs.get(root)?.jobName;
+  button.disabled = Boolean(button.dataset.saveLocked) || (jobName !== undefined && transcriptSavesInFlight.has(jobName));
 }
 
 function collectEditedTranscript(root = document) {

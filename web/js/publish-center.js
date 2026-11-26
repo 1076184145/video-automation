@@ -140,9 +140,9 @@ export function renderPublishCenter({ targets = [], attempts = [], packages = []
       </div>
       <form id="publish-credential-form" class="publish-inline-form" autocomplete="off">
         <input name="account_id" required placeholder="${t("publish.account_id")}" />
-        <input name="client_id" required placeholder="Client ID" />
-        <input name="access_token" type="password" autocomplete="new-password" required placeholder="Access Token" />
-        <input name="refresh_token" type="password" autocomplete="new-password" placeholder="Refresh Token" />
+        <input name="client_id" required placeholder="${t("publish.client_id")}" />
+        <input name="access_token" type="password" autocomplete="new-password" required placeholder="${t("publish.access_token")}" />
+        <input name="refresh_token" type="password" autocomplete="new-password" placeholder="${t("publish.refresh_token")}" />
         <button class="button primary" type="submit">${t("common.save")}</button>
       </form>
     </section>
@@ -223,5 +223,5 @@ function publishStatusGroup(status) {
   if (status === "published") return "done";
   if (status === "failed") return "failed";
   if (["uploading", "processing"].includes(status)) return "processing";
-  return "review";
+  return "waiting";
 }

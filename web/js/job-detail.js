@@ -7,7 +7,7 @@ import { bindDetailResizer, bindTimelineActions, seekPreview } from "./detail-la
 import { bindJobDetailTabs } from "./detail-tabs.js";
 import { bindEnhancementActions } from "./enhancement-panel.js";
 import { eventHub } from "./event-hub.js";
-import { bindTranscriptEditor } from "./transcript-editor.js";
+import { bindTranscriptEditor, setTranscriptSaveLock } from "./transcript-editor.js";
 import { errorHintHtml } from "./error-hints.js";
 import { t } from "./i18n.js";
 import { bindDownloadActions, bindJobActions, bindReviewActions } from "./job-actions.js";
@@ -106,6 +106,12 @@ export async function renderJobDetail(match, { signal } = {}) {
     }
     deriveLiveProgress(job);
     updateLiveStatus(job);
+    syncTranscriptSaveLock(lastStatus);
+  }
+
+  // Transcript saves are rejected (409) until the job is terminal; mirror that on the button.
+  function syncTranscriptSaveLock(status) {
+    setTranscriptSaveLock(app, { locked: !isTerminal(status), unsaved: isEditingTranscript });
   }
 
   const handleVisibility = () => {
@@ -380,6 +386,7 @@ export async function renderJobDetail(match, { signal } = {}) {
         Object.assign(job, jobState);
       }
       deriveLiveProgress(job);
+      syncTranscriptSaveLock(job.status);
 
       if (!forceRender && !isFirstRender && shouldDeferFullRender(job)) {
         deferredFullRender = true;
@@ -469,6 +476,7 @@ export async function renderJobDetail(match, { signal } = {}) {
       });
       if (cutsDraft) isEditingClips = true;
       if (transcriptDraft) isEditingTranscript = true;
+      syncTranscriptSaveLock(job.status);
       renderedKey = nextKey;
 
       const canvas = document.querySelector("canvas.timeline");

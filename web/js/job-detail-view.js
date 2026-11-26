@@ -12,6 +12,7 @@ import {
   renderJobActions,
   renderJobError,
   renderReviewActions,
+  renderReviewBar,
   renderSourceWarning,
 } from "./job-actions.js";
 import { renderLiveProgress, renderStage, updateLiveStatus } from "./job-status.js";
@@ -31,6 +32,7 @@ export function renderJobDetailShell() {
   return `
     <div id="section-head"></div>
     <div id="section-review"></div>
+    <div class="review-action-sticky" id="section-review-bar"></div>
     <div id="section-source-warning"></div>
     <section class="panel live-progress" id="section-progress"></section>
     ${renderJobDetailTabs()}
@@ -189,6 +191,7 @@ export function updateJobDetailView(
   `);
 
   safeHtml("section-review", job.status === "needs_review" ? renderReviewActions(payload.quality) : "");
+  safeHtml("section-review-bar", job.status === "needs_review" ? renderReviewBar() : "");
   safeHtml("section-source-warning", renderSourceWarning(payload.corrupt));
   safeHtml("section-actions", renderJobActions());
   safeHtml("section-progress", renderLiveProgress(job));

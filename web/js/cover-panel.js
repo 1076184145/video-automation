@@ -15,7 +15,7 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
   const keyStatus = coverKeyStatus(health?.settings || {});
   const missingKey = keyStatus.missing;
   const message = [
-    missingKey ? `<div class="notice">${t(keyStatus.messageKey)}</div>` : "",
+    missingKey ? `<div class="notice"><span>${t(keyStatus.messageKey)} ${t("cover.key_missing_options")}</span><a class="button compact-button" href="#/settings">${t("health.fix_in_settings")}</a></div>` : "",
     state.error ? renderCoverProviderError(state) : status === "generating" ? `<div class="notice">${t("cover.generating")}</div>` : ""
   ].join("");
   const candidateHtml = ["9:16", "16:9"].map((aspect) => renderCoverAspect(jobName, files, state, aspect)).join("");

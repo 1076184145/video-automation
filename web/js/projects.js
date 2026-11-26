@@ -61,7 +61,7 @@ export function renderProjectsView({ projects = [], kits = [] } = {}) {
       <form class="library-create-form" id="create-project-form">
         <div class="field"><label for="project-name">${t("projects.name")}</label><input id="project-name" name="name" required maxlength="120" /></div>
         <div class="field"><label for="project-description">${t("projects.description")}</label><input id="project-description" name="description" maxlength="2000" /></div>
-        <div class="field"><label for="project-tags">${t("projects.tags")}</label><input id="project-tags" name="tags" placeholder="直播, 周更" /></div>
+        <div class="field"><label for="project-tags">${t("projects.tags")}</label><input id="project-tags" name="tags" placeholder="${t("projects.tags_placeholder")}" /></div>
         <div class="field"><label for="project-default-kit">${t("projects.default_kit")}</label><select id="project-default-kit" name="default_kit_id"><option value="">${t("projects.no_default_kit")}</option>${kits.map((kit) => `<option value="${escapeHtml(kit.id)}">${escapeHtml(kit.name)}</option>`).join("")}</select></div>
         <button class="button primary" type="submit">${t("projects.create")}</button>
       </form>
