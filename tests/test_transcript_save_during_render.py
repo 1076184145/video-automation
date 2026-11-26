@@ -44,7 +44,7 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         self.generated = []
         self.hooks = {}  # name -> callable run inside the patched step (test barrier or forced failure)
         for name in ("generate_ass_subtitles", "generate_clipped_ass_subtitles", "generate_render_preview"):
-            patcher = patch.object(api_routes_jobs, name, side_effect=lambda *a, _n=name, **k: self._generate(_n))
+            patcher = patch.object(api_routes_jobs, name, side_effect=lambda *a, _n=name, **k: self._generate(_n, a[1]))
             patcher.start()
             self.addCleanup(patcher.stop)
         self.server = create_server(self.settings, start_queue_worker=False)
@@ -67,11 +67,50 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
             "updated_at": "2026-11-25T10:00:00",
         }), encoding="utf-8")
 
-    def _generate(self, name: str) -> None:
+    def _generate(self, name: str, job_dir: Path) -> None:
+        """Stand-in for subtitle/preview generation: writes the same files, derived from transcript.json."""
         self.generated.append(name)
         hook = self.hooks.get(name)
         if hook is not None:
             hook()
+        texts = " | ".join(self._texts())
+        if name == "generate_ass_subtitles":
+            (job_dir / "subtitles.ass").write_text(f"[Events]\nDialogue: {texts}\n", encoding="utf-8")
+        elif name == "generate_clipped_ass_subtitles":
+            (job_dir / "subtitles_clipped.ass").write_text(f"[Events]\nDialogue: {texts}\n", encoding="utf-8")
+        else:
+            (job_dir / "render_preview.json").write_text(json.dumps({"for": texts}), encoding="utf-8")
+            (job_dir / "render_review.ps1").write_text(f"# {texts}\n", encoding="utf-8")
+
+    def _make_approvable(self) -> None:
+        """What the real quality gate needs: a non-empty review video and a known duration."""
+        (self.job_dir / "review.mp4").write_bytes(b"approved review video")
+        (self.job_dir / "manifest.json").write_text(json.dumps({"duration_seconds": 30}), encoding="utf-8")
+
+    def _job_files(self) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in sorted(self.job_dir.iterdir())
+                if path.is_file() and path.name != "job.json" and not path.name.startswith(".")}
+
+    def _approve_in_thread(self, barrier_entered: threading.Event, barrier_release: threading.Event) -> dict:
+        """Approve with the real quality gate, paused after the gate and before the status write."""
+        real_gate = api_routes_jobs.evaluate_job_quality
+
+        def paused_gate(*args, **kwargs):
+            result = real_gate(*args, **kwargs)
+            barrier_entered.set()
+            barrier_release.wait(15)
+            return result
+        result: dict = {}
+        patcher = patch.object(api_routes_jobs, "evaluate_job_quality", side_effect=paused_gate)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        def run() -> None:
+            result["response"] = self._post("/jobs/job-one/approve", {})
+        result["thread"] = threading.Thread(target=run, daemon=True)
+        result["thread"].start()
+        result["patcher"] = patcher
+        return result
 
     def _request(self, method: str, path: str, payload: object = None) -> tuple[int, dict]:
         host, port = self.server.server_address
@@ -245,6 +284,10 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
             time.sleep(3.5)  # the applier wakes, finds nothing held, and exits
         self.assertEqual(self._texts(), ["newer edit", "second line"])
         self.assertEqual(self._transcript_revisions(), 1)
+        for name in ("subtitles.ass", "subtitles_clipped.ass"):
+            text = (self.job_dir / name).read_text(encoding="utf-8")
+            self.assertIn("newer edit", text)
+            self.assertNotIn("held edit", text)
 
     def test_approve_stays_blocked_while_the_held_save_is_being_applied(self) -> None:
         # Blocker 2: the guard must cover the apply itself, not only the wait before it.
@@ -277,16 +320,21 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         def fail() -> None:
             raise RuntimeError("forced subtitle failure")
         self.hooks["generate_ass_subtitles"] = fail
+        self._make_approvable()
+        (self.job_dir / "subtitles.ass").write_text("[Events]\nDialogue: original line | second line\n", encoding="utf-8")
         queue_id = self._start_managed_render()
         self.assertEqual(self._save(self._edited("edited line", "second line"))[0], 202)
         self._finish_render(queue_id)
+        before = self._job_files()
         self.assertTrue(self._wait_for(lambda: (self._save_state() or {}).get("state") == "failed"))
         self.assertEqual(self._save_state(), {"state": "failed", "error": "forced subtitle failure"})
-        # Same partial write as a failed direct save: transcript.json changed, nothing after it ran.
-        self.assertEqual(self._texts(), ["edited line", "second line"])
+        # The failure came after transcript.json was rewritten; the save is undone completely.
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual(self._texts(), ["original line", "second line"])
         self.assertEqual(self._transcript_revisions(), 0)
         self.assertEqual(self.generated, ["generate_ass_subtitles"])
         self.assertFalse(api_routes_jobs.transcript_save_is_held(load_job(self.job_dir / "job.json")))
+        self.assertEqual([p.name for p in self.settings.jobs_dir.iterdir()], ["job-one"])  # no backup left
 
         del self.hooks["generate_ass_subtitles"]
         status, body = self._save(self._edited("edited line", "second line"))  # the retry, job now idle
@@ -295,6 +343,125 @@ class TranscriptSaveDuringRenderTests(unittest.TestCase):
         self.assertEqual(self.generated[1:], ["generate_ass_subtitles", "generate_clipped_ass_subtitles",
                                               "generate_render_preview"])
         self.assertIsNone(self._save_state())
+        for name in ("subtitles.ass", "subtitles_clipped.ass"):
+            self.assertIn("edited line", (self.job_dir / name).read_text(encoding="utf-8"))
+
+    def test_approval_after_a_restored_failure_goes_through_the_real_gate(self) -> None:
+        # P1-A, second case: the gate must never pass against a half-applied edit.
+        self._make_approvable()
+        self._write_job("needs_review")
+
+        def fail() -> None:
+            raise RuntimeError("forced subtitle failure")
+        self.hooks["generate_ass_subtitles"] = fail
+        before = self._job_files()
+        self.assertEqual(self._save(self._edited("edited line", "second line")), (400, {"error": "forced subtitle failure"}))
+        self.assertEqual(self._job_files(), before)  # previous state fully restored, review.mp4 included
+        self.assertEqual(self._transcript_revisions(), 0)
+        status, body = self._post("/jobs/job-one/approve", {})  # the real gate, on consistent files
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["status"], "done")
+
+    def test_late_failure_restores_the_removed_review_video(self) -> None:
+        # The preview step runs after the render outputs were removed; a failure there restores them too.
+        self._make_approvable()
+        self._write_job("needs_review")
+
+        def fail() -> None:
+            raise RuntimeError("forced preview failure")
+        self.hooks["generate_render_preview"] = fail
+        before = self._job_files()
+        self.assertEqual(self._save(self._edited("edited line", "second line")), (400, {"error": "forced preview failure"}))
+        self.assertEqual(self._job_files(), before)
+        self.assertEqual((self.job_dir / "review.mp4").read_bytes(), b"approved review video")
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "forced preview failure"})
+
+    def test_failed_retry_keeps_a_queryable_failure(self) -> None:
+        # P1-B: a failed retry must not erase the earlier "failed" state.
+        def fail() -> None:
+            raise RuntimeError("forced subtitle failure")
+        self.hooks["generate_ass_subtitles"] = fail
+        queue_id = self._start_managed_render()
+        self.assertEqual(self._save(self._edited("edited line", "second line"))[0], 202)
+        self._finish_render(queue_id)
+        self.assertTrue(self._wait_for(lambda: (self._save_state() or {}).get("state") == "failed"))
+        self.hooks["generate_ass_subtitles"] = lambda: (_ for _ in ()).throw(RuntimeError("retry also failed"))
+        self.assertEqual(self._save(self._edited("edited line", "second line")), (400, {"error": "retry also failed"}))
+        self.assertEqual(self._save_state(), {"state": "failed", "error": "retry also failed"})
+        self.assertEqual(self._texts(), ["original line", "second line"])
+        self.assertEqual(self._transcript_revisions(), 0)
+
+    def test_invalid_save_after_release_keeps_the_held_edit(self) -> None:
+        # P1-B: a rejected save changes nothing, so the edit that already got 202 still applies once.
+        with patch.object(api_routes_jobs, "HELD_TRANSCRIPT_POLL_SECONDS", 2.0):
+            queue_id = self._start_managed_render()
+            self.assertEqual(self._save(self._edited("held edit", "second line"))[0], 202)
+            self._finish_render(queue_id)  # released; the applier is still in its first 2 s poll
+            self.assertEqual(self._save([{"text": "no timing"}]),
+                             (400, {"error": "transcript segment 1 start/end is invalid"}))
+            self.assertEqual(self._save("not a list"), (400, {"error": "segments must be a list"}))
+            self.assertEqual(self._save_state(), {"state": "pending", "error": None})
+            self.assertEqual(self._transcript_revisions(), 0)
+            self.assertTrue(self._wait_for(lambda: self._save_state() == {"state": "applied", "error": None}, 8))
+        time.sleep(0.6)
+        self.assertEqual(self._texts(), ["held edit", "second line"])
+        self.assertEqual(self._transcript_revisions(), 1)
+
+    def test_approval_paused_after_the_gate_does_not_commit_over_a_held_save(self) -> None:
+        # P1-A, first case: approve passed the real gate, then a save was accepted and applied.
+        self._make_approvable()
+        queue_id = self._start_managed_render()
+        self._finish_render(queue_id, complete_queue=False)  # job reads needs_review; the worker owns it
+        entered, release = threading.Event(), threading.Event()
+        approval = self._approve_in_thread(entered, release)
+        self.assertTrue(entered.wait(10), "approval did not reach the barrier")
+        try:
+            self.assertEqual(self._save(self._edited("edited line", "second line"))[0], 202)
+            self.queue.complete(queue_id)
+            self.assertTrue(self._wait_for(lambda: self._save_state() == {"state": "applied", "error": None}))
+        finally:
+            release.set()
+        approval["thread"].join(10)
+        approval["patcher"].stop()
+        self.assertEqual(approval["response"],
+                         (409, {"error": "the transcript was saved during approval; review the job and approve again"}))
+        self.assertEqual(load_job(self.job_dir / "job.json").status, "needs_review")
+        self.assertEqual(self._texts(), ["edited line", "second line"])
+        self.assertEqual(self._transcript_revisions(), 1)
+        status, body = self._post("/jobs/job-one/approve", {})  # the usual gate: the apply removed the video
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"], "quality_gate_failed")
+        self.assertIn("render_missing", {item["code"] for item in body["error"]["details"]["blocking"]})
+
+    def test_approval_paused_after_the_gate_does_not_commit_over_a_direct_save(self) -> None:
+        self._make_approvable()
+        self._write_job("needs_review")
+        entered, release = threading.Event(), threading.Event()
+        approval = self._approve_in_thread(entered, release)
+        self.assertTrue(entered.wait(10), "approval did not reach the barrier")
+        try:
+            status, body = self._save(self._edited("edited line", "second line"))  # not blocked by approval
+            self.assertEqual(status, 200, body)
+        finally:
+            release.set()
+        approval["thread"].join(10)
+        approval["patcher"].stop()
+        self.assertEqual(approval["response"],
+                         (409, {"error": "the transcript was saved during approval; review the job and approve again"}))
+        self.assertEqual(load_job(self.job_dir / "job.json").status, "needs_review")
+        self.assertFalse((self.job_dir / "review.mp4").exists())
+
+    def test_approval_without_a_concurrent_save_still_commits(self) -> None:
+        self._make_approvable()
+        self._write_job("needs_review")
+        entered, release = threading.Event(), threading.Event()
+        approval = self._approve_in_thread(entered, release)
+        self.assertTrue(entered.wait(10))
+        release.set()
+        approval["thread"].join(10)
+        approval["patcher"].stop()
+        self.assertEqual(approval["response"][0], 200, approval["response"])
+        self.assertEqual(load_job(self.job_dir / "job.json").status, "done")
 
     def test_held_save_waits_through_pause_and_applies_after_cancel(self) -> None:
         queue_id = self._start_managed_render()
