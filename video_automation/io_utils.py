@@ -41,3 +41,10 @@ def write_text_atomic(path: Path, content: str) -> None:
 
 def valid_json_file(path: Path) -> bool:
     return read_json_file(path) is not None
+
+
+def _decode(value: str | None, fallback: Any) -> Any:
+    try:
+        return json.loads(value) if value else fallback
+    except (TypeError, ValueError):
+        return fallback

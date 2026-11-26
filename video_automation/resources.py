@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 import itertools
@@ -10,20 +9,12 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from .config import _project_root
 from .task_queue import QueueControlRequested
 
 
 class ResourceWaitTimeout(TimeoutError):
     """Raised when a task cannot acquire a bounded execution resource."""
-
-
-def _project_root() -> Path:
-    override = os.environ.get("VIDEO_AUTOMATION_ROOT")
-    if override:
-        return Path(override).expanduser().resolve()
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[1]
 
 
 class CrossProcessFileLock:

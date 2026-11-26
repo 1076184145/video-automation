@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from .config import Settings
 from .io_utils import read_json_file, write_json_atomic, write_text_atomic
-from .plans import PLATFORM_PRESETS
+from .plans import PLATFORM_PRESETS, _preferred_video
 
 
 def generate_publish_package(
@@ -60,14 +60,6 @@ def generate_publish_package(
     }
     write_json_atomic(output_path, package)
     return package
-
-
-def _preferred_video(job_dir: Path) -> Path | None:
-    for name in ["final.mp4", "review.mp4"]:
-        path = job_dir / name
-        if path.exists() and path.stat().st_size > 0:
-            return path
-    return None
 
 
 def _normalize_platforms(platforms: list[str]) -> list[str]:

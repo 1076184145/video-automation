@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from .io_utils import _decode
+
 
 SCHEMA_VERSION = 2
 
@@ -19,13 +21,6 @@ def _now() -> str:
 
 def _json(value: Any, fallback: Any) -> str:
     return json.dumps(fallback if value is None else value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _decode(value: str | None, fallback: Any) -> Any:
-    try:
-        return json.loads(value) if value else fallback
-    except (TypeError, ValueError):
-        return fallback
 
 
 def _identifier(prefix: str) -> str:
