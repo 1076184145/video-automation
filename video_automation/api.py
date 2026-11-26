@@ -252,6 +252,9 @@ def _execute_managed_job_command(
 
     check_control()
     if command == "generate_covers":
+        if payload.get("frame_only") is True:
+            # Credentials can change while a job waits. A frame-only request must stay local.
+            settings = replace(settings, cover_api_key="", openai_api_key="", google_api_key="")
         try:
             generate_cover_candidates(
                 settings,

@@ -14,12 +14,20 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
   const localProvider = String(coverSettings.provider || "").trim().toLowerCase() === "local";
   const keyStatus = coverKeyStatus(health?.settings || {});
   const missingKey = keyStatus.missing;
+  const checks = health?.checks || [];
+  const frameOnly = missingKey
+    && checks.some((check) => check.name === "cover_api_key" && check.exists === false)
+    && checks.some((check) => check.name === "pillow" && check.exists === true)
+    && !checks.some((check) => check.name === "local_cover_model" && check.exists === true);
+  const frameResult = state.generator === "fallback_frame_composite";
+  const generateLabel = t(frameOnly ? "cover.generate_frame" : "cover.generate");
   const message = [
-    missingKey ? `<div class="notice"><span>${t(keyStatus.messageKey)} ${t("cover.key_missing_options")}</span><a class="button compact-button" href="#/settings">${t("health.fix_in_settings")}</a></div>` : "",
+    missingKey ? `<div class="notice"><span>${frameOnly ? t("cover.frame_settings") : `${t(keyStatus.messageKey)} ${t("cover.key_missing_options")}`}</span><a class="button compact-button" href="#/settings">${t("health.fix_in_settings")}</a></div>` : "",
     state.error ? renderCoverProviderError(state) : status === "generating" ? `<div class="notice">${t("cover.generating")}</div>` : ""
   ].join("");
   const candidateHtml = ["9:16", "16:9"].map((aspect) => renderCoverAspect(jobName, files, state, aspect)).join("");
   return `
+    <h2>${t(frameOnly || frameResult ? "cover.frame_title" : "cover.title")}</h2>
     <div class="cover-form">
       <div class="field">
         <label for="cover-title">${t("cover.video_title")}</label>
@@ -41,10 +49,10 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
         </div>
         <label class="check"><input id="cover-aspect-vertical" type="checkbox" value="9:16" ${(state.aspects || ["9:16", "16:9"]).includes("9:16") ? "checked" : ""} /> ${t("cover.vertical")}</label>
         <label class="check"><input id="cover-aspect-landscape" type="checkbox" value="16:9" ${(state.aspects || ["9:16", "16:9"]).includes("16:9") ? "checked" : ""} /> ${t("cover.landscape")}</label>
-        <button class="button primary" id="generate-covers" type="button" ${status === "generating" || missingKey ? "disabled" : ""}>${status === "generating" ? t("common.loading") : t("cover.generate")}</button>
+        <button class="button primary" id="generate-covers" type="button" ${frameOnly ? 'data-frame-only="true"' : ""} ${status === "generating" || (missingKey && !frameOnly) ? "disabled" : ""}>${status === "generating" ? t("common.loading") : generateLabel}</button>
       </div>
-      <p class="muted">${t(localProvider ? "cover.usage_note_local" : "cover.usage_note")}</p>
-      ${localProvider ? `<div class="notice ai-disclosure">${t("ai.local_image")}</div>` : renderAiDisclosure("image")}
+      <p class="muted">${t(frameOnly ? "cover.frame_note" : localProvider ? "cover.usage_note_local" : "cover.usage_note")}</p>
+      ${frameOnly ? "" : localProvider ? `<div class="notice ai-disclosure">${t("ai.local_image")}</div>` : renderAiDisclosure("image")}
       <div id="cover-message">${message}</div>
     </div>
     <div class="cover-grid">${candidateHtml || `<div class="empty">${t("cover.no_candidates")}</div>`}</div>
@@ -99,9 +107,11 @@ export function renderCoverProviderError(state = {}) {
 export function bindCoverActions(root, jobName, reload) {
   const handler = async (event) => {
     if (event.target.id === "generate-covers") {
-      const confirmed = await confirmAction(t("cover.confirm_generate"), {
-        title: t("cover.generate"),
-        confirmLabel: t("cover.generate"),
+      const frameOnly = event.target.dataset.frameOnly === "true";
+      const generateLabel = t(frameOnly ? "cover.generate_frame" : "cover.generate");
+      const confirmed = await confirmAction(t(frameOnly ? "cover.confirm_frame" : "cover.confirm_generate"), {
+        title: generateLabel,
+        confirmLabel: generateLabel,
         cancelLabel: t("common.cancel"),
         tone: "primary",
       });
@@ -109,7 +119,9 @@ export function bindCoverActions(root, jobName, reload) {
       const button = event.target;
       setButtonLoading(button, true, t("common.loading"));
       try {
-        await API.generateCovers(jobName, collectCoverOptions());
+        const options = collectCoverOptions();
+        if (frameOnly) options.frame_only = true;
+        await API.generateCovers(jobName, options);
         setCoverMessage(t("cover.started"));
         showToast(t("cover.started"), "success");
         await reload();

@@ -80,7 +80,6 @@ export function renderJobDetailShell() {
         hidden
       >
         <section class="panel cover-panel">
-          <h2>${t("cover.title")}</h2>
           <div id="section-covers"><div class="loading">${t("common.loading")}</div></div>
         </section>
         <section class="panel enhancements-panel">
