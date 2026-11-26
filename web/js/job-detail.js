@@ -15,7 +15,7 @@ import { isJobEventForName, isTypingTarget, loadHealthSafe, loadJobFile, shouldA
 import { renderJobDetailShell, updateJobDetailView } from "./job-detail-view.js";
 import { deriveLiveProgress, updateLiveStatus } from "./job-status.js";
 import { restoreNativeVideoControls } from "./preview-player.js";
-import { loadReviewDraft } from "./review-drafts.js";
+import { clearReviewDraft, loadReviewDraft } from "./review-drafts.js";
 import { bindRevisionHistory } from "./revision-history.js";
 import { renderTimeline } from "./timeline.js";
 import { showToast } from "./toast.js";
@@ -427,7 +427,12 @@ export async function renderJobDetail(match, { signal } = {}) {
       if (cutsDraft) {
         cuts = { ...(cuts || {}), clips: cutsDraft.data };
       }
-      const transcriptDraft = loadReviewDraft(name, "transcript");
+      let transcriptDraft = loadReviewDraft(name, "transcript");
+      if (transcriptDraft && draftMatchesTranscript(transcriptDraft.data, transcript?.segments)) {
+        // The saved transcript already holds these edits (e.g. a save the server applied after a render).
+        clearReviewDraft(name, "transcript");
+        transcriptDraft = null;
+      }
       if (transcriptDraft) {
         transcript = { ...(transcript || {}), segments: transcriptDraft.data };
       }
@@ -536,4 +541,14 @@ export async function renderJobDetail(match, { signal } = {}) {
     app.removeEventListener("input", markEditing, true);
     app.removeEventListener("change", markEditing, true);
   };
+}
+
+function draftMatchesTranscript(draft, segments) {
+  if (!Array.isArray(draft) || !Array.isArray(segments) || draft.length !== segments.length) return false;
+  return draft.every((item, index) => {
+    const segment = segments[index] || {};
+    return Math.abs(Number(item?.start) - Number(segment.start)) < 0.0005
+      && Math.abs(Number(item?.end) - Number(segment.end)) < 0.0005
+      && String(item?.text || "").trim() === String(segment.text || "").trim();
+  });
 }

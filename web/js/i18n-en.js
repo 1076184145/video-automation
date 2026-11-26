@@ -277,6 +277,7 @@ export const en = {
   "job.save_cuts": "Save Clips",
   "job.save_transcript": "Save Transcript",
   "job.save_transcript_preview": "Transcript saved. Cut suggestions and subtitles were updated; old previews were invalidated.",
+  "job.save_transcript_pending": "Transcript received. It will be applied when the current render finishes; your local draft is kept until then.",
   "job.save_transcript_failed": "Save transcript failed: ",
   "job.add_clip": "Add Clip",
   "job.delete_job": "Delete Job",

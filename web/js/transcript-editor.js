@@ -86,7 +86,14 @@ export function bindTranscriptEditor(root, jobName, reload, setEditing, seekPrev
     const button = e.target;
     setButtonLoading(button, true, t("common.loading"));
     try {
-      await API.updateTranscript(jobName, collectEditedTranscript(root));
+      const result = await API.updateTranscript(jobName, collectEditedTranscript(root));
+      if (result?.pending) {
+        // HTTP 202: the server holds the edit while a render runs and applies it once the render
+        // ends, so the local draft stays until the saved transcript matches it.
+        setTranscriptMessage(t("job.save_transcript_pending"));
+        showToast(t("job.save_transcript_pending"), "info");
+        return;
+      }
       draftSaver.cancel();
       clearReviewDraft(jobName, "transcript");
       setTranscriptMessage(t("job.save_transcript_preview"));

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import shutil
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -14,6 +17,7 @@ from .api_job_utils import (
     save_clip_feedback,
     transcript_summary,
     update_transcript_from_editor,
+    validate_transcript_segments,
 )
 from .api_system import schedule_tombstone_cleanup
 from .cuts import update_cuts_from_editor
@@ -98,6 +102,12 @@ class JobRoutes:
                 status=409,
             )
             return
+        if transcript_save_is_held(job):
+            self._json(
+                {"error": "a transcript save is still being applied; try again in a moment"},
+                status=409,
+            )
+            return
         quality = evaluate_job_quality(settings, job_name)
         if quality["blocking"]:
             self._json(
@@ -154,52 +164,48 @@ class JobRoutes:
         if job is None:
             return
         if not job_is_terminal(job):
-            self._json(
-                {
-                    "error": (
-                        f"job is already {job.status}; wait for it to finish "
-                        "before editing transcript"
-                    )
-                },
-                status=409,
-            )
+            queue_item = self.api_context.queue_repository.get_by_job(job.job_dir.name)
+            if str((queue_item or {}).get("status") or "") not in {"pending", "paused", "running"}:
+                self._json(
+                    {
+                        "error": (
+                            f"job is already {job.status}; wait for it to finish "
+                            "before editing transcript"
+                        )
+                    },
+                    status=409,
+                )
+                return
+            # A managed task (e.g. the review re-render after "Save cuts") owns the job files.
+            # Validate now, hold the edit, and apply it once when that task ends.
+            payload = self._read_json()
+            if payload is None:
+                return
+            segments = payload.get("segments", [])
+            try:
+                if not isinstance(segments, list):
+                    raise RuntimeError("segments must be a list")
+                validate_transcript_segments(segments)
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            hold_transcript_save(self.api_context, job, segments)
+            self._json({"job": self._job_payload(job), "pending": True}, status=202)
             return
         payload = self._read_json()
         if payload is None:
             return
-        previous_transcript = read_json_file(job.job_dir / "transcript.json") or {}
-        try:
-            transcript = update_transcript_from_editor(
-                job.job_dir,
-                payload.get("segments", []),
-            )
-            cuts_path = job.job_dir / "cuts.json"
-            if cuts_path.exists():
-                cuts = read_json_file(cuts_path) or {}
-                cuts["transcript_segments"] = transcript_summary(transcript)
-                write_json_atomic(cuts_path, cuts)
-                update_cuts_from_editor(job.job_dir, cuts.get("clips", []))
-            generate_ass_subtitles(settings, job.job_dir, force=True)
-            generate_clipped_ass_subtitles(settings, job.job_dir, force=True)
-            remove_render_outputs(job.job_dir)
-            generate_render_preview(settings, job.job_dir, job.source_path, force=True)
-            job.set_status("needs_review")
-            revision = record_job_revision(
-                settings,
-                job.job_dir.name,
-                "transcript",
-                transcript,
-                summary="Saved transcript edits",
-            )
-            record_transcript_preferences(
-                preference_repository_for(settings),
-                job.job_dir.name,
-                previous_transcript,
-                transcript,
-            )
-        except Exception as exc:
-            self._json({"error": str(exc)}, status=400)
-            return
+        key = _held_transcript_key(job)
+        with _transcript_apply_lock(key):
+            try:
+                transcript, revision = apply_transcript_save(
+                    settings, job, payload.get("segments", [])
+                )
+            except Exception as exc:
+                self._json({"error": str(exc)}, status=400)
+                return
+            # This newer full transcript supersedes an edit held during a render.
+            _discard_held_transcript(key)
         self._json(
             {"job": self._job_payload(job), "transcript": transcript, "revision": revision}
         )
@@ -392,12 +398,7 @@ class JobRoutes:
         return payload
 
     def _job_runtime(self, job: Job) -> dict[str, Any]:
-        settings = self.api_context.settings
-        queue_item = self.api_context.queue_repository.get_by_job(job.job_dir.name)
-        pipeline_runs = StageRunRepository(
-            library_database_path(settings)
-        ).list_for_job(job.job_dir.name, limit=1)
-        return job_runtime_state(job.status, queue_item, pipeline_runs)
+        return _job_runtime_for(self.api_context, job)
 
     def _allow_quick_mutation(self, job: Job) -> bool:
         if not job_is_terminal(job):
@@ -467,3 +468,121 @@ class JobRoutes:
             },
             status=202,
         )
+
+
+def _job_runtime_for(api_context: Any, job: Job) -> dict[str, Any]:
+    settings = api_context.settings
+    queue_item = api_context.queue_repository.get_by_job(job.job_dir.name)
+    pipeline_runs = StageRunRepository(
+        library_database_path(settings)
+    ).list_for_job(job.job_dir.name, limit=1)
+    return job_runtime_state(job.status, queue_item, pipeline_runs)
+
+
+def apply_transcript_save(settings: Any, job: Job, segments: Any) -> tuple[dict[str, Any], Any]:
+    """Write a transcript edit and everything derived from it (the 200 path of the transcript route)."""
+    previous_transcript = read_json_file(job.job_dir / "transcript.json") or {}
+    transcript = update_transcript_from_editor(job.job_dir, segments)
+    cuts_path = job.job_dir / "cuts.json"
+    if cuts_path.exists():
+        cuts = read_json_file(cuts_path) or {}
+        cuts["transcript_segments"] = transcript_summary(transcript)
+        write_json_atomic(cuts_path, cuts)
+        update_cuts_from_editor(job.job_dir, cuts.get("clips", []))
+    generate_ass_subtitles(settings, job.job_dir, force=True)
+    generate_clipped_ass_subtitles(settings, job.job_dir, force=True)
+    remove_render_outputs(job.job_dir)
+    generate_render_preview(settings, job.job_dir, job.source_path, force=True)
+    job.set_status("needs_review")
+    revision = record_job_revision(
+        settings,
+        job.job_dir.name,
+        "transcript",
+        transcript,
+        summary="Saved transcript edits",
+    )
+    record_transcript_preferences(
+        preference_repository_for(settings),
+        job.job_dir.name,
+        previous_transcript,
+        transcript,
+    )
+    return transcript, revision
+
+
+# Transcript edits sent while a managed task owns the job are held here (in memory, so nothing new
+# appears in the job directory) and applied exactly once, by one applier thread per job, after the
+# task ends. Applies for a job are serialized by its lock; a later direct save discards a held edit.
+HELD_TRANSCRIPT_POLL_SECONDS = 0.25
+_held_transcripts: dict[str, list[Any]] = {}
+_held_transcripts_lock = threading.Lock()
+_transcript_apply_locks: dict[str, threading.Lock] = {}
+
+
+def _held_transcript_key(job: Job) -> str:
+    return str(job.job_dir.resolve())
+
+
+def _transcript_apply_lock(key: str) -> threading.Lock:
+    with _held_transcripts_lock:
+        return _transcript_apply_locks.setdefault(key, threading.Lock())
+
+
+def _discard_held_transcript(key: str) -> None:
+    with _held_transcripts_lock:
+        _held_transcripts.pop(key, None)
+
+
+def transcript_save_is_held(job: Job) -> bool:
+    with _held_transcripts_lock:
+        return _held_transcript_key(job) in _held_transcripts
+
+
+def hold_transcript_save(api_context: Any, job: Job, segments: list[Any]) -> None:
+    key = _held_transcript_key(job)
+    with _held_transcripts_lock:
+        start_applier = key not in _held_transcripts
+        _held_transcripts[key] = segments  # the client sends the full transcript: latest wins
+    if start_applier:
+        threading.Thread(
+            target=_apply_held_transcript_when_idle,
+            args=(api_context, job.job_dir, key),
+            name=f"held-transcript-{job.job_dir.name}",
+            daemon=True,
+        ).start()
+
+
+def _job_is_idle(api_context: Any, job: Job) -> bool:
+    try:
+        return job_is_terminal(job) and not _job_runtime_for(api_context, job)["active"]
+    except Exception:
+        return False
+
+
+def _apply_held_transcript_when_idle(api_context: Any, job_dir: Any, key: str) -> None:
+    while True:
+        time.sleep(HELD_TRANSCRIPT_POLL_SECONDS)
+        with _held_transcripts_lock:
+            if key not in _held_transcripts:
+                return
+        job = load_job(job_dir / "job.json")
+        if job is None:
+            _discard_held_transcript(key)
+            return
+        if not _job_is_idle(api_context, job):
+            continue
+        with _transcript_apply_lock(key):
+            job = load_job(job_dir / "job.json")
+            if job is None or not _job_is_idle(api_context, job):
+                continue
+            with _held_transcripts_lock:
+                segments = _held_transcripts.pop(key, None)
+            if segments is None:
+                return
+            try:
+                apply_transcript_save(api_context.settings, job, segments)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not apply the held transcript save for %s", job_dir.name
+                )
+            return
