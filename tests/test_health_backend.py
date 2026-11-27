@@ -3,11 +3,14 @@ from __future__ import annotations
 import http.client
 import importlib.util
 import json
+import shutil
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from video_automation.api import create_server
@@ -47,6 +50,25 @@ class HealthCacheTests(unittest.TestCase):
         self.assertNotIn("changed", repeated)
         self.assertEqual(repeated["warnings"], [])
         self.assertEqual(build.call_count, 1)
+
+    def test_cached_payload_recomputes_only_the_frame_fallback_check(self) -> None:
+        settings = Settings.load()
+        cached_entry = {"name": "cover_frame_fallback", "path": "env:COVER_FALLBACK_LOCAL", "exists": True,
+                        "required": False, "optional": True, "status": "ok", "version": ""}
+        other = {"name": "pillow", "exists": True, "status": "ok"}
+        built = {"ok": True, "checks": [other, cached_entry], "warnings": []}
+
+        with (
+            patch.object(health, "_build_health_payload", return_value=built) as build,
+            patch.object(health, "frame_cover_fallback_available", return_value=False) as available,
+        ):
+            health.health_payload(settings)
+            repeated = health.health_payload(settings)
+
+        self.assertEqual(build.call_count, 1)
+        available.assert_called_once_with(settings)
+        self.assertEqual(repeated["checks"], [other, {**cached_entry, "exists": False, "status": "optional_missing"}])
+        self.assertEqual({key: value for key, value in repeated.items() if key != "checks"}, {"ok": True, "warnings": []})
 
     def test_cache_key_tracks_secret_presence_without_containing_secret_text(self) -> None:
         settings = replace(Settings.load(), openai_api_key="do-not-cache-this-secret")
@@ -90,14 +112,13 @@ class FrameCoverFallbackAgreementTests(unittest.TestCase):
     def tearDown(self) -> None:
         health.clear_health_cache()
 
-    def _health_entry_and_frame_request(self, *, fallback: bool, model: bool, cover_key: str = ""):
+    @contextmanager
+    def _cover_job_server(self, *, fallback: bool, model: bool, cover_key: str = ""):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             model_dir = root / "model"
             if model:
-                model_dir.mkdir()
-                (model_dir / "model_index.json").write_text("{}", encoding="utf-8")
-                (model_dir / "weights.safetensors").write_bytes(b"stand-in")
+                _install_local_cover_model(model_dir)
             job_dir = root / "jobs" / "cover-job"
             job_dir.mkdir(parents=True)
             source = root / "source.mp4"
@@ -123,23 +144,33 @@ class FrameCoverFallbackAgreementTests(unittest.TestCase):
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 connection = http.client.HTTPConnection(*server.server_address, timeout=10)
-                try:
+
+                def health_entry():
                     connection.request("GET", "/health")
                     checks = json.loads(connection.getresponse().read().decode("utf-8"))["checks"]
+                    return next((check for check in checks if check["name"] == "cover_frame_fallback"), None)
+
+                def frame_only_request():
                     body = json.dumps({"title": "Title", "frame_only": True}).encode("utf-8")
                     connection.request(
                         "POST", "/jobs/cover-job/covers/generate", body=body,
                         headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
                     )
                     reply = connection.getresponse()
-                    answer = (reply.status, json.loads(reply.read().decode("utf-8")))
+                    return reply.status, json.loads(reply.read().decode("utf-8"))
+
+                try:
+                    yield SimpleNamespace(model_dir=model_dir, job_dir=job_dir, health_entry=health_entry,
+                                          frame_only_request=frame_only_request)
                 finally:
                     connection.close()
                     server.shutdown()
                     server.server_close()
                     thread.join(timeout=5)
-        entry = next((check for check in checks if check["name"] == "cover_frame_fallback"), None)
-        return entry, answer
+
+    def _health_entry_and_frame_request(self, *, fallback: bool, model: bool, cover_key: str = ""):
+        with self._cover_job_server(fallback=fallback, model=model, cover_key=cover_key) as server:
+            return server.health_entry(), server.frame_only_request()
 
     @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is optional")
     def test_fallback_on_without_a_local_model_is_reported_available_and_queued(self) -> None:
@@ -171,6 +202,47 @@ class FrameCoverFallbackAgreementTests(unittest.TestCase):
         self.assertEqual(
             (status, body), (400, {"error": "Frame fallback is unavailable with the current cover settings"}),
         )
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is optional")
+    def test_model_files_added_while_health_is_cached_make_frame_fallback_unavailable(self) -> None:
+        with (
+            self._cover_job_server(fallback=True, model=False) as server,
+            patch.object(health, "_build_health_payload", wraps=health._build_health_payload) as build,
+        ):
+            before = server.health_entry()
+            _install_local_cover_model(server.model_dir)
+            after = server.health_entry()
+            status, body = server.frame_only_request()
+            manifest_written = (server.job_dir / "cover_manifest.json").exists()
+
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual((before["exists"], before["status"]), (True, "ok"))
+        self.assertEqual((after["exists"], after["status"]), (False, "optional_missing"))
+        self.assertEqual((status, body), (400, {"error": self.MISSING_KEY}))
+        self.assertFalse(manifest_written)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is optional")
+    def test_model_files_removed_while_health_is_cached_make_frame_fallback_available(self) -> None:
+        with (
+            self._cover_job_server(fallback=True, model=True) as server,
+            patch.object(health, "_build_health_payload", wraps=health._build_health_payload) as build,
+        ):
+            before = server.health_entry()
+            shutil.rmtree(server.model_dir)
+            after = server.health_entry()
+            status, body = server.frame_only_request()
+
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual((before["exists"], before["status"]), (False, "optional_missing"))
+        self.assertEqual((after["exists"], after["status"]), (True, "ok"))
+        self.assertEqual(status, 202)
+        self.assertEqual(sorted(body), ["cover", "job", "queue"])
+
+
+def _install_local_cover_model(model_dir: Path) -> None:
+    model_dir.mkdir()
+    (model_dir / "model_index.json").write_text("{}", encoding="utf-8")
+    (model_dir / "weights.safetensors").write_bytes(b"stand-in")
 
 
 if __name__ == "__main__":

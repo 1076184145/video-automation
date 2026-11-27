@@ -62,7 +62,7 @@ def health_payload(settings: Settings) -> dict[str, Any]:
         and cache_key == _health_cache_key
         and (now - _health_cache_time) < _HEALTH_CACHE_TTL
     ):
-        return deepcopy(_health_cache)
+        return _with_current_frame_fallback(deepcopy(_health_cache), settings)
     result = _build_health_payload(settings)
     _health_cache = deepcopy(result)
     _health_cache_key = cache_key
@@ -75,6 +75,16 @@ def clear_health_cache() -> None:
     _health_cache = None
     _health_cache_key = None
     _health_cache_time = 0.0
+
+
+def _with_current_frame_fallback(payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Local cover model files can appear or disappear without a settings change, so this check never comes from the cache."""
+    checks = payload.get("checks")
+    if isinstance(checks, list):
+        for index, check in enumerate(checks):
+            if isinstance(check, dict) and check.get("name") == "cover_frame_fallback":
+                checks[index] = _cover_frame_fallback_check(settings)
+    return payload
 
 
 def _health_settings_cache_key(settings: Settings) -> tuple[Any, ...]:
@@ -363,17 +373,21 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         },
     ]
     if not cover_key_exists:
-        frame_fallback = frame_cover_fallback_available(settings)
-        checks.append({
-            "name": "cover_frame_fallback",
-            "path": "env:COVER_FALLBACK_LOCAL",
-            "exists": frame_fallback,
-            "required": False,
-            "optional": True,
-            "status": "ok" if frame_fallback else "optional_missing",
-            "version": "",
-        })
+        checks.append(_cover_frame_fallback_check(settings))
     return checks
+
+
+def _cover_frame_fallback_check(settings: Settings) -> dict[str, Any]:
+    available = frame_cover_fallback_available(settings)
+    return {
+        "name": "cover_frame_fallback",
+        "path": "env:COVER_FALLBACK_LOCAL",
+        "exists": available,
+        "required": False,
+        "optional": True,
+        "status": "ok" if available else "optional_missing",
+        "version": "",
+    }
 
 
 def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:
