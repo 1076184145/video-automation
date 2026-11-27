@@ -18,7 +18,8 @@ if (-not (Test-Path $Python)) {
 Set-Location $Root
 
 if ($InstallDeps) {
-    & $Python -m pip install -r (Join-Path $Root "requirements-core.txt") pywebview pyinstaller
+    # The desktop cover generator needs Pillow, including in the Lite build.
+    & $Python -m pip install -r (Join-Path $Root "requirements-core.txt") pywebview pyinstaller "Pillow>=10.0.0"
     if ($LASTEXITCODE -ne 0) {
         throw "Desktop dependency installation failed."
     }

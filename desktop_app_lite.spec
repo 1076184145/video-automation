@@ -12,6 +12,7 @@ datas = [
     (str(project_root / "docs" / "DESKTOP_LITE_README.md"), "."),
 ]
 datas += copy_metadata("certifi")
+datas += copy_metadata("Pillow")
 for tool_script in ["check_desktop_tools.ps1", "install_desktop_tools.ps1"]:
     path = project_root / "tools" / tool_script
     if path.exists():
