@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from importlib.util import find_spec
-
 from .api_job_utils import job_is_terminal, publish_job_dir_event
 from .covers import (
+    cover_provider_key_missing,
+    frame_cover_fallback_available,
     mark_cover_generation_started,
     normalize_cover_options,
     select_cover,
 )
 from .highlight_cut import generate_highlight_cut
 from .llm_tools import save_metadata
-from .local_ai import _missing_local_cover_files
 from .routing import RouteMatch
 from .subtitle_translation import (
     translated_clipped_ass_name,
@@ -37,17 +36,8 @@ class EnhancementRoutes:
                 status=409,
             )
             return
-        missing_key = (
-            settings.cover_provider.strip().lower()
-            in {"openai", "openai-compatible", "openrouter", "google"}
-            and not settings.cover_api_key_for_provider()
-        )
-        frame_fallback = (
-            missing_key
-            and settings.cover_fallback_local
-            and find_spec("PIL") is not None
-            and bool(_missing_local_cover_files(settings.local_cover_model_path))
-        )
+        missing_key = cover_provider_key_missing(settings)
+        frame_fallback = frame_cover_fallback_available(settings)
         if missing_key and not frame_fallback:
             self._json(
                 {

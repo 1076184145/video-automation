@@ -15,6 +15,7 @@ from typing import Any
 from .api_security import api_binding_status
 from .api_settings import legacy_secret_keys
 from .config import Settings
+from .covers import frame_cover_fallback_available
 from .render import probe_nvenc_encoder
 
 
@@ -341,7 +342,7 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
         ]
     cover_key_exists = bool(settings.cover_api_key_for_provider())
     key_path = "env:COVER_API_KEY or env:GOOGLE_API_KEY" if provider == "google" else "env:COVER_API_KEY or env:OPENAI_API_KEY"
-    return [
+    checks = [
         {
             "name": "pillow",
             "path": pillow_path,
@@ -361,6 +362,18 @@ def _cover_runtime_checks(settings: Settings) -> list[dict[str, Any]]:
             "version": "",
         },
     ]
+    if not cover_key_exists:
+        frame_fallback = frame_cover_fallback_available(settings)
+        checks.append({
+            "name": "cover_frame_fallback",
+            "path": "env:COVER_FALLBACK_LOCAL",
+            "exists": frame_fallback,
+            "required": False,
+            "optional": True,
+            "status": "ok" if frame_fallback else "optional_missing",
+            "version": "",
+        })
+    return checks
 
 
 def _optional_module_checks(settings: Settings) -> list[dict[str, Any]]:

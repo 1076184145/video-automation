@@ -71,7 +71,7 @@ test("ready frame fallback is offered when the backend has no provider key", () 
   const checks = [{ name: "cover_api_key", exists: false }, { name: "pillow", exists: true }];
   const render = (health, cover = null) => renderCovers("job", new Map(), cover, {}, {}, {}, health);
 
-  const fallback = render({ settings, checks });
+  const fallback = render({ settings, checks: [...checks, { name: "cover_frame_fallback", exists: true }] });
   assert.match(fallback, /<h2>Frame covers<\/h2>/);
   assert.match(fallback, /id="generate-covers"[^>]*data-frame-only="true"[^>]*>Generate frame covers/);
   assert.doesNotMatch(fallback, /id="generate-covers"[^>]*disabled|allowed to leave the local machine/i);
@@ -88,6 +88,25 @@ test("ready frame fallback is offered when the backend has no provider key", () 
   );
   assert.match(previouslyGenerated, /<h2>Frame covers<\/h2>/);
   assert.match(previouslyGenerated, /id="generate-covers"[^>]*>Generate covers/);
+});
+
+test("frame cover button follows only the backend cover_frame_fallback check", () => {
+  const settings = { covers: { provider: "openai" } };
+  const render = (checks) => renderCovers("job", new Map(), null, {}, {}, {}, { settings, checks });
+  const noKey = [{ name: "pillow", exists: true }, { name: "cover_api_key", exists: false }];
+
+  // COVER_FALLBACK_LOCAL=true and no local cover model: the route queues frame covers (202).
+  const ready = render([...noKey, { name: "cover_frame_fallback", exists: true }]);
+  assert.match(ready, /id="generate-covers"[^>]*data-frame-only="true"[^>]*>Generate frame covers/);
+  assert.doesNotMatch(ready, /id="generate-covers"[^>]*disabled/);
+
+  // COVER_FALLBACK_LOCAL=false, or local cover model files with a remote provider selected: the route answers 400.
+  // /health reports both as unavailable; a payload without the entry is treated the same way.
+  for (const checks of [[...noKey, { name: "cover_frame_fallback", exists: false }], noKey]) {
+    const html = render(checks);
+    assert.match(html, /id="generate-covers"[^>]*disabled[^>]*>Generate covers</);
+    assert.doesNotMatch(html, /data-frame-only|<h2>Frame covers<\/h2>/);
+  }
 });
 
 test("local cover mode is enabled without an API key and shows a local-only notice", () => {

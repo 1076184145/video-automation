@@ -15,10 +15,7 @@ export function renderCovers(jobName, files, cover, manifest, cuts, transcript, 
   const keyStatus = coverKeyStatus(health?.settings || {});
   const missingKey = keyStatus.missing;
   const checks = health?.checks || [];
-  const frameOnly = missingKey
-    && checks.some((check) => check.name === "cover_api_key" && check.exists === false)
-    && checks.some((check) => check.name === "pillow" && check.exists === true)
-    && !checks.some((check) => check.name === "local_cover_model" && check.exists === true);
+  const frameOnly = checks.some((check) => check.name === "cover_frame_fallback" && check.exists === true);
   const frameResult = state.generator === "fallback_frame_composite";
   const generateLabel = t(frameOnly ? "cover.generate_frame" : "cover.generate");
   const message = [
