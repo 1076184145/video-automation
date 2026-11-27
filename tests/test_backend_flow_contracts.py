@@ -255,6 +255,17 @@ class ManagedCommandContracts(BackendFixture):
                 call.assert_called_once_with(self.settings, self.job.job_dir, title="Title", style="short_video", count=5, aspects=["9:16", "1"])
                 self.assertEqual(events, ["control", "generate", "event"] + ([] if error else ["control"]))
 
+    def test_frame_only_covers_still_use_no_credentials_after_a_key_is_added(self) -> None:
+        settings = replace(self.settings, cover_api_key="new-cover-key", openai_api_key="new-openai-key",
+                           google_api_key="new-google-key")
+        with patch.object(api, "generate_cover_candidates") as generate, patch.object(api, "_publish_job_dir_event"):
+            api._execute_managed_job_command(
+                settings, self.job, "generate_covers", {"frame_only": True}, control_callback=lambda: None,
+            )
+        expected = replace(settings, cover_api_key="", openai_api_key="", google_api_key="")
+        self.assertEqual(generate.call_args.args, (expected, self.job.job_dir))
+        self.assertEqual(settings.cover_api_key, "new-cover-key")
+
     def test_initial_cancel_prevents_all_command_side_effects(self) -> None:
         commands = (
             "generate_covers", "generate_segments", "generate_metadata", "generate_highlights",

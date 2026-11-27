@@ -115,7 +115,7 @@ WSL 必须单独创建 Linux 虚拟环境，不能直接复用 Windows 的虚拟
 
 可选功能：
 
-- AI 封面、字幕翻译、标题简介和语义高光建议；服务商不可用时，封面和文案会回退为本地规则生成
+- AI 封面、字幕翻译、标题简介和语义高光建议。封面 API Key 和本地封面模型均未配置时，已启用回退且安装 Pillow 就可以用「生成视频帧封面」在本机制作封面。文案也支持回退到本地规则。
 - NVIDIA CUDA/NVENC 加速，并通过内核文件锁在多进程间互斥使用 GPU
 - 可选开启的平台多画幅变体与分段并行渲染（`PLATFORM_VARIANTS_ENABLED`、`RENDER_SEGMENT_PARALLEL_ENABLED`）
 - Faster-Whisper 本地转写（默认 `medium` 主模型、`small` 回退模型）；已有 FunASR 配置仍兼容

@@ -114,7 +114,7 @@ Included in the local workflow:
 
 Optional features:
 
-- AI covers, translation, titles, descriptions, and semantic highlight suggestions; covers and metadata fall back to rule-based local generation when providers are unavailable
+- AI covers, translation, titles, descriptions, and semantic highlights. If both the cover API key and local cover model are absent, **Generate frame covers** uses the existing fallback on your machine when it is enabled and Pillow is installed. Metadata can also fall back to local rules.
 - NVIDIA CUDA/NVENC acceleration, serialized across processes by a kernel file lock
 - Opt-in per-platform aspect variants and segment-parallel final rendering (`PLATFORM_VARIANTS_ENABLED`, `RENDER_SEGMENT_PARALLEL_ENABLED`)
 - Faster-Whisper local transcription (`medium` primary, `small` fallback by default); legacy FunASR configurations remain supported

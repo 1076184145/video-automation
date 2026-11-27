@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from .api_job_utils import job_is_terminal, publish_job_dir_event
 from .covers import (
+    cover_provider_key_missing,
+    frame_cover_fallback_available,
     mark_cover_generation_started,
     normalize_cover_options,
     select_cover,
@@ -34,11 +36,9 @@ class EnhancementRoutes:
                 status=409,
             )
             return
-        if (
-            settings.cover_provider.strip().lower()
-            in {"openai", "openai-compatible", "openrouter", "google"}
-            and not settings.cover_api_key_for_provider()
-        ):
+        missing_key = cover_provider_key_missing(settings)
+        frame_fallback = frame_cover_fallback_available(settings)
+        if missing_key and not frame_fallback:
             self._json(
                 {
                     "error": (
@@ -51,11 +51,16 @@ class EnhancementRoutes:
         payload = self._read_json()
         if payload is None:
             return
+        if payload.get("frame_only") is True and not frame_fallback:
+            self._json({"error": "Frame fallback is unavailable with the current cover settings"}, status=400)
+            return
         try:
             options = normalize_cover_options(settings, payload)
         except Exception as exc:
             self._json({"error": str(exc)}, status=400)
             return
+        if frame_fallback:
+            options["frame_only"] = True
         manifest = mark_cover_generation_started(settings, job.job_dir, options)
         publish_job_dir_event(job.job_dir)
         queue_item = self._enqueue_job_command(job, "generate_covers", options)

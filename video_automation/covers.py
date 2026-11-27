@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
+from importlib.util import find_spec
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,29 @@ MAX_REMOTE_COVER_REDIRECTS = 3
 MAX_REMOTE_COVER_TOTAL_SECONDS = 60.0
 MAX_COVER_IMAGE_PIXELS = 40_000_000
 REMOTE_IMAGE_READ_CHUNK = 64 * 1024
+
+
+def cover_provider_key_missing(settings: Settings) -> bool:
+    return (
+        settings.cover_provider.strip().lower()
+        in {"openai", "openai-compatible", "openrouter", "google"}
+        and not settings.cover_api_key_for_provider()
+    )
+
+
+def frame_cover_fallback_available(settings: Settings) -> bool:
+    """Whether a cover request without a provider key can be queued as local frame covers.
+
+    The cover route enforces this and /health reports it, so the page offers exactly what the route accepts.
+    """
+    from .local_ai import _missing_local_cover_files
+
+    return (
+        cover_provider_key_missing(settings)
+        and settings.cover_fallback_local
+        and find_spec("PIL") is not None
+        and bool(_missing_local_cover_files(settings.local_cover_model_path))
+    )
 
 
 def normalize_cover_options(settings: Settings, payload: dict[str, Any] | None) -> dict[str, Any]:
