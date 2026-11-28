@@ -4,7 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-required-orange.svg)](https://ffmpeg.org/)
 
-**中文说明：[README.zh-CN.md](README.zh-CN.md)**
+**中文说明：[README.zh-CN.md](README.zh-CN.md)** · **Website: [video-automation.net](https://video-automation.net)**
 
 Turn a long local recording into a reviewed short video with transcript, subtitles, cover images, and export files. Everything runs on your computer unless you choose an external AI service.
 
