@@ -117,7 +117,9 @@ def _open_window(url: str, server: ThreadingHTTPServer | None) -> None:
 
     # pywebview cancels every download in the window unless this is on. With it on, each download
     # (cover images, job files, the exported preferences) opens the native Save As dialog.
-    webview.settings["ALLOW_DOWNLOADS"] = True
+    # Only Windows turns it on; macOS and Linux keep pywebview's setting as it is.
+    if sys.platform == "win32":
+        webview.settings["ALLOW_DOWNLOADS"] = True
     window = webview.create_window(
         APP_TITLE,
         url,
